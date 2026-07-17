@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+[package]
+name = "ruyipack"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "MulanPSL-2.0"
+description = "Rust tooling for OpenRuyi RPM package workflows"
+publish = false
+
+[lints.rust]
+unsafe_code = "forbid"
