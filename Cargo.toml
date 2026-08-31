@@ -13,5 +13,12 @@ license = "MulanPSL-2.0"
 description = "Rust tooling for OpenRuyi RPM package workflows"
 publish = false
 
+[dependencies.rpm-spec]
+version = "=0.4.1"
+git = "https://github.com/openRuyi-Project/rpm-spec"
+rev = "b8702b69970c8091aa0a0ea9971628e40ffdf51e"
+default-features = false
+features = ["parser", "printer"]
+
 [lints.rust]
 unsafe_code = "forbid"
