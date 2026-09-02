@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Black-box tests for the `ruyipack inspect` command contract.
+//! Black-box tests for the RuyiPack command-line contract.
 
 use std::{
     ffi::{OsStr, OsString},
@@ -23,8 +23,7 @@ struct TempDir {
 impl TempDir {
     fn new() -> Self {
         let id = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("ruyipack-inspect-cli-{}-{id}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("ruyipack-cli-{}-{id}", std::process::id()));
         fs::create_dir(&path).expect("create temporary directory");
         Self { path }
     }
@@ -65,6 +64,200 @@ where
 
 fn output_text(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).expect("command output is UTF-8")
+}
+
+const COMPLETE_REQUIRED_TAGS: &str = "\
+Name: demo
+Version: 1
+Release: 1
+Summary: Demo package
+License: MIT
+URL: https://example.invalid/demo
+";
+
+#[test]
+fn check_accepts_the_six_required_tags_without_running_other_rules() {
+    let temp = TempDir::new();
+    let spec = temp.write("demo.spec", COMPLETE_REQUIRED_TAGS);
+    temp.write(
+        ".rpmspec.toml",
+        "\
+[lints]
+RPM001 = \"deny\"
+",
+    );
+    let before_contents = fs::read(&spec).expect("read SPEC before check");
+    let before_entries = temp.entries();
+
+    let output = ruyipack()
+        .current_dir(&temp.path)
+        .args([OsStr::new("check"), OsStr::new("demo.spec")])
+        .output()
+        .expect("run ruyipack");
+
+    assert!(
+        output.status.success(),
+        "status={:?}, stderr={}",
+        output.status,
+        output_text(&output.stderr)
+    );
+    assert!(output.stdout.is_empty(), "{}", output_text(&output.stdout));
+    assert!(output.stderr.is_empty(), "{}", output_text(&output.stderr));
+    assert_eq!(
+        fs::read(&spec).expect("read SPEC after check"),
+        before_contents
+    );
+    assert_eq!(temp.entries(), before_entries);
+}
+
+#[test]
+fn check_reports_exactly_the_six_required_tag_rules() {
+    let temp = TempDir::new();
+    temp.write("empty.spec", "");
+    temp.write(
+        ".rpmspec.toml",
+        "\
+[lints]
+RPM010 = \"allow\"
+RPM011 = \"allow\"
+RPM012 = \"allow\"
+RPM013 = \"allow\"
+RPM014 = \"allow\"
+RPM015 = \"allow\"
+",
+    );
+    let before_entries = temp.entries();
+
+    let output = ruyipack()
+        .current_dir(&temp.path)
+        .args([OsStr::new("check"), OsStr::new("empty.spec")])
+        .output()
+        .expect("run ruyipack");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty(), "{}", output_text(&output.stdout));
+    assert_eq!(
+        output_text(&output.stderr),
+        "\
+empty.spec:1:1: error[RPM010]: spec is missing the Name: tag
+empty.spec:1:1: error[RPM011]: spec is missing the Version: tag
+empty.spec:1:1: error[RPM012]: spec is missing the Release: tag
+empty.spec:1:1: error[RPM013]: spec is missing the License: tag
+empty.spec:1:1: error[RPM014]: spec is missing the Summary: tag
+empty.spec:1:1: error[RPM015]: spec is missing the URL: tag
+"
+    );
+    assert_eq!(temp.entries(), before_entries);
+}
+
+#[test]
+fn check_continues_after_a_parser_warning() {
+    let temp = TempDir::new();
+    let complete_spec = temp.write(
+        "complete-warning.spec",
+        format!("{COMPLETE_REQUIRED_TAGS}%unknown value\n"),
+    );
+    let complete_output = run([OsStr::new("check"), complete_spec.as_os_str()]);
+
+    assert!(
+        complete_output.status.success(),
+        "status={:?}, stderr={}",
+        complete_output.status,
+        output_text(&complete_output.stderr)
+    );
+    assert!(
+        complete_output.stdout.is_empty(),
+        "{}",
+        output_text(&complete_output.stdout)
+    );
+    assert_eq!(
+        output_text(&complete_output.stderr),
+        "warning[rpmspec/W0002] at 7:1: line not recognized\n"
+    );
+
+    let spec = temp.write(
+        "warning.spec",
+        "\
+Name: demo
+Version: 1
+Release: 1
+Summary: Demo package
+License: MIT
+%unknown value
+",
+    );
+
+    let output = run([OsStr::new("check"), spec.as_os_str()]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty(), "{}", output_text(&output.stdout));
+    assert_eq!(
+        output_text(&output.stderr),
+        format!(
+            "\
+warning[rpmspec/W0002] at 6:1: line not recognized
+{}:1:1: error[RPM015]: spec is missing the URL: tag
+",
+            spec.display()
+        )
+    );
+}
+
+#[test]
+fn check_stops_tag_checks_when_the_parser_reports_an_error() {
+    let temp = TempDir::new();
+    let spec = temp.write(
+        "parser-error.spec",
+        "\
+Name: demo
+Version: 1
+Release: 1
+Summary: Demo package
+License: MIT
+
+%package
+Summary: Broken subpackage
+",
+    );
+
+    let output = run([OsStr::new("check"), spec.as_os_str()]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty(), "{}", output_text(&output.stdout));
+    assert_eq!(
+        output_text(&output.stderr),
+        "\
+error[rpmspec/E0007] at 7:9: %package requires a subpackage name argument
+error: check incomplete because the SPEC parser reported an error
+"
+    );
+}
+
+#[test]
+fn check_rejects_missing_and_non_utf8_inputs() {
+    let temp = TempDir::new();
+    let missing = temp.path.join("missing.spec");
+
+    let missing_output = run([OsStr::new("check"), missing.as_os_str()]);
+    assert_eq!(missing_output.status.code(), Some(1));
+    assert!(missing_output.stdout.is_empty());
+    assert!(
+        output_text(&missing_output.stderr)
+            .contains(&format!("failed to read {}", missing.display())),
+        "{}",
+        output_text(&missing_output.stderr)
+    );
+
+    let invalid = temp.write("invalid.spec", [0xff]);
+    let invalid_output = run([OsStr::new("check"), invalid.as_os_str()]);
+    assert_eq!(invalid_output.status.code(), Some(1));
+    assert!(invalid_output.stdout.is_empty());
+    assert!(
+        output_text(&invalid_output.stderr)
+            .contains(&format!("{} is not UTF-8", invalid.display())),
+        "{}",
+        output_text(&invalid_output.stderr)
+    );
 }
 
 #[test]
@@ -174,7 +367,7 @@ Summary: Broken subpackage
 }
 
 #[test]
-fn inspect_rejects_invalid_invocations() {
+fn cli_rejects_invalid_invocations() {
     let cases = [
         (Vec::new(), "Usage: ruyipack <COMMAND>"),
         (
@@ -184,6 +377,18 @@ fn inspect_rejects_invalid_invocations() {
         (
             vec![OsString::from("inspect")],
             "Usage: ruyipack inspect <SPEC>",
+        ),
+        (
+            vec![OsString::from("check")],
+            "Usage: ruyipack check <SPEC>",
+        ),
+        (
+            vec![
+                OsString::from("check"),
+                OsString::from("demo.spec"),
+                OsString::from("extra"),
+            ],
+            "error: unexpected argument 'extra' found",
         ),
         (
             vec![
@@ -238,6 +443,7 @@ Rust tooling for openRuyi RPM package workflows
 Usage: ruyipack <COMMAND>
 
 Commands:
+  check    Checks required main-package tag presence in an RPM SPEC file
   inspect  Prints the normalized main-package tags from an RPM SPEC file
   help     Print this message or the help of the given subcommand(s)
 
@@ -268,6 +474,28 @@ Options:
         inspect_help.stderr.is_empty(),
         "{}",
         output_text(&inspect_help.stderr)
+    );
+
+    let check_help = run([OsStr::new("check"), OsStr::new("--help")]);
+    assert!(check_help.status.success());
+    assert_eq!(
+        output_text(&check_help.stdout),
+        "\
+Checks required main-package tag presence in an RPM SPEC file
+
+Usage: ruyipack check <SPEC>
+
+Arguments:
+  <SPEC>  RPM SPEC file to check
+
+Options:
+  -h, --help  Print help
+"
+    );
+    assert!(
+        check_help.stderr.is_empty(),
+        "{}",
+        output_text(&check_help.stderr)
     );
 
     let version = run([OsStr::new("--version")]);

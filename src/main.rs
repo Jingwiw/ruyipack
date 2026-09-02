@@ -6,7 +6,10 @@
 
 //! Command-line entry point for RuyiPack.
 
+mod check;
 mod inspect;
+mod parser_diagnostic;
+mod spec_file;
 
 use std::{path::PathBuf, process::ExitCode};
 
@@ -21,6 +24,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Checks required main-package tag presence in an RPM SPEC file.
+    Check {
+        /// RPM SPEC file to check.
+        #[arg(value_name = "SPEC")]
+        spec: PathBuf,
+    },
     /// Prints the normalized main-package tags from an RPM SPEC file.
     Inspect {
         /// RPM SPEC file to inspect.
@@ -32,11 +41,13 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Inspect { spec } => inspect::run(&spec),
+        Command::Check { spec } => check::run(&spec),
+        Command::Inspect { spec } => inspect::run(&spec).map(|()| true),
     };
 
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
         Err(error) => {
             eprintln!("error: {error}");
             ExitCode::FAILURE
