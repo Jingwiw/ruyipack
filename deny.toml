@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+[graph]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "riscv64gc-unknown-linux-gnu",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+]
+
+[advisories]
+yanked = "deny"
+unmaintained = "workspace"
+unsound = "all"
+
+[licenses]
+allow = ["Apache-2.0", "MIT", "MPL-2.0", "MulanPSL-2.0", "Unicode-3.0"]
+confidence-threshold = 0.8
+unused-allowed-license = "deny"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Exact revisions remain locked in Cargo.toml and Cargo.lock.
+allow-git = [
+  "https://github.com/openRuyi-Project/rpm-spec",
+  "https://github.com/openRuyi-Project/rpm-spec-tool",
+]
