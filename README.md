@@ -8,4 +8,4 @@ SPDX-License-Identifier: MulanPSL-2.0
 
 # RuyiPack
 
-RuyiPack is a project for OpenRuyi RPM package workflows.
+RuyiPack is a project for openRuyi RPM package workflows.

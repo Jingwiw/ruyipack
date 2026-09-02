@@ -10,7 +10,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.91"
 license = "MulanPSL-2.0"
-description = "Rust tooling for OpenRuyi RPM package workflows"
+description = "Rust tooling for openRuyi RPM package workflows"
 publish = false
 
 [dependencies.rpm-spec]
