@@ -176,17 +176,26 @@ Summary: Broken subpackage
 #[test]
 fn inspect_rejects_invalid_invocations() {
     let cases = [
-        Vec::new(),
-        vec![OsString::from("unknown")],
-        vec![OsString::from("inspect")],
-        vec![
-            OsString::from("inspect"),
-            OsString::from("demo.spec"),
-            OsString::from("extra"),
-        ],
+        (Vec::new(), "Usage: ruyipack <COMMAND>"),
+        (
+            vec![OsString::from("unknown")],
+            "error: unrecognized subcommand 'unknown'",
+        ),
+        (
+            vec![OsString::from("inspect")],
+            "Usage: ruyipack inspect <SPEC>",
+        ),
+        (
+            vec![
+                OsString::from("inspect"),
+                OsString::from("demo.spec"),
+                OsString::from("extra"),
+            ],
+            "error: unexpected argument 'extra' found",
+        ),
     ];
 
-    for args in cases {
+    for (args, expected) in cases {
         let output = run(&args);
         assert_eq!(
             output.status.code(),
@@ -200,7 +209,7 @@ fn inspect_rejects_invalid_invocations() {
             output_text(&output.stdout)
         );
         assert!(
-            output_text(&output.stderr).contains("Usage: ruyipack inspect <SPEC>"),
+            output_text(&output.stderr).contains(expected),
             "args={args:?}, stderr={}",
             output_text(&output.stderr)
         );
@@ -210,9 +219,67 @@ fn inspect_rejects_invalid_invocations() {
     assert_eq!(empty_path.status.code(), Some(2));
     assert!(empty_path.stdout.is_empty());
     assert!(
-        output_text(&empty_path.stderr).contains("SPEC path must not be empty"),
+        output_text(&empty_path.stderr)
+            .contains("a value is required for '<SPEC>' but none was supplied"),
         "{}",
         output_text(&empty_path.stderr)
+    );
+}
+
+#[test]
+fn cli_prints_standard_help_and_version() {
+    let help = run([OsStr::new("--help")]);
+    assert!(help.status.success());
+    assert_eq!(
+        output_text(&help.stdout),
+        "\
+Rust tooling for openRuyi RPM package workflows
+
+Usage: ruyipack <COMMAND>
+
+Commands:
+  inspect  Prints the normalized main-package tags from an RPM SPEC file
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+"
+    );
+    assert!(help.stderr.is_empty(), "{}", output_text(&help.stderr));
+
+    let inspect_help = run([OsStr::new("inspect"), OsStr::new("--help")]);
+    assert!(inspect_help.status.success());
+    assert_eq!(
+        output_text(&inspect_help.stdout),
+        "\
+Prints the normalized main-package tags from an RPM SPEC file
+
+Usage: ruyipack inspect <SPEC>
+
+Arguments:
+  <SPEC>  RPM SPEC file to inspect
+
+Options:
+  -h, --help  Print help
+"
+    );
+    assert!(
+        inspect_help.stderr.is_empty(),
+        "{}",
+        output_text(&inspect_help.stderr)
+    );
+
+    let version = run([OsStr::new("--version")]);
+    assert!(version.status.success());
+    assert_eq!(
+        output_text(&version.stdout),
+        format!("ruyipack {}\n", env!("CARGO_PKG_VERSION"))
+    );
+    assert!(
+        version.stderr.is_empty(),
+        "{}",
+        output_text(&version.stderr)
     );
 }
 
