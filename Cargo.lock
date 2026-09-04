@@ -371,7 +371,7 @@ dependencies = [
 [[package]]
 name = "rpm-spec"
 version = "0.4.1"
-source = "git+https://github.com/openRuyi-Project/rpm-spec?rev=b8702b69970c8091aa0a0ea9971628e40ffdf51e#b8702b69970c8091aa0a0ea9971628e40ffdf51e"
+source = "git+https://github.com/openRuyi-Project/rpm-spec?rev=2d5139521c8bef5cf61cb9692d75fd0b5282ffd9#2d5139521c8bef5cf61cb9692d75fd0b5282ffd9"
 dependencies = [
  "nom",
  "nom_locate",
@@ -382,7 +382,7 @@ dependencies = [
 [[package]]
 name = "rpm-spec-analyzer"
 version = "0.1.3"
-source = "git+https://github.com/openRuyi-Project/rpm-spec-tool?rev=005e10d4ab2d781d6a8561ddb2df7134390f7c9f#005e10d4ab2d781d6a8561ddb2df7134390f7c9f"
+source = "git+https://github.com/openRuyi-Project/rpm-spec-tool?rev=8d9ca43b13a2e25ec3177c3780d0f2636d5e1368#8d9ca43b13a2e25ec3177c3780d0f2636d5e1368"
 dependencies = [
  "directories",
  "rpm-spec",
@@ -399,7 +399,7 @@ dependencies = [
 [[package]]
 name = "rpm-spec-profile"
 version = "0.1.3"
-source = "git+https://github.com/openRuyi-Project/rpm-spec-tool?rev=005e10d4ab2d781d6a8561ddb2df7134390f7c9f#005e10d4ab2d781d6a8561ddb2df7134390f7c9f"
+source = "git+https://github.com/openRuyi-Project/rpm-spec-tool?rev=8d9ca43b13a2e25ec3177c3780d0f2636d5e1368#8d9ca43b13a2e25ec3177c3780d0f2636d5e1368"
 dependencies = [
  "schemars",
  "serde",

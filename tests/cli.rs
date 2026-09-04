@@ -153,13 +153,13 @@ fn assert_machine_envelope(
                 "name": "rpm-spec",
                 "version": "0.4.1",
                 "repository": "https://github.com/openRuyi-Project/rpm-spec",
-                "revision": "b8702b69970c8091aa0a0ea9971628e40ffdf51e",
+                "revision": "2d5139521c8bef5cf61cb9692d75fd0b5282ffd9",
             },
             {
                 "name": "rpm-spec-analyzer",
                 "version": "0.1.3",
                 "repository": "https://github.com/openRuyi-Project/rpm-spec-tool",
-                "revision": "005e10d4ab2d781d6a8561ddb2df7134390f7c9f",
+                "revision": "8d9ca43b13a2e25ec3177c3780d0f2636d5e1368",
             },
         ])
     );
@@ -243,6 +243,26 @@ RPM001 = \"deny\"
         before_contents
     );
     assert_eq!(temp.entries(), before_entries);
+}
+
+#[test]
+fn check_accepts_autochangelog_without_parser_warning() {
+    let temp = TempDir::new();
+    let spec = temp.write(
+        "autochangelog.spec",
+        format!("{COMPLETE_REQUIRED_TAGS}\n%changelog\n%autochangelog\n"),
+    );
+
+    let output = run([OsStr::new("check"), spec.as_os_str()]);
+
+    assert!(
+        output.status.success(),
+        "status={:?}, stderr={}",
+        output.status,
+        output_text(&output.stderr)
+    );
+    assert!(output.stdout.is_empty(), "{}", output_text(&output.stdout));
+    assert!(output.stderr.is_empty(), "{}", output_text(&output.stderr));
 }
 
 #[test]
