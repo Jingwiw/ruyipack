@@ -9,10 +9,12 @@
 use std::{
     ffi::{OsStr, OsString},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Output},
     sync::atomic::{AtomicUsize, Ordering},
 };
+
+use serde_json::Value;
 
 static NEXT_TEMP_DIR: AtomicUsize = AtomicUsize::new(0);
 
@@ -66,6 +68,114 @@ fn output_text(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).expect("command output is UTF-8")
 }
 
+fn run_json_check(current_dir: &Path, spec: &OsStr) -> Output {
+    ruyipack()
+        .current_dir(current_dir)
+        .args([
+            OsStr::new("check"),
+            spec,
+            OsStr::new("--format"),
+            OsStr::new("json"),
+        ])
+        .output()
+        .expect("run ruyipack JSON check")
+}
+
+fn machine_report(output: &Output) -> Value {
+    assert!(output.stderr.is_empty(), "{}", output_text(&output.stderr));
+    let stdout = output_text(&output.stdout);
+    assert!(stdout.ends_with('\n'), "stdout has no trailing newline");
+    assert_eq!(
+        stdout.bytes().filter(|byte| *byte == b'\n').count(),
+        1,
+        "stdout is not one JSON line: {stdout}"
+    );
+    serde_json::from_slice(&output.stdout).expect("machine report is valid JSON")
+}
+
+fn assert_object_fields(value: &Value, expected: &[&str]) {
+    let object = value.as_object().expect("report value is an object");
+    let mut actual = object.keys().map(String::as_str).collect::<Vec<_>>();
+    let mut expected = expected.to_vec();
+    actual.sort_unstable();
+    expected.sort_unstable();
+    assert_eq!(actual, expected);
+}
+
+fn assert_machine_envelope(
+    report: &Value,
+    display_path: &str,
+    sha256: &str,
+    status: &str,
+    reason: Option<&str>,
+) {
+    assert_object_fields(
+        report,
+        &[
+            "format_version",
+            "input",
+            "evidence",
+            "parser_diagnostics",
+            "findings",
+        ],
+    );
+    assert_eq!(report["format_version"], 1);
+
+    let input = &report["input"];
+    assert_object_fields(input, &["display_path", "sha256"]);
+    assert_eq!(input["display_path"], display_path);
+    assert_eq!(input["sha256"], sha256);
+
+    let evidence = &report["evidence"];
+    let mut evidence_fields = vec!["stage", "status", "tool", "components", "selected_rules"];
+    if reason.is_some() {
+        evidence_fields.push("reason");
+    }
+    assert_object_fields(evidence, &evidence_fields);
+    assert_eq!(evidence["stage"], "spec-static");
+    assert_eq!(evidence["status"], status);
+    match reason {
+        Some(reason) => assert_eq!(evidence["reason"], reason),
+        None => assert!(evidence.get("reason").is_none()),
+    }
+
+    assert_eq!(
+        evidence["tool"],
+        serde_json::json!({
+            "name": "ruyipack",
+            "version": env!("CARGO_PKG_VERSION"),
+        })
+    );
+    assert_eq!(
+        evidence["components"],
+        serde_json::json!([
+            {
+                "name": "rpm-spec",
+                "version": "0.4.1",
+                "repository": "https://github.com/openRuyi-Project/rpm-spec",
+                "revision": "b8702b69970c8091aa0a0ea9971628e40ffdf51e",
+            },
+            {
+                "name": "rpm-spec-analyzer",
+                "version": "0.1.3",
+                "repository": "https://github.com/openRuyi-Project/rpm-spec-tool",
+                "revision": "005e10d4ab2d781d6a8561ddb2df7134390f7c9f",
+            },
+        ])
+    );
+    assert_eq!(
+        evidence["selected_rules"],
+        serde_json::json!([
+            {"code": "RPM010", "severity": "deny"},
+            {"code": "RPM011", "severity": "deny"},
+            {"code": "RPM012", "severity": "deny"},
+            {"code": "RPM013", "severity": "deny"},
+            {"code": "RPM014", "severity": "deny"},
+            {"code": "RPM015", "severity": "deny"},
+        ])
+    );
+}
+
 const COMPLETE_REQUIRED_TAGS: &str = "\
 Name: demo
 Version: 1
@@ -74,6 +184,31 @@ Summary: Demo package
 License: MIT
 URL: https://example.invalid/demo
 ";
+const COMPLETE_REQUIRED_TAGS_SHA256: &str =
+    "8c6dcab3c81d694aa5d28c9b3d833fa6c1b3c875f80dfe01b1093493e52e3730";
+
+const PARSER_WARNING_SPEC: &str = "\
+Name: demo
+Version: 1
+Release: 1
+License: MIT
+%unknown value
+";
+const PARSER_WARNING_SPEC_SHA256: &str =
+    "baaecaa6a7f2e5071fbf1036b6e7e8bc53c77c10b6bf8abcd1d8578695488704";
+
+const PARSER_ERROR_SPEC: &str = "\
+Name: demo
+Version: 1
+Release: 1
+Summary: Demo package
+License: MIT
+
+%package
+Summary: Broken subpackage
+";
+const PARSER_ERROR_SPEC_SHA256: &str =
+    "e5bf39331ae71060d336c183c55ebf29da41b085e2205c6c20adfb254bead260";
 
 #[test]
 fn check_accepts_the_six_required_tags_without_running_other_rules() {
@@ -206,19 +341,7 @@ warning[rpmspec/W0002] at 6:1: line not recognized
 #[test]
 fn check_stops_tag_checks_when_the_parser_reports_an_error() {
     let temp = TempDir::new();
-    let spec = temp.write(
-        "parser-error.spec",
-        "\
-Name: demo
-Version: 1
-Release: 1
-Summary: Demo package
-License: MIT
-
-%package
-Summary: Broken subpackage
-",
-    );
+    let spec = temp.write("parser-error.spec", PARSER_ERROR_SPEC);
 
     let output = run([OsStr::new("check"), spec.as_os_str()]);
 
@@ -230,6 +353,133 @@ Summary: Broken subpackage
 error[rpmspec/E0007] at 7:9: %package requires a subpackage name argument
 error: check incomplete because the SPEC parser reported an error
 "
+    );
+}
+
+#[test]
+fn check_json_reports_pass_deterministically() {
+    let temp = TempDir::new();
+    temp.write("demo.spec", COMPLETE_REQUIRED_TAGS);
+
+    let first = run_json_check(&temp.path, OsStr::new("demo.spec"));
+    let second = run_json_check(&temp.path, OsStr::new("demo.spec"));
+
+    assert_eq!(first.status.code(), Some(0));
+    assert_eq!(second.status.code(), Some(0));
+    assert_eq!(first.stdout, second.stdout);
+    let first_report = machine_report(&first);
+    machine_report(&second);
+    assert_machine_envelope(
+        &first_report,
+        "demo.spec",
+        COMPLETE_REQUIRED_TAGS_SHA256,
+        "pass",
+        None,
+    );
+    assert_eq!(first_report["parser_diagnostics"], serde_json::json!([]));
+    assert_eq!(first_report["findings"], serde_json::json!([]));
+}
+
+#[test]
+fn check_json_keeps_parser_warning_and_orders_findings() {
+    let temp = TempDir::new();
+    temp.write("warning.spec", PARSER_WARNING_SPEC);
+
+    let first = run_json_check(&temp.path, OsStr::new("warning.spec"));
+    let second = run_json_check(&temp.path, OsStr::new("warning.spec"));
+
+    assert_eq!(first.status.code(), Some(1));
+    assert_eq!(second.status.code(), Some(1));
+    assert_eq!(first.stdout, second.stdout);
+    let report = machine_report(&first);
+    machine_report(&second);
+    assert_machine_envelope(
+        &report,
+        "warning.spec",
+        PARSER_WARNING_SPEC_SHA256,
+        "fail",
+        None,
+    );
+    assert_eq!(
+        report["parser_diagnostics"],
+        serde_json::json!([{
+            "severity": "warning",
+            "code": "rpmspec/W0002",
+            "span": {
+                "start_byte": 46,
+                "end_byte": 60,
+                "start_line": 5,
+                "start_column": 1,
+                "end_line": 5,
+                "end_column": 15,
+            },
+            "message": "line not recognized",
+            "notes": [],
+        }])
+    );
+
+    let findings = report["findings"].as_array().expect("findings is an array");
+    let missing_tags = [("RPM014", "Summary"), ("RPM015", "URL")];
+    assert_eq!(findings.len(), missing_tags.len());
+    for (finding, (code, tag)) in findings.iter().zip(missing_tags) {
+        assert_object_fields(
+            finding,
+            &["producer", "code", "severity", "message", "span"],
+        );
+        assert_eq!(finding["producer"], "rpm-spec-analyzer");
+        assert_eq!(finding["code"], code);
+        assert_eq!(finding["severity"], "deny");
+        assert_eq!(
+            finding["message"],
+            format!("spec is missing the {tag}: tag")
+        );
+        assert_eq!(
+            finding["span"],
+            serde_json::json!({
+                "start_byte": 0,
+                "end_byte": 61,
+                "start_line": 1,
+                "start_column": 1,
+                "end_line": 6,
+                "end_column": 1,
+            })
+        );
+    }
+}
+
+#[test]
+fn check_json_reports_parser_error_as_incomplete() {
+    let temp = TempDir::new();
+    temp.write("parser-error.spec", PARSER_ERROR_SPEC);
+
+    let output = run_json_check(&temp.path, OsStr::new("parser-error.spec"));
+
+    assert_eq!(output.status.code(), Some(1));
+    let report = machine_report(&output);
+    assert_machine_envelope(
+        &report,
+        "parser-error.spec",
+        PARSER_ERROR_SPEC_SHA256,
+        "incomplete",
+        Some("parser-error"),
+    );
+    assert_eq!(report["findings"], serde_json::json!([]));
+    assert_eq!(
+        report["parser_diagnostics"],
+        serde_json::json!([{
+            "severity": "error",
+            "code": "rpmspec/E0007",
+            "span": {
+                "start_byte": 77,
+                "end_byte": 77,
+                "start_line": 7,
+                "start_column": 9,
+                "end_line": 7,
+                "end_column": 9,
+            },
+            "message": "%package requires a subpackage name argument",
+            "notes": [],
+        }])
     );
 }
 
