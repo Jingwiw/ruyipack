@@ -7,6 +7,7 @@
 //! Command-line entry point for RuyiPack.
 
 mod check;
+mod check_report;
 mod inspect;
 mod parser_diagnostic;
 mod spec_file;
@@ -29,6 +30,9 @@ enum Command {
         /// RPM SPEC file to check.
         #[arg(value_name = "SPEC")]
         spec: PathBuf,
+        /// Selects human or JSON output.
+        #[arg(long, value_enum, default_value_t = check::CheckFormat::Human)]
+        format: check::CheckFormat,
     },
     /// Prints the normalized main-package tags from an RPM SPEC file.
     Inspect {
@@ -41,7 +45,7 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Check { spec } => check::run(&spec),
+        Command::Check { spec, format } => check::run(&spec, format),
         Command::Inspect { spec } => inspect::run(&spec).map(|()| true),
     };
 

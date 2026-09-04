@@ -483,13 +483,14 @@ Options:
         "\
 Checks required main-package tag presence in an RPM SPEC file
 
-Usage: ruyipack check <SPEC>
+Usage: ruyipack check [OPTIONS] <SPEC>
 
 Arguments:
   <SPEC>  RPM SPEC file to check
 
 Options:
-  -h, --help  Print help
+      --format <FORMAT>  Selects human or JSON output [default: human] [possible values: human, json]
+  -h, --help             Print help
 "
     );
     assert!(

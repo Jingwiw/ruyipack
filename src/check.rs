@@ -8,73 +8,70 @@
 
 use std::path::Path;
 
+use clap::ValueEnum;
 use rpm_spec::{parse_result::Severity as ParserSeverity, parser::parse_str_with_spans};
 use rpm_spec_analyzer::{
-    config::Config,
-    diagnostic::{Diagnostic, Severity},
-    registry::builtin_lint_metadata,
-    session::LintSession,
+    config::Config, diagnostic::Severity, registry::builtin_lint_metadata, session::LintSession,
 };
 
-use crate::{parser_diagnostic, spec_file};
+use crate::{check_report::CheckReport, check_report::SelectedRule, spec_file};
 
 const REQUIRED_TAG_LINT_IDS: [&str; 6] =
     ["RPM010", "RPM011", "RPM012", "RPM013", "RPM014", "RPM015"];
 
+/// Output format supported by the check command.
+#[derive(Clone, ValueEnum)]
+pub(crate) enum CheckFormat {
+    Human,
+    Json,
+}
+
 /// Checks whether one SPEC declares the required main-package tags.
-pub(crate) fn run(path: &Path) -> Result<bool, spec_file::SpecReadError> {
+pub(crate) fn run(path: &Path, format: CheckFormat) -> Result<bool, spec_file::SpecReadError> {
     let source = spec_file::read(path)?;
     let parsed = parse_str_with_spans(&source);
-    parser_diagnostic::print(&parsed.diagnostics);
+    let (config, selected_rules) = required_tag_policy();
 
-    if parsed
+    let report = if parsed
         .diagnostics
         .iter()
         .any(|item| item.severity == ParserSeverity::Error)
     {
-        eprintln!("error: check incomplete because the SPEC parser reported an error");
-        return Ok(false);
-    }
+        CheckReport::incomplete(&source, selected_rules, parsed.diagnostics)
+    } else {
+        let mut session = LintSession::from_config(&config);
+        let findings = session.run(&parsed.spec, &source);
+        CheckReport::analyzed(&source, selected_rules, parsed.diagnostics, findings)
+    };
 
-    let mut session = required_tag_lint_session();
-    let findings = session.run(&parsed.spec, &source);
-    print_findings(path, &findings);
-    Ok(findings.is_empty())
+    match format {
+        CheckFormat::Human => report.print_human(path),
+        CheckFormat::Json => report.print_json(path),
+    }
+    Ok(report.is_success())
 }
 
-/// Prints the missing-tag findings produced by this command.
-fn print_findings(path: &Path, findings: &[Diagnostic]) {
-    for finding in findings {
-        let severity = match finding.severity {
-            Severity::Deny => "error",
-            Severity::Warn => "warning",
-            Severity::Allow => "diagnostic",
-        };
-        let span = finding.primary_span;
-        eprintln!(
-            "{}:{}:{}: {severity}[{}]: {}",
-            path.display(),
-            span.start_line,
-            span.start_column,
-            finding.lint_id,
-            finding.message
-        );
-    }
-}
-
-/// Builds an analyzer session containing only the required tag rules.
-fn required_tag_lint_session() -> LintSession {
+/// Resolves the analyzer configuration and selected rules with effective severities.
+fn required_tag_policy() -> (Config, Vec<SelectedRule>) {
     let metadata = builtin_lint_metadata();
-    for required_id in REQUIRED_TAG_LINT_IDS {
-        assert!(
-            metadata.iter().any(|item| item.id == required_id),
-            "required analyzer rule {required_id} is not registered"
-        );
-    }
-
     let all_ids = metadata.iter().map(|item| item.id).collect::<Vec<_>>();
     let mut config = Config::default();
     config.apply_overrides(&all_ids, Severity::Allow);
     config.apply_overrides(&REQUIRED_TAG_LINT_IDS, Severity::Deny);
-    LintSession::from_config(&config)
+    let selected_rules = REQUIRED_TAG_LINT_IDS
+        .iter()
+        .map(|required_id| {
+            let item = metadata
+                .iter()
+                .find(|item| item.id == *required_id)
+                .unwrap_or_else(|| {
+                    panic!("required analyzer rule {required_id} is not registered")
+                });
+            SelectedRule {
+                code: item.id,
+                severity: config.severity_for(item.id, item.name, item.default_severity),
+            }
+        })
+        .collect();
+    (config, selected_rules)
 }
