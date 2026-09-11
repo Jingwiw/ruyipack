@@ -29,26 +29,31 @@ pub(crate) enum CheckFormat {
 /// Checks whether one SPEC declares the required main-package tags.
 pub(crate) fn run(path: &Path, format: CheckFormat) -> Result<bool, spec_file::SpecReadError> {
     let source = spec_file::read(path)?;
-    let parsed = parse_str_with_spans(&source);
-    let (config, selected_rules) = required_tag_policy();
-
-    let report = if parsed
-        .diagnostics
-        .iter()
-        .any(|item| item.severity == ParserSeverity::Error)
-    {
-        CheckReport::incomplete(&source, selected_rules, parsed.diagnostics)
-    } else {
-        let mut session = LintSession::from_config(&config);
-        let findings = session.run(&parsed.spec, &source);
-        CheckReport::analyzed(&source, selected_rules, parsed.diagnostics, findings)
-    };
+    let report = analyze(&source);
 
     match format {
         CheckFormat::Human => report.print_human(path),
         CheckFormat::Json => report.print_json(path),
     }
     Ok(report.is_success())
+}
+
+/// Runs the selected static checks without file or terminal I/O.
+fn analyze(source: &str) -> CheckReport {
+    let parsed = parse_str_with_spans(source);
+    let (config, selected_rules) = required_tag_policy();
+
+    if parsed
+        .diagnostics
+        .iter()
+        .any(|item| item.severity == ParserSeverity::Error)
+    {
+        CheckReport::incomplete(source, selected_rules, parsed.diagnostics)
+    } else {
+        let mut session = LintSession::from_config(&config);
+        let findings = session.run(&parsed.spec, source);
+        CheckReport::analyzed(source, selected_rules, parsed.diagnostics, findings)
+    }
 }
 
 /// Resolves the analyzer configuration and selected rules with effective severities.
