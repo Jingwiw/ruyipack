@@ -15,11 +15,11 @@ use rpm_spec::{
     printer::{self, PrinterConfig},
 };
 
-use crate::{parser_diagnostic, spec_file};
+use crate::{parser_diagnostic, utf8_file};
 
 /// Reads one SPEC and prints its parser diagnostics and main-package tag view.
-pub(crate) fn run(path: &Path) -> Result<(), spec_file::SpecReadError> {
-    let source = spec_file::read(path)?;
+pub(crate) fn run(path: &Path) -> Result<(), utf8_file::Utf8FileError> {
+    let source = utf8_file::read(path)?;
     report(parse_str_with_spans(&source));
     Ok(())
 }

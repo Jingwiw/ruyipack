@@ -14,7 +14,7 @@ use rpm_spec_analyzer::{
     config::Config, diagnostic::Severity, registry::builtin_lint_metadata, session::LintSession,
 };
 
-use crate::{check_report::CheckReport, check_report::SelectedRule, spec_file};
+use crate::{check_report::CheckReport, check_report::SelectedRule, utf8_file};
 
 const REQUIRED_TAG_LINT_IDS: [&str; 6] =
     ["RPM010", "RPM011", "RPM012", "RPM013", "RPM014", "RPM015"];
@@ -27,8 +27,8 @@ pub(crate) enum CheckFormat {
 }
 
 /// Checks whether one SPEC declares the required main-package tags.
-pub(crate) fn run(path: &Path, format: CheckFormat) -> Result<bool, spec_file::SpecReadError> {
-    let source = spec_file::read(path)?;
+pub(crate) fn run(path: &Path, format: CheckFormat) -> Result<bool, utf8_file::Utf8FileError> {
+    let source = utf8_file::read(path)?;
     let report = analyze(&source);
 
     match format {

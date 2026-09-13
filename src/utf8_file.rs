@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Strict UTF-8 input for RPM SPEC commands.
+//! Strict UTF-8 input shared by file-based commands.
 
 use std::{
     error, fmt, fs, io,
@@ -12,20 +12,20 @@ use std::{
     string::FromUtf8Error,
 };
 
-/// Reads one SPEC file as UTF-8 text.
-pub(crate) fn read(path: &Path) -> Result<String, SpecReadError> {
-    let bytes = fs::read(path).map_err(|source| SpecReadError::Read {
+/// Reads one file as UTF-8 text.
+pub(crate) fn read(path: &Path) -> Result<String, Utf8FileError> {
+    let bytes = fs::read(path).map_err(|source| Utf8FileError::Read {
         path: path.to_path_buf(),
         source,
     })?;
-    String::from_utf8(bytes).map_err(|source| SpecReadError::Utf8 {
+    String::from_utf8(bytes).map_err(|source| Utf8FileError::Utf8 {
         path: path.to_path_buf(),
         source,
     })
 }
 
 #[derive(Debug)]
-pub(crate) enum SpecReadError {
+pub(crate) enum Utf8FileError {
     Read {
         path: PathBuf,
         source: io::Error,
@@ -36,7 +36,7 @@ pub(crate) enum SpecReadError {
     },
 }
 
-impl fmt::Display for SpecReadError {
+impl fmt::Display for Utf8FileError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Read { path, source } => {
@@ -49,7 +49,7 @@ impl fmt::Display for SpecReadError {
     }
 }
 
-impl error::Error for SpecReadError {
+impl error::Error for Utf8FileError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
             Self::Read { source, .. } => Some(source),

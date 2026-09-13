@@ -10,7 +10,7 @@ mod check;
 mod check_report;
 mod inspect;
 mod parser_diagnostic;
-mod spec_file;
+mod utf8_file;
 
 use std::{path::PathBuf, process::ExitCode};
 
