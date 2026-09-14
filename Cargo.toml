@@ -26,7 +26,7 @@ url = "2.5.8"
 [dependencies.rpm-spec-analyzer]
 version = "=0.1.3"
 git = "https://github.com/openRuyi-Project/rpm-spec-tool"
-rev = "8d9ca43b13a2e25ec3177c3780d0f2636d5e1368"
+rev = "9464eccc1f532e28f66e55a47aeaed959172d498"
 default-features = false
 
 [dependencies.rpm-spec]

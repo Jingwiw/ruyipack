@@ -25,6 +25,11 @@ unused-allowed-license = "deny"
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Proc-macro dependencies are migrating from syn 2 to syn 3.
+# Keep security checks active; revisit this exact exception on dependency updates.
+skip = [
+  { name = "syn", version = "=2.0.119", reason = "yoke-derive/zerofrom-derive still require syn 2; displaydoc/zerovec-derive require syn 3" },
+]
 
 [sources]
 unknown-registry = "deny"
