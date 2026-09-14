@@ -9,3 +9,11 @@ SPDX-License-Identifier: MulanPSL-2.0
 # RuyiPack
 
 RuyiPack is a project for openRuyi RPM package workflows.
+
+Preview a SPEC from an Autotools manifest:
+
+```sh
+cargo run -- gen ed --manifest examples/ed/ed.toml
+```
+
+The command reads the authoring fields and prints a SPEC candidate to stdout.

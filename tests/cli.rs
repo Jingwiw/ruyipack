@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Black-box tests for the RuyiPack command-line contract.
+//! Black-box tests for the `RuyiPack` command-line contract.
 
 use std::{
     ffi::{OsStr, OsString},
@@ -715,6 +715,7 @@ Usage: ruyipack <COMMAND>
 Commands:
   check    Checks required main-package tag presence in an RPM SPEC file
   inspect  Prints the normalized main-package tags from an RPM SPEC file
+  gen      Prints an artifact candidate from a `RuyiPack` manifest
   help     Print this message or the help of the given subcommand(s)
 
 Options:

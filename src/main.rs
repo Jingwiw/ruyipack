@@ -4,17 +4,19 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Command-line entry point for RuyiPack.
+//! Command-line entry point for `RuyiPack`.
 
 mod check;
 mod check_report;
+mod generate;
 mod inspect;
 mod parser_diagnostic;
+mod render;
 mod utf8_file;
 
-use std::{path::PathBuf, process::ExitCode};
+use std::{fmt, path::PathBuf, process::ExitCode};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -40,15 +42,40 @@ enum Command {
         #[arg(value_name = "SPEC")]
         spec: PathBuf,
     },
+    /// Prints an artifact candidate from a `RuyiPack` manifest.
+    Gen {
+        /// Package to generate.
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// Artifact format to generate.
+        #[arg(long, value_enum, default_value = "spec")]
+        format: ArtifactFormat,
+        /// Manifest to read; defaults to NAME.toml in the current directory.
+        #[arg(long, value_name = "PATH")]
+        manifest: Option<PathBuf>,
+    },
+}
+
+#[derive(Clone, ValueEnum)]
+enum ArtifactFormat {
+    Spec,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let result = match cli.command {
-        Command::Check { spec, format } => check::run(&spec, format),
-        Command::Inspect { spec } => inspect::run(&spec).map(|()| true),
-    };
+    match cli.command {
+        Command::Check { spec, format } => exit_for(check::run(&spec, format)),
+        Command::Inspect { spec } => exit_for(inspect::run(&spec).map(|()| true)),
+        Command::Gen {
+            name,
+            format: ArtifactFormat::Spec,
+            manifest,
+        } => exit_for(generate::run(&name, manifest.as_deref()).map(|()| true)),
+    }
+}
 
+/// Maps a command result to the shared CLI exit contract.
+fn exit_for<E: fmt::Display>(result: Result<bool, E>) -> ExitCode {
     match result {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,

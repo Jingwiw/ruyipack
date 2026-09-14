@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+# Packaging Specification revision: 9862c6a93a0068a30d5b29cad74d14a281ca2e66
+spec-license = "MulanPSL-2.0"
+copyright-holders = [
+  "Institute of Software, Chinese Academy of Sciences (ISCAS)",
+  "openRuyi Project Contributors",
+]
+release = "%autorelease"
+changelog = "%autochangelog"
+no-public-vcs-comment = "# VCS: No VCS link available"
+remote-asset-prefix = "#!RemoteAsset:  sha256:"
+preamble-value-column = 16
