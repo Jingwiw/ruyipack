@@ -39,13 +39,16 @@ pub(super) fn render(recipe: &Manifest, profile: &Profile) -> String {
     write_tag(&mut output, "License:", &recipe.package.license, column);
     write_tag(&mut output, "URL:", &recipe.package.url, column);
     writeln!(output, "{}", profile.no_public_vcs_comment).expect("writing to a String cannot fail");
-    writeln!(
-        output,
-        "{}{}",
-        profile.remote_asset_prefix, recipe.sources["0"].sha256
-    )
-    .expect("writing to a String cannot fail");
-    write_tag(&mut output, "Source0:", &recipe.sources["0"].url, column);
+    for (number, source) in &recipe.sources {
+        writeln!(output, "{}{}", profile.remote_asset_prefix, source.sha256)
+            .expect("writing to a String cannot fail");
+        write_tag(
+            &mut output,
+            &format!("Source{number}:"),
+            &source.url,
+            column,
+        );
+    }
     write_tag(&mut output, "BuildSystem:", &recipe.build.system, column);
     output.push('\n');
 

@@ -11,7 +11,7 @@ use rpm_spec::{
     ast::{ConditionalMacro, MacroKind, TextSegment},
     parser::{Input, ParserState, text::parse_text},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de::Error as _};
 use std::{cell::Cell, collections::BTreeMap};
 use url::{SyntaxViolation, Url};
 
@@ -20,7 +20,8 @@ use url::{SyntaxViolation, Url};
 pub(super) struct Manifest {
     pub(super) spec: SpecMetadata,
     pub(super) package: Package,
-    pub(super) sources: BTreeMap<String, Source>,
+    #[serde(deserialize_with = "read_sources")]
+    pub(super) sources: BTreeMap<u32, Source>,
     pub(super) build: Build,
     pub(super) build_requires: BuildRequires,
 }
@@ -152,24 +153,25 @@ pub(super) fn parse(source: &str) -> Result<Manifest, RenderError> {
             "expected non-empty LF text without lines starting with %",
         ));
     }
-    if manifest.sources.len() != 1 || !manifest.sources.contains_key("0") {
+    if !manifest.sources.contains_key(&0) {
         return Err(invalid(
             "sources",
-            "this renderer requires exactly sources.0",
+            "sources.0 is required for default unpacking",
         ));
     }
-    let source = &manifest.sources["0"];
-    source_url("sources.0.url", &source.url, package)?;
-    if source.sha256.len() != 64
-        || !source
-            .sha256
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return Err(invalid(
-            "sources.0.sha256",
-            "expected 64 lowercase hexadecimal digits",
-        ));
+    for (number, source) in &manifest.sources {
+        source_url(&format!("sources.{number}.url"), &source.url, package)?;
+        if source.sha256.len() != 64
+            || !source
+                .sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(invalid(
+                &format!("sources.{number}.sha256"),
+                "expected 64 lowercase hexadecimal digits",
+            ));
+        }
     }
     for requirement in &manifest.build_requires.rpm {
         single_line("build-requires.rpm", requirement)?;
@@ -205,6 +207,28 @@ pub(super) fn parse(source: &str) -> Result<Manifest, RenderError> {
         }
     }
     Ok(manifest)
+}
+
+/// Reads numeric source keys without silently merging alternate spellings.
+fn read_sources<'de, D>(deserializer: D) -> Result<BTreeMap<u32, Source>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let entries = BTreeMap::<String, Source>::deserialize(deserializer)?;
+    let mut sources = BTreeMap::new();
+    for (key, source) in entries {
+        let number = key.parse::<u32>().map_err(|_| {
+            D::Error::custom(format!(
+                "sources.{key}: expected a non-negative source number"
+            ))
+        })?;
+        if sources.insert(number, source).is_some() {
+            return Err(D::Error::custom(format!(
+                "duplicate source number {number}"
+            )));
+        }
+    }
+    Ok(sources)
 }
 
 fn single_line(field: &str, value: &str) -> Result<(), RenderError> {

@@ -20,3 +20,7 @@ The command validates the authoring fields and prints a SPEC candidate to stdout
 
 Source URLs may reference `%{name}`, `%{version}` and `%{url}`. The preview
 preserves these expressions and URL filename fragments such as `#/name.tar.gz`.
+
+Declare additional remote inputs as `[sources.1]`, `[sources.2]`, and so on, each
+with `url` and `sha256`. Source numbers are preserved and printed in numeric order.
+`sources.0` supplies the archive for the default unpacking step.
