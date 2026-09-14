@@ -56,6 +56,12 @@ pub(crate) fn run(requested_name: &str, manifest_path: Option<&Path>) -> Result<
         });
     }
 
+    let target = manifest_path.with_file_name(format!("{}.spec", rendered.name));
+    rendered.report.print_human(&target);
+    if !rendered.report.is_success() {
+        return Err(GenerateError::CheckFailed);
+    }
+
     io::stdout()
         .lock()
         .write_all(rendered.contents.as_bytes())
@@ -74,4 +80,6 @@ pub(crate) enum GenerateError {
     ManifestNotForPackage { requested: String, path: PathBuf },
     #[error("package name {0:?} is not a valid selector; NAME must be one filename component")]
     InvalidPackageSelector(String),
+    #[error("generated SPEC failed the selected static checks")]
+    CheckFailed,
 }

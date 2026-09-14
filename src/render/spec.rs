@@ -4,9 +4,13 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Complete SPEC text rendering.
+//! Complete SPEC text rendering and structural verification.
 
-use super::{manifest::Manifest, profile::Profile};
+use super::{RenderError, manifest::Manifest, profile::Profile};
+use rpm_spec::{
+    ast::{Section, Span, SpecItem},
+    parse_result::ParseResult,
+};
 use std::fmt::Write as _;
 
 /// Renders a complete SPEC from validated manifest fields and distribution defaults.
@@ -83,4 +87,46 @@ pub(super) fn render(recipe: &Manifest, profile: &Profile) -> String {
 
 fn write_tag(output: &mut String, label: &str, value: &str, column: usize) {
     writeln!(output, "{label:<column$}{value}").expect("writing to a String cannot fail");
+}
+
+/// Rejects parser recovery and unexpected sections before publishing a candidate.
+pub(super) fn verify(parsed: &ParseResult<Span>) -> Result<(), RenderError> {
+    if !parsed.diagnostics.is_empty() {
+        return Err(RenderError::Invalid(format!(
+            "generated SPEC produced parser diagnostics:\n{}",
+            parsed
+                .diagnostics
+                .iter()
+                .map(|d| format!("- {}: {}", d.code.as_deref().unwrap_or("parser"), d.message))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )));
+    }
+    let mut sections = Vec::new();
+    for item in &parsed.spec.items {
+        match item {
+            SpecItem::Preamble(_) | SpecItem::Comment(_) | SpecItem::Blank => {}
+            SpecItem::Section(section) => sections.push(match section.as_ref() {
+                Section::Description { subpkg: None, .. } => "description",
+                Section::Files { subpkg: None, .. } => "files",
+                Section::Changelog { .. } => "changelog",
+                _ => {
+                    return Err(RenderError::Invalid(
+                        "generated SPEC contains an unexpected section".into(),
+                    ));
+                }
+            }),
+            _ => {
+                return Err(RenderError::Invalid(
+                    "generated SPEC contains an unexpected item".into(),
+                ));
+            }
+        }
+    }
+    if sections != ["description", "files", "changelog"] {
+        return Err(RenderError::Invalid(
+            "generated SPEC has unexpected section order".into(),
+        ));
+    }
+    Ok(())
 }

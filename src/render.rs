@@ -4,25 +4,33 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Manifest-to-SPEC rendering.
+//! Manifest-to-SPEC rendering with the shared static checks.
 
 mod manifest;
 mod profile;
 mod spec;
+
+use crate::{check, check_report::CheckReport};
+use rpm_spec::parser::parse_str_with_spans;
 
 /// Renders one manifest without file or terminal I/O.
 pub(crate) fn run(source: &str) -> Result<RenderedSpec, RenderError> {
     let manifest = manifest::parse(source)?;
     let profile = profile::load(&manifest)?;
     let contents = spec::render(&manifest, &profile);
+    let parsed = parse_str_with_spans(&contents);
+    spec::verify(&parsed)?;
+    let report = check::analyze(&contents, parsed);
     Ok(RenderedSpec {
         name: manifest.package.name,
         contents,
+        report,
     })
 }
 pub(crate) struct RenderedSpec {
     pub(crate) name: String,
     pub(crate) contents: String,
+    pub(crate) report: CheckReport,
 }
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum RenderError {

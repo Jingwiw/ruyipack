@@ -9,7 +9,11 @@
 use std::path::Path;
 
 use clap::ValueEnum;
-use rpm_spec::{parse_result::Severity as ParserSeverity, parser::parse_str_with_spans};
+use rpm_spec::{
+    ast::Span,
+    parse_result::{ParseResult, Severity as ParserSeverity},
+    parser::parse_str_with_spans,
+};
 use rpm_spec_analyzer::{
     config::Config, diagnostic::Severity, registry::builtin_lint_metadata, session::LintSession,
 };
@@ -29,7 +33,7 @@ pub(crate) enum CheckFormat {
 /// Checks whether one SPEC declares the required main-package tags.
 pub(crate) fn run(path: &Path, format: CheckFormat) -> Result<bool, utf8_file::Utf8FileError> {
     let source = utf8_file::read(path)?;
-    let report = analyze(&source);
+    let report = analyze(&source, parse_str_with_spans(&source));
 
     match format {
         CheckFormat::Human => report.print_human(path),
@@ -39,8 +43,7 @@ pub(crate) fn run(path: &Path, format: CheckFormat) -> Result<bool, utf8_file::U
 }
 
 /// Runs the selected static checks without file or terminal I/O.
-fn analyze(source: &str) -> CheckReport {
-    let parsed = parse_str_with_spans(source);
+pub(crate) fn analyze(source: &str, parsed: ParseResult<Span>) -> CheckReport {
     let (config, selected_rules) = required_tag_policy();
 
     if parsed
