@@ -16,4 +16,7 @@ Preview a SPEC from an Autotools manifest:
 cargo run -- gen ed --manifest examples/ed/ed.toml
 ```
 
-The command reads the authoring fields and prints a SPEC candidate to stdout.
+The command validates the authoring fields and prints a SPEC candidate to stdout.
+
+Source URLs may reference `%{name}`, `%{version}` and `%{url}`. The preview
+preserves these expressions and URL filename fragments such as `#/name.tar.gz`.

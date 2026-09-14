@@ -9,7 +9,7 @@
 use super::{manifest::Manifest, profile::Profile};
 use std::fmt::Write as _;
 
-/// Renders a complete SPEC from authoring fields and distribution defaults.
+/// Renders a complete SPEC from validated manifest fields and distribution defaults.
 pub(super) fn render(recipe: &Manifest, profile: &Profile) -> String {
     let mut output = String::new();
     let header = &recipe.spec;
