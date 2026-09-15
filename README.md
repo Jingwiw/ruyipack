@@ -53,7 +53,8 @@ a conflict without a usable terminal, returns an error without writing.
 
 Menu copies use `ed.spec.new`, then `ed.spec.new.1`, and so on, without replacing
 existing files. The selected copy path is printed to stderr. Prompts and messages
-stay on stderr; candidate text and diffs go to stdout.
+stay on stderr; candidate text and diffs go to stdout. Output failures return
+status 1. A file remains written if reporting its path subsequently fails.
 
 Source URLs may reference `%{name}`, `%{version}` and `%{url}`. The SPEC
 preserves these expressions and URL filename fragments such as `#/name.tar.gz`.

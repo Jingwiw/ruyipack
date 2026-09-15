@@ -6,11 +6,13 @@
 
 //! Read-only inspection of main-package tags in an RPM SPEC file.
 
-use std::path::Path;
+use std::{
+    io::{self, Write},
+    path::Path,
+};
 
 use rpm_spec::{
     ast::{Span, SpecFile, SpecItem},
-    parse_result::ParseResult,
     parser::parse_str_with_spans,
     printer::{self, PrinterConfig},
 };
@@ -18,23 +20,21 @@ use rpm_spec::{
 use crate::{parser_diagnostic, utf8_file};
 
 /// Reads one SPEC and prints its parser diagnostics and main-package tag view.
-pub(crate) fn run(path: &Path) -> Result<(), utf8_file::Utf8FileError> {
+pub(crate) fn run(path: &Path) -> Result<(), InspectError> {
     let source = utf8_file::read(path)?;
-    report(parse_str_with_spans(&source));
-    Ok(())
-}
-
-/// Prints parser diagnostics and the normalized main-package tag view.
-fn report(parsed: ParseResult<Span>) {
+    let parsed = parse_str_with_spans(&source);
     let view = main_package_tag_view(parsed.spec);
-    parser_diagnostic::print(&parsed.diagnostics);
+    parser_diagnostic::write(&parsed.diagnostics, &mut io::stderr().lock())
+        .map_err(InspectError::Stderr)?;
     let config = PrinterConfig::default().with_preamble_value_column(None);
-    let output = printer::print_with(&view, &config);
-    if output.is_empty() {
-        println!("No main-package tags found.");
+    let contents = printer::print_with(&view, &config);
+    let mut output = io::stdout().lock();
+    if contents.is_empty() {
+        writeln!(output, "No main-package tags found.")
     } else {
-        print!("{output}");
+        output.write_all(contents.as_bytes())
     }
+    .map_err(InspectError::Stdout)
 }
 
 /// Keeps every main-package tag and the conditional structure around it.
@@ -68,4 +68,14 @@ fn retain_tag_item(item: SpecItem<Span>) -> Option<SpecItem<Span>> {
         }
         _ => None,
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum InspectError {
+    #[error("{0}")]
+    Input(#[from] utf8_file::Utf8FileError),
+    #[error("failed to write output to stdout: {0}")]
+    Stdout(#[source] io::Error),
+    #[error("failed to write diagnostics to stderr: {0}")]
+    Stderr(#[source] io::Error),
 }

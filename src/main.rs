@@ -15,7 +15,12 @@ mod parser_diagnostic;
 mod render;
 mod utf8_file;
 
-use std::{fmt, path::PathBuf, process::ExitCode};
+use std::{
+    fmt,
+    io::{self, Write},
+    path::PathBuf,
+    process::ExitCode,
+};
 
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -84,7 +89,8 @@ fn exit_for<E: fmt::Display>(result: Result<bool, E>) -> ExitCode {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(error) => {
-            eprintln!("error: {error}");
+            // The command still fails when stderr is unavailable.
+            let _ = writeln!(io::stderr().lock(), "error: {error}");
             ExitCode::FAILURE
         }
     }

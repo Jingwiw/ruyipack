@@ -6,10 +6,12 @@
 
 //! Human-readable RPM parser diagnostic output.
 
+use std::io::{self, Write};
+
 use rpm_spec::parse_result::{Diagnostic as ParserDiagnostic, Severity as ParserSeverity};
 
-/// Prints every recoverable issue reported by the parser.
-pub(crate) fn print(diagnostics: &[ParserDiagnostic]) {
+/// Writes every recoverable issue reported by the parser.
+pub(crate) fn write(diagnostics: &[ParserDiagnostic], writer: &mut impl Write) -> io::Result<()> {
     for diagnostic in diagnostics {
         let severity = match diagnostic.severity {
             ParserSeverity::Warning => "warning",
@@ -24,9 +26,10 @@ pub(crate) fn print(diagnostics: &[ParserDiagnostic]) {
             format!(" at {}:{}", span.start_line, span.start_column)
         });
 
-        eprintln!("{severity}{code}{location}: {}", diagnostic.message);
+        writeln!(writer, "{severity}{code}{location}: {}", diagnostic.message)?;
         for note in &diagnostic.notes {
-            eprintln!("  note: {note}");
+            writeln!(writer, "  note: {note}")?;
         }
     }
+    Ok(())
 }

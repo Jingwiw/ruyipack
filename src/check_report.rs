@@ -6,7 +6,10 @@
 
 //! Human and machine reports for one static SPEC check.
 
-use std::path::Path;
+use std::{
+    io::{self, Write},
+    path::Path,
+};
 
 use rpm_spec::{
     ast::Span,
@@ -97,8 +100,8 @@ impl CheckReport {
     }
 
     /// Writes the existing terminal-oriented output.
-    pub(crate) fn print_human(&self, path: &Path) {
-        parser_diagnostic::print(&self.parser_diagnostics);
+    pub(crate) fn write_human(&self, path: &Path, writer: &mut impl Write) -> io::Result<()> {
+        parser_diagnostic::write(&self.parser_diagnostics, writer)?;
         for finding in &self.findings {
             let severity = match finding.severity {
                 Severity::Deny => "error",
@@ -106,22 +109,27 @@ impl CheckReport {
                 Severity::Allow => "diagnostic",
             };
             let span = finding.primary_span;
-            eprintln!(
+            writeln!(
+                writer,
                 "{}:{}:{}: {severity}[{}]: {}",
                 path.display(),
                 span.start_line,
                 span.start_column,
                 finding.lint_id,
                 finding.message
-            );
+            )?;
         }
         if matches!(self.status, CheckStatus::Incomplete) {
-            eprintln!("error: check incomplete because the SPEC parser reported an error");
+            writeln!(
+                writer,
+                "error: check incomplete because the SPEC parser reported an error"
+            )?;
         }
+        Ok(())
     }
 
     /// Writes one deterministic JSON object.
-    pub(crate) fn print_json(&self, path: &Path) {
+    pub(crate) fn write_json(&self, path: &Path, writer: &mut impl Write) -> io::Result<()> {
         let path = path.to_string_lossy();
         let report = MachineReport {
             format_version: FORMAT_VERSION,
@@ -166,7 +174,7 @@ impl CheckReport {
         };
         let json = serde_json::to_string(&report)
             .expect("the machine check report contains only JSON-compatible values");
-        println!("{json}");
+        writeln!(writer, "{json}")
     }
 }
 

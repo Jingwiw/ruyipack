@@ -102,7 +102,8 @@ pub(crate) fn run(path: &Path, contents: &str, options: &OutputOptions) -> Resul
                     ConflictAction::Diff => show_diff(path, Some(&existing), contents),
                     ConflictAction::Copy => write_copy(path, contents.as_bytes()),
                     ConflictAction::Skip => {
-                        eprintln!("Kept {}", path.display());
+                        writeln!(io::stderr().lock(), "Kept {}", path.display())
+                            .map_err(OutputError::Stderr)?;
                         Ok(())
                     }
                 };
@@ -145,7 +146,12 @@ fn select_action(path: &Path) -> Result<ConflictAction, OutputError> {
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return Err(OutputError::Conflict(path.to_path_buf()));
     }
-    eprintln!("warning: {}", OutputError::Conflict(path.to_path_buf()));
+    writeln!(
+        io::stderr().lock(),
+        "warning: {}",
+        OutputError::Conflict(path.to_path_buf())
+    )
+    .map_err(OutputError::Stderr)?;
     let choices = [
         (ConflictAction::Skip, "Keep the current file"),
         (ConflictAction::Diff, "Show the diff"),
@@ -200,7 +206,8 @@ fn write_copy(path: &Path, contents: &[u8]) -> Result<(), OutputError> {
         let copy = PathBuf::from(name);
         match publish(&copy, contents, false) {
             Ok(()) => {
-                eprintln!("Wrote {}", copy.display());
+                writeln!(io::stderr().lock(), "Wrote {}", copy.display())
+                    .map_err(OutputError::Stderr)?;
                 return Ok(());
             }
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => number += 1,
@@ -242,6 +249,8 @@ pub(crate) enum OutputError {
     Write { path: PathBuf, source: io::Error },
     #[error("failed to write output to stdout: {0}")]
     Stdout(#[source] io::Error),
+    #[error("failed to write diagnostics to stderr: {0}")]
+    Stderr(#[source] io::Error),
     #[error("{} already exists with different content\nhelp: --force              overwrite the file\n      --diff               show the differences\n      --output FILE        write to another file\n      --skip-existing      keep the current file\n      --stdout             preview the complete candidate", .0.display())]
     Conflict(PathBuf),
     #[error("no action selected; kept {}", .0.display())]
