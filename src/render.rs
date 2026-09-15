@@ -9,6 +9,7 @@
 mod manifest;
 mod profile;
 mod spec;
+mod verify;
 
 use crate::{check, check_report::CheckReport};
 use rpm_spec::parser::parse_str_with_spans;
@@ -19,7 +20,7 @@ pub(crate) fn run(source: &str) -> Result<RenderedSpec, RenderError> {
     let profile = profile::load(&manifest)?;
     let contents = spec::render(&manifest, &profile);
     let parsed = parse_str_with_spans(&contents);
-    spec::verify(&parsed)?;
+    verify::run(&parsed, &manifest, &profile)?;
     let report = check::analyze(&contents, parsed);
     Ok(RenderedSpec {
         name: manifest.package.name,

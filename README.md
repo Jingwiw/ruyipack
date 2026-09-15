@@ -16,8 +16,9 @@ Generate a SPEC from an Autotools manifest:
 cargo run -- gen ed --manifest examples/ed/ed.toml
 ```
 
-The command validates the authoring fields, parses the generated SPEC, and runs the
-selected static checks before writing it.
+The command validates the authoring fields, parses the generated SPEC, compares its
+facts with the manifest and distribution defaults, and runs the selected static
+checks before writing it. Macro expressions are compared without evaluating them.
 
 `gen NAME` reads `./NAME.toml` by default; `--manifest` selects another input file.
 The SPEC is written beside the manifest unless `-o, --output FILE` selects another
