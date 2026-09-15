@@ -44,9 +44,15 @@ created normally. Both options can accompany `--output`, but cannot be combined
 with each other or with preview options. `--stdout` cannot accompany `--diff` or
 `--output`. All modes validate the manifest and generated SPEC.
 
-When content differs and no action is specified, the command reports the
-conflicting file and available options, then exits without writing. Messages stay
-on stderr; candidate text and diffs go to stdout.
+When content differs and no action is specified, the command shows the conflicting
+file and available options. If stdin and stderr are terminals, a menu offers to
+keep the file, show a diff, write a copy, or overwrite it. Keeping the file is
+highlighted initially and still requires confirmation. Cancelling, or encountering
+a conflict without a usable terminal, returns an error without writing.
+
+Menu copies use `ed.spec.new`, then `ed.spec.new.1`, and so on, without replacing
+existing files. The selected copy path is printed to stderr. Prompts and messages
+stay on stderr; candidate text and diffs go to stdout.
 
 Source URLs may reference `%{name}`, `%{version}` and `%{url}`. The SPEC
 preserves these expressions and URL filename fragments such as `#/name.tar.gz`.

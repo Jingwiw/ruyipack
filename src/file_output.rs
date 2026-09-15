@@ -4,11 +4,11 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Read-only previews, destinations, and file publication.
+//! File publication, conflict actions, and terminal selection.
 
 use std::{
     fs,
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
 };
 
@@ -41,6 +41,8 @@ pub(crate) struct OutputOptions {
 #[derive(Clone, Copy)]
 enum ConflictAction {
     Overwrite,
+    Diff,
+    Copy,
     Skip,
 }
 
@@ -76,11 +78,18 @@ pub(crate) fn run(path: &Path, contents: &str, options: &OutputOptions) -> Resul
     loop {
         match fs::read(path) {
             Ok(existing) if existing == contents.as_bytes() => return Ok(()),
-            Ok(_) => {
+            Ok(existing) => {
                 let selected = match action {
                     Some(action) => action,
-                    None => return Err(OutputError::Conflict(path.to_path_buf())),
+                    None => select_action(path)?,
                 };
+                // Confirmation and diffs refer to the contents seen before opening the menu.
+                if action.is_none()
+                    && matches!(selected, ConflictAction::Overwrite | ConflictAction::Diff)
+                    && read_target(path)? != existing
+                {
+                    return Err(OutputError::Changed(path.to_path_buf()));
+                }
                 return match selected {
                     ConflictAction::Overwrite => {
                         publish(path, contents.as_bytes(), true).map_err(|source| {
@@ -90,6 +99,8 @@ pub(crate) fn run(path: &Path, contents: &str, options: &OutputOptions) -> Resul
                             }
                         })
                     }
+                    ConflictAction::Diff => show_diff(path, Some(&existing), contents),
+                    ConflictAction::Copy => write_copy(path, contents.as_bytes()),
                     ConflictAction::Skip => {
                         eprintln!("Kept {}", path.display());
                         Ok(())
@@ -129,6 +140,30 @@ fn read_target(path: &Path) -> Result<Vec<u8>, OutputError> {
     })
 }
 
+/// Keeps prompts off redirected input and machine-readable stdout.
+fn select_action(path: &Path) -> Result<ConflictAction, OutputError> {
+    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+        return Err(OutputError::Conflict(path.to_path_buf()));
+    }
+    eprintln!("warning: {}", OutputError::Conflict(path.to_path_buf()));
+    let choices = [
+        (ConflictAction::Skip, "Keep the current file"),
+        (ConflictAction::Diff, "Show the diff"),
+        (ConflictAction::Copy, "Write a copy"),
+        (ConflictAction::Overwrite, "Overwrite the current file"),
+    ];
+    let selected = dialoguer::Select::new()
+        .with_prompt("Choose an action")
+        .items(choices.iter().map(|(_, label)| label))
+        .default(0)
+        .report(false)
+        .interact_opt()
+        .map_err(OutputError::Prompt)?;
+    selected
+        .map(|index| choices[index].0)
+        .ok_or_else(|| OutputError::Cancelled(path.to_path_buf()))
+}
+
 fn show_diff(path: &Path, existing: Option<&[u8]>, contents: &str) -> Result<(), OutputError> {
     let name = path
         .to_str()
@@ -151,6 +186,27 @@ fn show_diff(path: &Path, existing: Option<&[u8]>, contents: &str) -> Result<(),
         .header(&from, &format!("{name}\t"))
         .to_writer(io::stdout().lock())
         .map_err(OutputError::Stdout)
+}
+
+/// Creates a candidate sidecar without adding another active file extension.
+fn write_copy(path: &Path, contents: &[u8]) -> Result<(), OutputError> {
+    let mut number = 0_u64;
+    loop {
+        let mut name = path.as_os_str().to_owned();
+        name.push(".new");
+        if number != 0 {
+            name.push(format!(".{number}"));
+        }
+        let copy = PathBuf::from(name);
+        match publish(&copy, contents, false) {
+            Ok(()) => {
+                eprintln!("Wrote {}", copy.display());
+                return Ok(());
+            }
+            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => number += 1,
+            Err(source) => return Err(OutputError::Write { path: copy, source }),
+        }
+    }
 }
 
 /// Publishes staged bytes with explicit overwrite permission.
@@ -188,6 +244,12 @@ pub(crate) enum OutputError {
     Stdout(#[source] io::Error),
     #[error("{} already exists with different content\nhelp: --force              overwrite the file\n      --diff               show the differences\n      --output FILE        write to another file\n      --skip-existing      keep the current file\n      --stdout             preview the complete candidate", .0.display())]
     Conflict(PathBuf),
+    #[error("no action selected; kept {}", .0.display())]
+    Cancelled(PathBuf),
+    #[error("{} changed while awaiting confirmation; run the command again", .0.display())]
+    Changed(PathBuf),
+    #[error("failed to read the conflict selection: {0}")]
+    Prompt(#[source] dialoguer::Error),
     #[error("cannot represent {} in a unified diff header; use a UTF-8 path without tabs or line breaks", .0.display())]
     DiffPath(PathBuf),
     #[error("cannot show a text diff for {}: {source}", .path.display())]
