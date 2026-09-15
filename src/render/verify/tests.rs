@@ -90,7 +90,9 @@ fn rejects_changed_facts_even_when_the_spec_still_parses() {
             parsed.diagnostics.is_empty(),
             "not a clean parser result: {before}"
         );
-        let error = run(&parsed, &recipe, &profile).unwrap_err().to_string();
+        let error = run(&changed, &parsed, &recipe, &profile)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains(field), "{before}: {error}");
     }
 }
@@ -114,7 +116,7 @@ fn rejects_missing_duplicate_and_unexpected_units() {
     ] {
         let parsed = parse_str_with_spans(&changed);
         assert!(parsed.diagnostics.is_empty());
-        assert!(run(&parsed, &recipe, &profile).is_err());
+        assert!(run(&changed, &parsed, &recipe, &profile).is_err());
     }
 }
 
@@ -144,7 +146,7 @@ fn keeps_each_checksum_bound_to_its_source() {
     let parsed = parse_str_with_spans(&changed);
     assert!(parsed.diagnostics.is_empty());
     assert!(
-        run(&parsed, &recipe, &profile)
+        run(&changed, &parsed, &recipe, &profile)
             .unwrap_err()
             .to_string()
             .contains("sources.2.sha256")
@@ -165,7 +167,34 @@ fn ignores_layout_but_preserves_prose_and_macro_structure() {
     let changed = original
         .replace("Name:           ", "Name:\t")
         .replace("%files\n", "%files\n\n");
-    assert!(run(&parse_str_with_spans(&changed), &recipe, &profile).is_ok());
+    assert!(run(&changed, &parse_str_with_spans(&changed), &recipe, &profile).is_ok());
     let changed = original.replace("  Indented text  ", "Indented text");
-    assert!(run(&parse_str_with_spans(&changed), &recipe, &profile).is_err());
+    assert!(run(&changed, &parse_str_with_spans(&changed), &recipe, &profile).is_err());
+}
+
+#[test]
+fn preserves_remote_asset_marker_bytes() {
+    let recipe = manifest::parse(MANIFEST).unwrap();
+    let profile = profile::load(&recipe).unwrap();
+    let original = spec::render(&recipe, &profile);
+    assert!(
+        run(
+            &original,
+            &parse_str_with_spans(&original),
+            &recipe,
+            &profile
+        )
+        .is_ok()
+    );
+
+    let changed = original.replacen("#!RemoteAsset:", "# !RemoteAsset:", 1);
+    assert_ne!(changed, original);
+    let parsed = parse_str_with_spans(&changed);
+    assert!(parsed.diagnostics.is_empty());
+    assert!(
+        run(&changed, &parsed, &recipe, &profile)
+            .unwrap_err()
+            .to_string()
+            .contains("sources.0.sha256")
+    );
 }

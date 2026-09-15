@@ -20,7 +20,7 @@ pub(crate) fn run(source: &str) -> Result<RenderedSpec, RenderError> {
     let profile = profile::load(&manifest)?;
     let contents = spec::render(&manifest, &profile);
     let parsed = parse_str_with_spans(&contents);
-    verify::run(&parsed, &manifest, &profile)?;
+    verify::run(&contents, &parsed, &manifest, &profile)?;
     let report = check::analyze(&contents, parsed);
     Ok(RenderedSpec {
         name: manifest.package.name,

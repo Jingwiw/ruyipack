@@ -16,8 +16,9 @@ use rpm_spec::{
     parser::{Input, ParserState, deps::parse_dep_expr, text::parse_text},
 };
 
-/// Borrows the same parsed candidate later consumed by the shared static checks.
+/// Borrows the source and parsed candidate later consumed by the shared static checks.
 pub(super) fn run(
+    source: &str,
     parsed: &ParseResult<Span>,
     recipe: &Manifest,
     profile: &Profile,
@@ -76,14 +77,17 @@ pub(super) fn run(
                 check(item.value == expected, &field)?;
                 if let Tag::Source(Some(number)) = item.tag {
                     let expected = format!(
-                        "{}{}",
+                        "{}{}\n",
                         profile.remote_asset_prefix, recipe.sources[&number].sha256
                     );
                     // A correct digest on a different Source line is still the wrong source identity.
                     let previous = index.checked_sub(1).and_then(|i| parsed.spec.items.get(i));
+                    // The hook reads exact marker bytes; the AST removes optional comment whitespace.
                     check(
                         matches!(previous, Some(SpecItem::Comment(comment))
-                        if comment.style == CommentStyle::Hash && comment.text == hash_comment(&expected)?),
+                        if comment.style == CommentStyle::Hash
+                            && source.get(comment.data.start_byte..comment.data.end_byte)
+                                == Some(expected.as_str())),
                         &format!("sources.{number}.sha256"),
                     )?;
                 }
