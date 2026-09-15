@@ -228,3 +228,6 @@ fn mismatch(field: &str) -> RenderError {
         "generated SPEC does not match manifest/profile: {field}"
     ))
 }
+
+#[cfg(test)]
+mod tests;
