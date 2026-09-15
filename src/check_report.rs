@@ -11,10 +11,7 @@ use std::{
     path::Path,
 };
 
-use rpm_spec::{
-    ast::Span,
-    parse_result::{Diagnostic as ParserDiagnostic, Severity as ParserSeverity},
-};
+use rpm_spec::{ast::Span, parse_result::Diagnostic as ParserDiagnostic};
 use rpm_spec_analyzer::diagnostic::{Diagnostic, Severity};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -168,7 +165,7 @@ impl CheckReport {
             parser_diagnostics: self
                 .parser_diagnostics
                 .iter()
-                .map(ParserDiagnosticRecord::from)
+                .map(parser_diagnostic::Record::from)
                 .collect(),
             findings: self.findings.iter().map(Finding::from).collect(),
         };
@@ -204,7 +201,7 @@ struct MachineReport<'a> {
     format_version: u32,
     input: InputIdentity<'a>,
     evidence: Evidence<'a>,
-    parser_diagnostics: Vec<ParserDiagnosticRecord<'a>>,
+    parser_diagnostics: Vec<parser_diagnostic::Record<'a>>,
     findings: Vec<Finding<'a>>,
 }
 
@@ -255,33 +252,12 @@ impl<'a> From<&'a SelectedRule> for SelectedRuleRecord<'a> {
 }
 
 #[derive(Serialize)]
-struct ParserDiagnosticRecord<'a> {
-    severity: &'static str,
-    code: Option<&'a str>,
-    span: Option<SourceSpan>,
-    message: &'a str,
-    notes: &'a [String],
-}
-
-impl<'a> From<&'a ParserDiagnostic> for ParserDiagnosticRecord<'a> {
-    fn from(diagnostic: &'a ParserDiagnostic) -> Self {
-        Self {
-            severity: parser_severity(diagnostic.severity),
-            code: diagnostic.code.as_deref(),
-            span: diagnostic.span.map(SourceSpan::from),
-            message: &diagnostic.message,
-            notes: &diagnostic.notes,
-        }
-    }
-}
-
-#[derive(Serialize)]
 struct Finding<'a> {
     producer: &'static str,
     code: &'a str,
     severity: &'static str,
     message: &'a str,
-    span: SourceSpan,
+    span: Span,
 }
 
 impl<'a> From<&'a Diagnostic> for Finding<'a> {
@@ -291,30 +267,7 @@ impl<'a> From<&'a Diagnostic> for Finding<'a> {
             code: diagnostic.lint_id,
             severity: analyzer_severity(diagnostic.severity),
             message: &diagnostic.message,
-            span: SourceSpan::from(diagnostic.primary_span),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct SourceSpan {
-    start_byte: usize,
-    end_byte: usize,
-    start_line: u32,
-    start_column: u32,
-    end_line: u32,
-    end_column: u32,
-}
-
-impl From<Span> for SourceSpan {
-    fn from(span: Span) -> Self {
-        Self {
-            start_byte: span.start_byte,
-            end_byte: span.end_byte,
-            start_line: span.start_line,
-            start_column: span.start_column,
-            end_line: span.end_line,
-            end_column: span.end_column,
+            span: diagnostic.primary_span,
         }
     }
 }
@@ -324,13 +277,5 @@ fn analyzer_severity(severity: Severity) -> &'static str {
         Severity::Allow => "allow",
         Severity::Warn => "warn",
         Severity::Deny => "deny",
-    }
-}
-
-fn parser_severity(severity: ParserSeverity) -> &'static str {
-    match severity {
-        ParserSeverity::Warning => "warning",
-        ParserSeverity::Error => "error",
-        _ => "unknown",
     }
 }

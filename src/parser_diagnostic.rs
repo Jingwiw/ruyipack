@@ -4,11 +4,15 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Human-readable RPM parser diagnostic output.
+//! Human-readable and machine-readable RPM parser diagnostics.
 
 use std::io::{self, Write};
 
-use rpm_spec::parse_result::{Diagnostic as ParserDiagnostic, Severity as ParserSeverity};
+use rpm_spec::{
+    ast::Span,
+    parse_result::{Diagnostic as ParserDiagnostic, Severity as ParserSeverity},
+};
+use serde::Serialize;
 
 /// Writes every recoverable issue reported by the parser.
 pub(crate) fn write(diagnostics: &[ParserDiagnostic], writer: &mut impl Write) -> io::Result<()> {
@@ -32,4 +36,34 @@ pub(crate) fn write(diagnostics: &[ParserDiagnostic], writer: &mut impl Write) -
         }
     }
     Ok(())
+}
+
+/// Borrowed parser diagnostic with lowercase severity names.
+#[derive(Serialize)]
+pub(crate) struct Record<'a> {
+    severity: &'static str,
+    code: Option<&'a str>,
+    span: Option<Span>,
+    message: &'a str,
+    notes: &'a [String],
+}
+
+impl<'a> From<&'a ParserDiagnostic> for Record<'a> {
+    fn from(diagnostic: &'a ParserDiagnostic) -> Self {
+        Self {
+            severity: parser_severity(diagnostic.severity),
+            code: diagnostic.code.as_deref(),
+            span: diagnostic.span,
+            message: &diagnostic.message,
+            notes: &diagnostic.notes,
+        }
+    }
+}
+
+fn parser_severity(severity: ParserSeverity) -> &'static str {
+    match severity {
+        ParserSeverity::Warning => "warning",
+        ParserSeverity::Error => "error",
+        _ => "unknown",
+    }
 }

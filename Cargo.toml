@@ -37,7 +37,7 @@ version = "=0.4.1"
 git = "https://github.com/openRuyi-Project/rpm-spec"
 rev = "2d5139521c8bef5cf61cb9692d75fd0b5282ffd9"
 default-features = false
-features = ["parser", "printer"]
+features = ["parser", "printer", "serde"]
 
 [build-dependencies]
 toml = { version = "1.1.6", default-features = false, features = ["std", "serde", "parse"] }
