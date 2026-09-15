@@ -284,3 +284,32 @@ fn malformed_generated_text_cannot_be_published_even_with_force() {
         assert_eq!(fs::read_to_string(path).unwrap(), "# maintained by hand\n");
     }
 }
+
+#[test]
+fn generation_errors_identify_the_selected_manifest_without_writing() {
+    for (source, message) in [
+        ("[package".to_owned(), "TOML parse error"),
+        (
+            MANIFEST.replace("A line-oriented text editor", ""),
+            "package.summary",
+        ),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let manifest = "ed input-编辑器.toml";
+        let path = directory.path().join(manifest);
+        fs::write(&path, &source).unwrap();
+
+        let output = run(directory.path(), &["gen", "ed", "--manifest", manifest]);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains(&format!("failed to generate SPEC from {manifest}:")),
+            "{error}"
+        );
+        assert!(error.contains(message), "{error}");
+        assert_eq!(fs::read_to_string(path).unwrap(), source);
+        assert!(!directory.path().join("ed.spec").exists());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+}

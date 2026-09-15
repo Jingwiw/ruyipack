@@ -52,7 +52,10 @@ pub(crate) fn run(
         }
         Err(source) => return Err(GenerateError::Input(source)),
     };
-    let rendered = render::run(&manifest_source).map_err(GenerateError::Render)?;
+    let rendered = render::run(&manifest_source).map_err(|source| GenerateError::Render {
+        path: manifest_path.to_path_buf(),
+        source,
+    })?;
     if requested_name != rendered.name {
         return Err(GenerateError::ManifestNotForPackage {
             requested: requested_name.to_owned(),
@@ -110,8 +113,12 @@ fn reject_input_alias(manifest_path: &Path, target: &Path) -> Result<(), Generat
 pub(crate) enum GenerateError {
     #[error("{0}")]
     Input(#[source] utf8_file::Utf8FileError),
-    #[error("{0}")]
-    Render(#[source] render::RenderError),
+    #[error("failed to generate SPEC from {}: {source}", .path.display())]
+    Render {
+        path: PathBuf,
+        #[source]
+        source: render::RenderError,
+    },
     #[error("{0}")]
     Output(#[source] file_output::OutputError),
     #[error("failed to read {}: {source}", .path.display())]
