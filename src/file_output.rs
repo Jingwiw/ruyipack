@@ -12,6 +12,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use clap::Args;
 
 #[derive(Args)]
@@ -218,20 +221,31 @@ fn write_copy(path: &Path, contents: &[u8]) -> Result<(), OutputError> {
 
 /// Publishes staged bytes with explicit overwrite permission.
 fn publish(path: &Path, contents: &[u8], replace: bool) -> io::Result<()> {
+    let permissions = if replace {
+        let permissions = fs::metadata(path)?.permissions();
+        // Preserve access permissions without transferring special mode bits to new content.
+        #[cfg(unix)]
+        let permissions = fs::Permissions::from_mode(permissions.mode() & 0o777);
+        Some(permissions)
+    } else {
+        None
+    };
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let mut builder = tempfile::Builder::new();
     builder.prefix(".ruyipack.");
-    // Match ordinary file creation permissions, subject to the caller's umask.
+    // Replacement staging stays private until the complete content is ready.
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
+    if !replace {
         builder.permissions(fs::Permissions::from_mode(0o666));
     }
     let mut file = builder.tempfile_in(parent)?;
     file.write_all(contents)?;
+    if let Some(permissions) = permissions {
+        file.as_file().set_permissions(permissions)?;
+    }
     file.as_file().sync_all()?;
     let result = if replace {
         file.persist(path)

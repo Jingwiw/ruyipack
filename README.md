@@ -25,6 +25,11 @@ The SPEC is written beside the manifest unless `-o, --output FILE` selects anoth
 path. Relative output paths are resolved from the current directory. The parent
 directory must already exist. Identical content is left unchanged.
 
+On Unix, replacements preserve the target's read/write/execute permission bits
+(`0777`) and clear set-user-ID, set-group-ID, and sticky bits. New files use normal
+creation permissions subject to the caller's umask. Ownership, ACLs, and extended
+attributes are not copied from the replaced file.
+
 ```sh
 ruyipack gen ed --stdout
 ruyipack gen ed --diff

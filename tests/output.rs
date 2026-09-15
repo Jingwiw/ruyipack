@@ -266,3 +266,58 @@ fn disconnected_standard_streams_return_errors_without_panicking() {
         "hand edited\n"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn publication_preserves_access_modes_and_uses_umask_for_new_files() {
+    use std::os::unix::fs::PermissionsExt;
+
+    fn mode(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    let directory = workspace();
+    let target = directory.path().join("ed.spec");
+    let control = directory.path().join("creation-control");
+    fs::write(&control, "same inherited umask\n").unwrap();
+    let created = gen_command(directory.path()).output().unwrap();
+    assert!(created.status.success(), "{created:?}");
+    assert_eq!(mode(&target), mode(&control));
+    let expected = fs::read(&target).unwrap();
+
+    for original_mode in [0o600, 0o640, 0o1640] {
+        fs::write(&target, "hand edited\n").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(original_mode)).unwrap();
+        assert_eq!(mode(&target), original_mode);
+        let replaced = gen_command(directory.path())
+            .arg("--force")
+            .output()
+            .unwrap();
+        assert!(replaced.status.success(), "{replaced:?}");
+        assert_eq!(mode(&target), original_mode & 0o777);
+        assert_eq!(fs::read(&target).unwrap(), expected);
+    }
+
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+    let unchanged = gen_command(directory.path())
+        .arg("--force")
+        .output()
+        .unwrap();
+    assert!(unchanged.status.success(), "{unchanged:?}");
+    assert_eq!(mode(&target), 0o640);
+    assert_eq!(fs::read(&target).unwrap(), expected);
+
+    fs::write(&target, "hand edited\n").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+    let skipped = gen_command(directory.path())
+        .arg("--skip-existing")
+        .output()
+        .unwrap();
+    assert!(skipped.status.success(), "{skipped:?}");
+    assert_eq!(mode(&target), 0o600);
+    assert_eq!(fs::read_to_string(&target).unwrap(), "hand edited\n");
+    assert_eq!(
+        fs::read_to_string(directory.path().join("ed.toml")).unwrap(),
+        MANIFEST
+    );
+}
