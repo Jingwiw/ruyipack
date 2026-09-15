@@ -42,7 +42,7 @@ enum Command {
         #[arg(value_name = "SPEC")]
         spec: PathBuf,
     },
-    /// Prints an artifact candidate from a `RuyiPack` manifest.
+    /// Generates an artifact from a `RuyiPack` manifest.
     Gen {
         /// Package to generate.
         #[arg(value_name = "NAME")]
@@ -53,6 +53,12 @@ enum Command {
         /// Manifest to read; defaults to NAME.toml in the current directory.
         #[arg(long, value_name = "PATH")]
         manifest: Option<PathBuf>,
+        /// Replaces an existing target SPEC with different content.
+        #[arg(long, conflicts_with = "stdout")]
+        force: bool,
+        /// Prints the candidate without writing it.
+        #[arg(long)]
+        stdout: bool,
     },
 }
 
@@ -70,7 +76,9 @@ fn main() -> ExitCode {
             name,
             format: ArtifactFormat::Spec,
             manifest,
-        } => exit_for(generate::run(&name, manifest.as_deref()).map(|()| true)),
+            force,
+            stdout,
+        } => exit_for(generate::run(&name, manifest.as_deref(), force, stdout).map(|()| true)),
     }
 }
 

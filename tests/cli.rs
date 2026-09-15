@@ -715,7 +715,7 @@ Usage: ruyipack <COMMAND>
 Commands:
   check    Checks required main-package tag presence in an RPM SPEC file
   inspect  Prints the normalized main-package tags from an RPM SPEC file
-  gen      Prints an artifact candidate from a `RuyiPack` manifest
+  gen      Generates an artifact from a `RuyiPack` manifest
   help     Print this message or the help of the given subcommand(s)
 
 Options:

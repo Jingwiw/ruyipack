@@ -10,16 +10,20 @@ SPDX-License-Identifier: MulanPSL-2.0
 
 RuyiPack is a project for openRuyi RPM package workflows.
 
-Preview a SPEC from an Autotools manifest:
+Generate a SPEC from an Autotools manifest:
 
 ```sh
 cargo run -- gen ed --manifest examples/ed/ed.toml
 ```
 
 The command validates the authoring fields, parses the generated SPEC, and runs the
-selected static checks before printing it to stdout.
+selected static checks before writing it.
 
-Source URLs may reference `%{name}`, `%{version}` and `%{url}`. The preview
+`gen NAME` reads `./NAME.toml` by default; `--manifest` selects another path.
+The SPEC is written beside the manifest. Identical content is left unchanged;
+different content requires `--force`. Use `--stdout` to preview without writing.
+
+Source URLs may reference `%{name}`, `%{version}` and `%{url}`. The SPEC
 preserves these expressions and URL filename fragments such as `#/name.tar.gz`.
 
 Declare additional remote inputs as `[sources.1]`, `[sources.2]`, and so on, each
