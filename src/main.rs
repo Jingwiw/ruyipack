@@ -8,6 +8,7 @@
 
 mod check;
 mod check_report;
+mod file_output;
 mod generate;
 mod inspect;
 mod parser_diagnostic;
@@ -53,12 +54,8 @@ enum Command {
         /// Manifest to read; defaults to NAME.toml in the current directory.
         #[arg(long, value_name = "PATH")]
         manifest: Option<PathBuf>,
-        /// Replaces an existing target SPEC with different content.
-        #[arg(long, conflicts_with = "stdout")]
-        force: bool,
-        /// Prints the candidate without writing it.
-        #[arg(long)]
-        stdout: bool,
+        #[command(flatten, next_help_heading = "Output options")]
+        output: file_output::OutputOptions,
     },
 }
 
@@ -76,9 +73,8 @@ fn main() -> ExitCode {
             name,
             format: ArtifactFormat::Spec,
             manifest,
-            force,
-            stdout,
-        } => exit_for(generate::run(&name, manifest.as_deref(), force, stdout).map(|()| true)),
+            output,
+        } => exit_for(generate::run(&name, manifest.as_deref(), &output).map(|()| true)),
     }
 }
 
@@ -91,5 +87,15 @@ fn exit_for<E: fmt::Display>(result: Result<bool, E>) -> ExitCode {
             eprintln!("error: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    #[test]
+    fn command_definition_is_consistent() {
+        super::Cli::command().debug_assert();
     }
 }

@@ -19,9 +19,34 @@ cargo run -- gen ed --manifest examples/ed/ed.toml
 The command validates the authoring fields, parses the generated SPEC, and runs the
 selected static checks before writing it.
 
-`gen NAME` reads `./NAME.toml` by default; `--manifest` selects another path.
-The SPEC is written beside the manifest. Identical content is left unchanged;
-different content requires `--force`. Use `--stdout` to preview without writing.
+`gen NAME` reads `./NAME.toml` by default; `--manifest` selects another input file.
+The SPEC is written beside the manifest unless `-o, --output FILE` selects another
+path. Relative output paths are resolved from the current directory. The parent
+directory must already exist. Identical content is left unchanged.
+
+```sh
+ruyipack gen ed --stdout
+ruyipack gen ed --diff
+ruyipack gen ed -o ed.spec.new
+ruyipack gen ed --force
+ruyipack gen ed --skip-existing
+```
+
+`--stdout` prints the complete candidate without reading or writing the target.
+`--diff` prints a unified diff without writing files; a missing target is shown as
+a new file. Use `--diff --output FILE` to compare against a different target.
+Successful previews exit with status 0, whether or not a diff contains changes.
+Diff headers require UTF-8 paths without tabs or line breaks.
+
+`-f, --force` allows replacement of different content. `--skip-existing` keeps an
+existing file and exits successfully without prompting; a missing target is
+created normally. Both options can accompany `--output`, but cannot be combined
+with each other or with preview options. `--stdout` cannot accompany `--diff` or
+`--output`. All modes validate the manifest and generated SPEC.
+
+When content differs and no action is specified, the command reports the
+conflicting file and available options, then exits without writing. Messages stay
+on stderr; candidate text and diffs go to stdout.
 
 Source URLs may reference `%{name}`, `%{version}` and `%{url}`. The SPEC
 preserves these expressions and URL filename fragments such as `#/name.tar.gz`.
