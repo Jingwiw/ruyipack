@@ -4,47 +4,20 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Required main-package tag presence checks for one RPM SPEC file.
+//! Shared static SPEC checks and rule selection.
 
-use std::{io, path::Path};
-
-use clap::ValueEnum;
 use rpm_spec::{
     ast::Span,
     parse_result::{ParseResult, Severity as ParserSeverity},
-    parser::parse_str_with_spans,
 };
 use rpm_spec_analyzer::{
     config::Config, diagnostic::Severity, registry::builtin_lint_metadata, session::LintSession,
 };
 
-use crate::{check_report::CheckReport, check_report::SelectedRule, utf8_file};
+use crate::check_report::{CheckReport, SelectedRule};
 
 const REQUIRED_TAG_LINT_IDS: [&str; 6] =
     ["RPM010", "RPM011", "RPM012", "RPM013", "RPM014", "RPM015"];
-
-/// Output format supported by the check command.
-#[derive(Clone, ValueEnum)]
-pub(crate) enum CheckFormat {
-    Human,
-    Json,
-}
-
-/// Checks whether one SPEC declares the required main-package tags.
-pub(crate) fn run(path: &Path, format: CheckFormat) -> Result<bool, CheckError> {
-    let source = utf8_file::read(path)?;
-    let report = analyze(&source, parse_str_with_spans(&source));
-
-    match format {
-        CheckFormat::Human => report
-            .write_human(path, &mut io::stderr().lock())
-            .map_err(CheckError::Stderr)?,
-        CheckFormat::Json => report
-            .write_json(path, &mut io::stdout().lock())
-            .map_err(CheckError::Stdout)?,
-    }
-    Ok(report.is_success())
-}
 
 /// Runs the selected static checks without file or terminal I/O.
 pub(crate) fn analyze(source: &str, parsed: ParseResult<Span>) -> CheckReport {
@@ -86,14 +59,4 @@ fn required_tag_policy() -> (Config, Vec<SelectedRule>) {
         })
         .collect();
     (config, selected_rules)
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum CheckError {
-    #[error("{0}")]
-    Input(#[from] utf8_file::Utf8FileError),
-    #[error("failed to write output to stdout: {0}")]
-    Stdout(#[source] io::Error),
-    #[error("failed to write diagnostics to stderr: {0}")]
-    Stderr(#[source] io::Error),
 }
