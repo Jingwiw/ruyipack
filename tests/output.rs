@@ -215,6 +215,7 @@ fn disconnected_standard_streams_return_errors_without_panicking() {
     for args in [
         ["check", "ed.spec", "--format", "json"].as_slice(),
         &["inspect", "ed.spec"],
+        &["inspect", "ed.spec", "--format", "json"],
         &["gen", "ed", "--stdout"],
     ] {
         let result = Command::new(env!("CARGO_BIN_EXE_ruyipack"))
