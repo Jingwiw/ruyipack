@@ -10,6 +10,28 @@ SPDX-License-Identifier: MulanPSL-2.0
 
 RuyiPack is a project for openRuyi RPM package workflows.
 
+Inspect an existing SPEC without changing it:
+
+```sh
+ruyipack inspect ed.spec
+ruyipack inspect ed.spec --format json
+```
+
+Human output shows normalized main-package tags and their conditional structure.
+JSON includes the same parser tree, the input path and SHA-256, the parser version
+and revision, and all parser diagnostics. Diagnostics use the same lowercase
+severity names as `check --format json` and stay in JSON rather than stderr.
+Parser warnings and recoverable errors do not change inspection's success status;
+use `check` to apply the selected static rules.
+
+JSON `value` fields are parser syntax, not evaluated RPM values. Node `data` spans
+refer to the original UTF-8 input: byte offsets are zero-based and end-exclusive;
+line and byte-column numbers are one-based. Verify the input digest before using
+these offsets to read source text. Spans are parser locations, not guaranteed
+value-only or safe replacement ranges. The view omits macro definitions and section
+bodies and does not evaluate conditions. The preamble tree uses the recorded
+`rpm-spec` revision's serialization format.
+
 Generate a SPEC from an Autotools manifest:
 
 ```sh

@@ -732,13 +732,14 @@ Options:
         "\
 Prints the normalized main-package tags from an RPM SPEC file
 
-Usage: ruyipack inspect <SPEC>
+Usage: ruyipack inspect [OPTIONS] <SPEC>
 
 Arguments:
   <SPEC>  RPM SPEC file to inspect
 
 Options:
-  -h, --help  Print help
+      --format <FORMAT>  Selects human or JSON output [default: human] [possible values: human, json]
+  -h, --help             Print help
 "
     );
     assert!(

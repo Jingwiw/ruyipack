@@ -48,6 +48,9 @@ enum Command {
         /// RPM SPEC file to inspect.
         #[arg(value_name = "SPEC")]
         spec: PathBuf,
+        /// Selects human or JSON output.
+        #[arg(long, value_enum, default_value_t = inspect::InspectFormat::Human)]
+        format: inspect::InspectFormat,
     },
     /// Generates an artifact from a `RuyiPack` manifest.
     #[command(
@@ -79,7 +82,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Check { spec, format } => exit_for(check_command::run(&spec, format)),
-        Command::Inspect { spec } => exit_for(inspect::run(&spec).map(|()| true)),
+        Command::Inspect { spec, format } => exit_for(inspect::run(&spec, format).map(|()| true)),
         Command::Gen {
             name,
             format: ArtifactFormat::Spec,

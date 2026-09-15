@@ -11,6 +11,9 @@ use std::{
     path::Path,
 };
 
+mod json;
+
+use clap::ValueEnum;
 use rpm_spec::{
     ast::{Span, SpecFile, SpecItem},
     parser::parse_str_with_spans,
@@ -19,20 +22,31 @@ use rpm_spec::{
 
 use crate::{parser_diagnostic, utf8_file};
 
+#[derive(Clone, ValueEnum)]
+pub(crate) enum InspectFormat {
+    Human,
+    Json,
+}
+
 /// Reads one SPEC and prints its parser diagnostics and main-package tag view.
-pub(crate) fn run(path: &Path) -> Result<(), InspectError> {
+pub(crate) fn run(path: &Path, format: InspectFormat) -> Result<(), InspectError> {
     let source = utf8_file::read(path)?;
     let parsed = parse_str_with_spans(&source);
     let view = main_package_tag_view(parsed.spec);
-    parser_diagnostic::write(&parsed.diagnostics, &mut io::stderr().lock())
-        .map_err(InspectError::Stderr)?;
-    let config = PrinterConfig::default().with_preamble_value_column(None);
-    let contents = printer::print_with(&view, &config);
     let mut output = io::stdout().lock();
-    if contents.is_empty() {
-        writeln!(output, "No main-package tags found.")
-    } else {
-        output.write_all(contents.as_bytes())
+    match format {
+        InspectFormat::Human => {
+            parser_diagnostic::write(&parsed.diagnostics, &mut io::stderr().lock())
+                .map_err(InspectError::Stderr)?;
+            let config = PrinterConfig::default().with_preamble_value_column(None);
+            let contents = printer::print_with(&view, &config);
+            if contents.is_empty() {
+                writeln!(output, "No main-package tags found.")
+            } else {
+                output.write_all(contents.as_bytes())
+            }
+        }
+        InspectFormat::Json => json::write(path, &source, &view, &parsed.diagnostics, &mut output),
     }
     .map_err(InspectError::Stdout)
 }
