@@ -20,6 +20,8 @@ const REQUIRED_TAG_LINT_IDS: [&str; 6] =
     ["RPM010", "RPM011", "RPM012", "RPM013", "RPM014", "RPM015"];
 
 /// Runs the selected static checks without file or terminal I/O.
+///
+/// `parsed` must have been produced from `source`.
 pub(crate) fn analyze(source: &str, parsed: ParseResult<Span>) -> CheckReport {
     let (config, selected_rules) = required_tag_policy();
 

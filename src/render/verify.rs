@@ -16,7 +16,9 @@ use rpm_spec::{
     parser::{Input, ParserState, deps::parse_dep_expr, text::parse_text},
 };
 
-/// Borrows the source and parsed candidate later consumed by the shared static checks.
+/// Checks candidate facts against the manifest and profile.
+///
+/// `parsed` must have been produced from `source`.
 pub(super) fn run(
     source: &str,
     parsed: &ParseResult<Span>,

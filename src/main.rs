@@ -50,6 +50,11 @@ enum Command {
         spec: PathBuf,
     },
     /// Generates an artifact from a `RuyiPack` manifest.
+    #[command(
+        after_help = "The default output is NAME.spec beside the manifest. Its parent directory must exist.\n\
+For different existing content, select an output option or use the terminal menu.\n\
+Without a usable terminal or an explicit action, conflicting output is an error."
+    )]
     Gen {
         /// Package to generate.
         #[arg(value_name = "NAME")]

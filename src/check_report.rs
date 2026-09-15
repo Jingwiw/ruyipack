@@ -94,12 +94,12 @@ impl CheckReport {
         }
     }
 
-    /// Returns whether the completed command should exit successfully.
+    /// Returns whether the selected static checks passed.
     pub(crate) fn is_success(&self) -> bool {
         matches!(self.status, CheckStatus::Pass)
     }
 
-    /// Writes the existing terminal-oriented output.
+    /// Writes human-readable parser diagnostics and static-check findings.
     pub(crate) fn write_human(&self, path: &Path, writer: &mut impl Write) -> io::Result<()> {
         parser_diagnostic::write(&self.parser_diagnostics, writer)?;
         for finding in &self.findings {

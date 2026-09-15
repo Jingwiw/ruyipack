@@ -31,6 +31,8 @@ pub(crate) struct OutputOptions {
     #[arg(long, conflicts_with_all = ["diff", "force", "skip_existing"])]
     pub(crate) stdout: bool,
     /// Prints a unified diff without writing files, including for a new target.
+    ///
+    /// Successful comparisons exit with status 0, even when the files differ.
     #[arg(long, conflicts_with_all = ["force", "skip_existing"])]
     pub(crate) diff: bool,
     /// Replaces an existing target with different content.

@@ -770,6 +770,18 @@ Options:
         output_text(&check_help.stderr)
     );
 
+    let gen_help = run([OsStr::new("gen"), OsStr::new("--help")]);
+    assert!(gen_help.status.success());
+    assert!(gen_help.stderr.is_empty());
+    for detail in [
+        "NAME.spec beside the manifest",
+        "parent directory must exist",
+        "terminal menu",
+        "even when the files differ",
+    ] {
+        assert!(output_text(&gen_help.stdout).contains(detail), "{detail}");
+    }
+
     let version = run([OsStr::new("--version")]);
     assert!(version.status.success());
     assert_eq!(
