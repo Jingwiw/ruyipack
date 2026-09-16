@@ -17,6 +17,8 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use clap::Args;
 
+use crate::utf8_file;
+
 #[derive(Args)]
 pub(crate) struct OutputOptions {
     /// Selects the output file, or the comparison target with --diff.
@@ -310,7 +312,14 @@ fn run_edit_batch(
 
 fn check_sources(files: &[EditFile<'_>], overwritten: &[bool]) -> Result<(), OutputError> {
     for (file, overwritten) in files.iter().zip(overwritten) {
-        if !overwritten && read_target(file.source_path)? != file.original.as_bytes() {
+        if !overwritten
+            && !utf8_file::is_unchanged(file.source_path, file.original).map_err(|source| {
+                OutputError::Read {
+                    path: file.source_path.to_path_buf(),
+                    source,
+                }
+            })?
+        {
             return Err(OutputError::SourceChanged(file.source_path.to_path_buf()));
         }
     }
@@ -686,6 +695,30 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(first).unwrap(), "first\n");
         assert_eq!(fs::read_to_string(second).unwrap(), "changed externally\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repeated_source_checks_reject_a_same_bytes_symlink_replacement() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let input = source(directory.path(), "input.spec", "original\n");
+        let replacement = source(directory.path(), "replacement.spec", "original\n");
+        let target = directory.path().join("output.spec");
+        let files = [EditFile {
+            source_path: &input,
+            original: "original\n",
+            target_path: &target,
+            contents: "edited\n",
+        }];
+        check_sources(&files, &[false]).unwrap();
+        fs::remove_file(&input).unwrap();
+        symlink(&replacement, &input).unwrap();
+        assert!(matches!(
+            check_sources(&files, &[false]),
+            Err(OutputError::SourceChanged(path)) if path == input
+        ));
     }
 
     #[test]

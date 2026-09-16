@@ -16,6 +16,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::utf8_file;
+
 pub(super) struct Draft {
     pub source: PathBuf,
     pub original: String,
@@ -65,7 +67,14 @@ pub(super) fn create(
                 source.display()
             ));
         }
-        check_source(&source, original)?;
+        if !utf8_file::is_unchanged(&source, original)
+            .map_err(|error| format!("cannot read source {}: {error}", source.display()))?
+        {
+            return Err(format!(
+                "source {} changed since draft preparation; prepare fresh drafts",
+                source.display()
+            ));
+        }
         let draft = draft_name(&source)?;
         if !names.insert(draft.clone()) {
             return Err(format!(
@@ -193,26 +202,6 @@ pub(super) fn load(dir: &Path) -> Result<Vec<Draft>, String> {
         });
     }
     Ok(drafts)
-}
-
-fn check_source(source: &Path, original: &str) -> Result<(), String> {
-    let current_path = fs::canonicalize(source)
-        .map_err(|error| format!("cannot resolve source {}: {error}", source.display()))?;
-    if current_path != source {
-        return Err(format!(
-            "source identity changed for {}; prepare fresh drafts",
-            source.display()
-        ));
-    }
-    let current = fs::read(source)
-        .map_err(|error| format!("cannot read source {}: {error}", source.display()))?;
-    if current != original.as_bytes() {
-        return Err(format!(
-            "source {} changed since draft preparation; prepare fresh drafts",
-            source.display()
-        ));
-    }
-    Ok(())
 }
 
 fn draft_name(source: &Path) -> Result<String, String> {

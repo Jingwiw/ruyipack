@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Strict UTF-8 input shared by file-based commands.
+//! UTF-8 input and source-change checks shared by file-based commands.
 
 use std::{
     error, fmt, fs, io,
@@ -22,6 +22,11 @@ pub(crate) fn read(path: &Path) -> Result<String, Utf8FileError> {
         path: path.to_path_buf(),
         source,
     })
+}
+
+/// Checks that a previously resolved source path and its bytes are unchanged.
+pub(crate) fn is_unchanged(path: &Path, original: &str) -> io::Result<bool> {
+    Ok(fs::canonicalize(path)? == path && fs::read(path)? == original.as_bytes())
 }
 
 #[derive(Debug)]

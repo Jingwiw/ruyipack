@@ -290,10 +290,8 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
 }
 
 fn candidate(item: &Input, assignments: &[(String, String)]) -> Result<String, String> {
-    if fs::canonicalize(&item.path).map_err(|e| format!("{}: {e}", item.path.display()))?
-        != item.path
-        || fs::read_to_string(&item.path).map_err(|e| format!("{}: {e}", item.path.display()))?
-            != item.source
+    if !utf8_file::is_unchanged(&item.path, &item.source)
+        .map_err(|e| format!("{}: {e}", item.path.display()))?
     {
         return Err(format!(
             "{}: source changed; prepare a fresh draft",
