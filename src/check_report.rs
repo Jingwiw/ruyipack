@@ -11,12 +11,22 @@ use std::{
     path::Path,
 };
 
-use rpm_spec::{ast::Span, parse_result::Diagnostic as ParserDiagnostic};
-use rpm_spec_analyzer::diagnostic::{Diagnostic, Severity};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::parser_diagnostic;
+use crate::{
+    parser_diagnostic::{self, Diagnostic as ParserDiagnostic},
+    source_location::SourceLocation,
+};
+
+/// Product policy level, independent of the analyzer that produced a finding.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Severity {
+    Allow,
+    Warn,
+    Deny,
+}
 
 const FORMAT_VERSION: u32 = 1;
 const INCOMPLETE_PARSER_ERROR: &str = "parser-error";
@@ -70,8 +80,9 @@ impl CheckReport {
     ) -> Self {
         findings.sort_by(|left, right| {
             left.span
-                .start_byte
-                .cmp(&right.span.start_byte)
+                .bytes
+                .start
+                .cmp(&right.span.bytes.start)
                 .then_with(|| left.code.cmp(right.code))
                 .then_with(|| left.message.cmp(&right.message))
         });
@@ -108,13 +119,13 @@ impl CheckReport {
                 Severity::Warn => "warning",
                 Severity::Allow => "diagnostic",
             };
-            let span = finding.span;
+            let span = &finding.span;
             writeln!(
                 writer,
                 "{}:{}:{}: {severity}[{}]: {}",
                 path.display(),
-                span.start_line,
-                span.start_column,
+                span.start.0,
+                span.start.1,
                 finding.code,
                 finding.message
             )?;
@@ -167,11 +178,7 @@ impl CheckReport {
                     .map(SelectedRuleRecord::from)
                     .collect(),
             },
-            parser_diagnostics: self
-                .parser_diagnostics
-                .iter()
-                .map(parser_diagnostic::Record::from)
-                .collect(),
+            parser_diagnostics: &self.parser_diagnostics,
             findings: &self.findings,
         };
         let json = serde_json::to_string(&report)
@@ -206,7 +213,7 @@ struct MachineReport<'a> {
     format_version: u32,
     input: InputIdentity<'a>,
     evidence: Evidence<'a>,
-    parser_diagnostics: Vec<parser_diagnostic::Record<'a>>,
+    parser_diagnostics: &'a [ParserDiagnostic],
     findings: &'a [Finding],
 }
 
@@ -251,7 +258,7 @@ impl<'a> From<&'a SelectedRule> for SelectedRuleRecord<'a> {
     fn from(rule: &'a SelectedRule) -> Self {
         Self {
             code: rule.code,
-            severity: analyzer_severity(rule.severity),
+            severity: severity_name(rule.severity),
         }
     }
 }
@@ -263,22 +270,10 @@ pub(crate) struct Finding {
     pub(crate) code: &'static str,
     pub(crate) severity: Severity,
     pub(crate) message: String,
-    pub(crate) span: Span,
+    pub(crate) span: SourceLocation,
 }
 
-impl From<Diagnostic> for Finding {
-    fn from(diagnostic: Diagnostic) -> Self {
-        Self {
-            producer: "rpm-spec-analyzer",
-            code: diagnostic.lint_id,
-            severity: diagnostic.severity,
-            message: diagnostic.message,
-            span: diagnostic.primary_span,
-        }
-    }
-}
-
-fn analyzer_severity(severity: Severity) -> &'static str {
+fn severity_name(severity: Severity) -> &'static str {
     match severity {
         Severity::Allow => "allow",
         Severity::Warn => "warn",

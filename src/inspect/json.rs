@@ -11,14 +11,11 @@ use std::{
     path::Path,
 };
 
-use rpm_spec::{
-    ast::{Span, SpecFile, SpecItem},
-    parse_result::Diagnostic,
-};
+use rpm_spec::ast::{Span, SpecFile, SpecItem};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::parser_diagnostic;
+use crate::parser_diagnostic::Diagnostic;
 
 /// Writes the filtered parser tree and all diagnostics for the same source.
 pub(super) fn write(
@@ -40,10 +37,7 @@ pub(super) fn write(
             revision: env!("RUYIPACK_RPM_SPEC_REVISION"),
         },
         preamble: &view.items,
-        parser_diagnostics: diagnostics
-            .iter()
-            .map(parser_diagnostic::Record::from)
-            .collect(),
+        parser_diagnostics: diagnostics,
     };
     serde_json::to_writer(&mut *writer, &report)?;
     writeln!(writer)
@@ -55,7 +49,7 @@ struct Inspection<'a> {
     input: InputIdentity<'a>,
     parser: ParserIdentity,
     preamble: &'a [SpecItem<Span>],
-    parser_diagnostics: Vec<parser_diagnostic::Record<'a>>,
+    parser_diagnostics: &'a [Diagnostic],
 }
 
 #[derive(Serialize)]

@@ -6,17 +6,16 @@
 
 //! Shared static SPEC checks and rule selection.
 
-use rpm_spec::{
-    ast::Span,
-    parse_result::{ParseResult, Severity as ParserSeverity},
-};
-use rpm_spec_analyzer::{
-    config::Config, diagnostic::Severity, registry::builtin_lint_metadata, session::LintSession,
-};
+use rpm_spec::{ast::Span, parse_result::ParseResult};
 
+mod analyzer;
 mod license;
+mod syntax;
 
-use crate::check_report::{CheckReport, Finding, SelectedRule};
+use crate::{
+    check_report::{CheckReport, SelectedRule, Severity},
+    parser_diagnostic, syntax_diagnostic,
+};
 
 const REQUIRED_TAG_LINT_IDS: [&str; 6] =
     ["RPM010", "RPM011", "RPM012", "RPM013", "RPM014", "RPM015"];
@@ -25,55 +24,32 @@ const REQUIRED_TAG_LINT_IDS: [&str; 6] =
 ///
 /// `parsed` must have been produced from `source`.
 pub(crate) fn analyze(source: &str, parsed: ParseResult<Span>) -> CheckReport {
-    let (config, mut selected_rules) = required_tag_policy();
-    selected_rules.push(license::RULE);
-
-    if parsed
-        .diagnostics
+    let mut selected_rules: Vec<_> = REQUIRED_TAG_LINT_IDS
         .iter()
-        .any(|item| item.severity == ParserSeverity::Error)
+        .map(|&code| SelectedRule {
+            code,
+            severity: Severity::Deny,
+        })
+        .collect();
+    let analyzer = analyzer::Analyzer::new(&selected_rules);
+    selected_rules.push(license::RULE);
+    let diagnostics = syntax_diagnostic::diagnostics(parsed.diagnostics);
+
+    if diagnostics
+        .iter()
+        .any(|item| item.severity == parser_diagnostic::Severity::Error)
     {
-        CheckReport::incomplete(source, selected_rules, parsed.diagnostics)
+        CheckReport::incomplete(source, selected_rules, diagnostics)
     } else {
-        let mut session = LintSession::from_config(&config);
-        let mut findings: Vec<_> = session
-            .run(&parsed.spec, source)
-            .into_iter()
-            .map(Finding::from)
-            .collect();
-        let license = license::LicenseCheck::run(&parsed.spec);
+        let mut findings = analyzer.run(source, &parsed.spec);
+        let license = syntax::license(&parsed.spec);
         findings.extend(license.findings);
         CheckReport::analyzed(
             source,
             selected_rules,
-            parsed.diagnostics,
+            diagnostics,
             findings,
             license.unresolved.then_some("unresolved-license"),
         )
     }
-}
-
-/// Resolves the analyzer configuration and selected rules with effective severities.
-fn required_tag_policy() -> (Config, Vec<SelectedRule>) {
-    let metadata = builtin_lint_metadata();
-    let all_ids = metadata.iter().map(|item| item.id).collect::<Vec<_>>();
-    let mut config = Config::default();
-    config.apply_overrides(&all_ids, Severity::Allow);
-    config.apply_overrides(&REQUIRED_TAG_LINT_IDS, Severity::Deny);
-    let selected_rules = REQUIRED_TAG_LINT_IDS
-        .iter()
-        .map(|required_id| {
-            let item = metadata
-                .iter()
-                .find(|item| item.id == *required_id)
-                .unwrap_or_else(|| {
-                    panic!("required analyzer rule {required_id} is not registered")
-                });
-            SelectedRule {
-                code: item.id,
-                severity: config.severity_for(item.id, item.name, item.default_severity),
-            }
-        })
-        .collect();
-    (config, selected_rules)
 }

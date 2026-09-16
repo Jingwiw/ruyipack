@@ -6,10 +6,10 @@
 
 //! SPDX expression checks for package License tags.
 
-use rpm_spec::ast::{PreambleItem, Span, SpecFile, Tag, TagValue};
-use rpm_spec_analyzer::{diagnostic::Severity, visit::Visit};
-
-use crate::check_report::{Finding, SelectedRule};
+use crate::{
+    check_report::{Finding, SelectedRule, Severity},
+    source_location::SourceLocation,
+};
 
 pub(super) const RULE: SelectedRule = SelectedRule {
     code: "RPK001",
@@ -23,22 +23,8 @@ pub(super) struct LicenseCheck {
 }
 
 impl LicenseCheck {
-    pub(super) fn run(spec: &SpecFile<Span>) -> Self {
-        let mut check = Self::default();
-        check.visit_spec(spec);
-        check
-    }
-}
-
-impl<'ast> Visit<'ast> for LicenseCheck {
-    fn visit_preamble(&mut self, item: &'ast PreambleItem<Span>) {
-        if item.tag != Tag::License {
-            return;
-        }
-        let literal = match &item.value {
-            TagValue::Text(text) => text.literal_str(),
-            _ => None,
-        };
+    /// Checks a literal value, or records that syntax requires RPM evaluation.
+    pub(super) fn check(&mut self, literal: Option<&str>, span: SourceLocation) {
         let (severity, message) = match literal {
             Some(value) => match validate_expression(value) {
                 Ok(_) => return,
@@ -60,7 +46,7 @@ impl<'ast> Visit<'ast> for LicenseCheck {
             code: RULE.code,
             severity,
             message,
-            span: item.data,
+            span,
         });
     }
 }

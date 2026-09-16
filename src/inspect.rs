@@ -20,7 +20,7 @@ use rpm_spec::{
     printer::{self, PrinterConfig},
 };
 
-use crate::{parser_diagnostic, utf8_file};
+use crate::{parser_diagnostic, syntax_diagnostic, utf8_file};
 
 #[derive(Clone, ValueEnum)]
 pub(crate) enum InspectFormat {
@@ -33,10 +33,11 @@ pub(crate) fn run(path: &Path, format: InspectFormat) -> Result<(), InspectError
     let source = utf8_file::read(path)?;
     let parsed = parse_str_with_spans(&source);
     let view = main_package_tag_view(parsed.spec);
+    let diagnostics = syntax_diagnostic::diagnostics(parsed.diagnostics);
     let mut output = io::stdout().lock();
     match format {
         InspectFormat::Human => {
-            parser_diagnostic::write(&parsed.diagnostics, &mut io::stderr().lock())
+            parser_diagnostic::write(&diagnostics, &mut io::stderr().lock())
                 .map_err(InspectError::Stderr)?;
             let config = PrinterConfig::default().with_preamble_value_column(None);
             let contents = printer::print_with(&view, &config);
@@ -46,7 +47,7 @@ pub(crate) fn run(path: &Path, format: InspectFormat) -> Result<(), InspectError
                 output.write_all(contents.as_bytes())
             }
         }
-        InspectFormat::Json => json::write(path, &source, &view, &parsed.diagnostics, &mut output),
+        InspectFormat::Json => json::write(path, &source, &view, &diagnostics, &mut output),
     }
     .map_err(InspectError::Stdout)
 }

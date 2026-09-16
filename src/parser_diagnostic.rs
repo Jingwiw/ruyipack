@@ -4,30 +4,46 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Human-readable and machine-readable RPM parser diagnostics.
+//! First-party parser diagnostic results and their human-readable output.
 
 use std::io::{self, Write};
 
-use rpm_spec::{
-    ast::Span,
-    parse_result::{Diagnostic as ParserDiagnostic, Severity as ParserSeverity},
-};
 use serde::Serialize;
 
+use crate::source_location::SourceLocation;
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Severity {
+    Warning,
+    Error,
+    Unknown,
+}
+
+/// Parser recovery evidence retained separately from static-rule findings.
+#[derive(Serialize)]
+pub(crate) struct Diagnostic {
+    pub(crate) severity: Severity,
+    pub(crate) code: Option<String>,
+    pub(crate) span: Option<SourceLocation>,
+    pub(crate) message: String,
+    pub(crate) notes: Vec<String>,
+}
+
 /// Writes every recoverable issue reported by the parser.
-pub(crate) fn write(diagnostics: &[ParserDiagnostic], writer: &mut impl Write) -> io::Result<()> {
+pub(crate) fn write(diagnostics: &[Diagnostic], writer: &mut impl Write) -> io::Result<()> {
     for diagnostic in diagnostics {
         let severity = match diagnostic.severity {
-            ParserSeverity::Warning => "warning",
-            ParserSeverity::Error => "error",
-            _ => "diagnostic",
+            Severity::Warning => "warning",
+            Severity::Error => "error",
+            Severity::Unknown => "diagnostic",
         };
         let code = diagnostic
             .code
             .as_deref()
             .map_or_else(String::new, |code| format!("[{code}]"));
-        let location = diagnostic.span.map_or_else(String::new, |span| {
-            format!(" at {}:{}", span.start_line, span.start_column)
+        let location = diagnostic.span.as_ref().map_or_else(String::new, |span| {
+            format!(" at {}:{}", span.start.0, span.start.1)
         });
 
         writeln!(writer, "{severity}{code}{location}: {}", diagnostic.message)?;
@@ -36,34 +52,4 @@ pub(crate) fn write(diagnostics: &[ParserDiagnostic], writer: &mut impl Write) -
         }
     }
     Ok(())
-}
-
-/// Borrowed parser diagnostic with lowercase severity names.
-#[derive(Serialize)]
-pub(crate) struct Record<'a> {
-    severity: &'static str,
-    code: Option<&'a str>,
-    span: Option<Span>,
-    message: &'a str,
-    notes: &'a [String],
-}
-
-impl<'a> From<&'a ParserDiagnostic> for Record<'a> {
-    fn from(diagnostic: &'a ParserDiagnostic) -> Self {
-        Self {
-            severity: parser_severity(diagnostic.severity),
-            code: diagnostic.code.as_deref(),
-            span: diagnostic.span,
-            message: &diagnostic.message,
-            notes: &diagnostic.notes,
-        }
-    }
-}
-
-fn parser_severity(severity: ParserSeverity) -> &'static str {
-    match severity {
-        ParserSeverity::Warning => "warning",
-        ParserSeverity::Error => "error",
-        _ => "unknown",
-    }
 }
