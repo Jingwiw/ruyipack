@@ -139,6 +139,7 @@ fn assert_machine_envelope(
             {"code": "RPM013", "severity": "deny"},
             {"code": "RPM014", "severity": "deny"},
             {"code": "RPM015", "severity": "deny"},
+            {"code": "RPK001", "severity": "deny"},
         ])
     );
 }

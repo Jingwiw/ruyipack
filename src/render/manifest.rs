@@ -129,8 +129,6 @@ pub(super) fn parse(source: &str) -> Result<Manifest, RenderError> {
     }
     single_line("package.summary", &package.summary)?;
     single_line("package.license", &package.license)?;
-    spdx::Expression::parse(&package.license)
-        .map_err(|error| invalid("package.license", &error.to_string()))?;
     https_url("package.url", &package.url)?;
     if !package.vcs.no_public_repository {
         return Err(invalid(

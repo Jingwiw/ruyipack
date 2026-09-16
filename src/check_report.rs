@@ -23,7 +23,7 @@ const INCOMPLETE_PARSER_ERROR: &str = "parser-error";
 const RPM_SPEC_REPOSITORY: &str = "https://github.com/openRuyi-Project/rpm-spec";
 const RPM_SPEC_TOOL_REPOSITORY: &str = "https://github.com/openRuyi-Project/rpm-spec-tool";
 
-/// One analyzer rule selected by the current check policy.
+/// One selected static rule and its severity for confirmed violations.
 pub(crate) struct SelectedRule {
     pub(crate) code: &'static str,
     pub(crate) severity: Severity,
@@ -32,7 +32,7 @@ pub(crate) struct SelectedRule {
 enum CheckStatus {
     Pass,
     Fail,
-    Incomplete,
+    Incomplete(&'static str),
 }
 
 /// Results produced by one execution of the static SPEC check.
@@ -41,7 +41,7 @@ pub(crate) struct CheckReport {
     status: CheckStatus,
     selected_rules: Vec<SelectedRule>,
     parser_diagnostics: Vec<ParserDiagnostic>,
-    findings: Vec<Diagnostic>,
+    findings: Vec<Finding>,
 }
 
 impl CheckReport {
@@ -53,25 +53,26 @@ impl CheckReport {
     ) -> Self {
         Self {
             sha256: source_digest(source),
-            status: CheckStatus::Incomplete,
+            status: CheckStatus::Incomplete(INCOMPLETE_PARSER_ERROR),
             selected_rules,
             parser_diagnostics,
             findings: Vec::new(),
         }
     }
 
-    /// Records a completed analyzer run.
+    /// Combines findings and records any unresolved field checks.
     pub(crate) fn analyzed(
         source: &str,
         selected_rules: Vec<SelectedRule>,
         parser_diagnostics: Vec<ParserDiagnostic>,
-        mut findings: Vec<Diagnostic>,
+        mut findings: Vec<Finding>,
+        incomplete_reason: Option<&'static str>,
     ) -> Self {
         findings.sort_by(|left, right| {
-            left.primary_span
+            left.span
                 .start_byte
-                .cmp(&right.primary_span.start_byte)
-                .then_with(|| left.lint_id.cmp(right.lint_id))
+                .cmp(&right.span.start_byte)
+                .then_with(|| left.code.cmp(right.code))
                 .then_with(|| left.message.cmp(&right.message))
         });
         let status = if findings
@@ -79,6 +80,8 @@ impl CheckReport {
             .any(|finding| finding.severity == Severity::Deny)
         {
             CheckStatus::Fail
+        } else if let Some(reason) = incomplete_reason {
+            CheckStatus::Incomplete(reason)
         } else {
             CheckStatus::Pass
         };
@@ -105,22 +108,24 @@ impl CheckReport {
                 Severity::Warn => "warning",
                 Severity::Allow => "diagnostic",
             };
-            let span = finding.primary_span;
+            let span = finding.span;
             writeln!(
                 writer,
                 "{}:{}:{}: {severity}[{}]: {}",
                 path.display(),
                 span.start_line,
                 span.start_column,
-                finding.lint_id,
+                finding.code,
                 finding.message
             )?;
         }
-        if matches!(self.status, CheckStatus::Incomplete) {
-            writeln!(
-                writer,
-                "error: check incomplete because the SPEC parser reported an error"
-            )?;
+        if let CheckStatus::Incomplete(reason) = self.status {
+            let explanation = if reason == INCOMPLETE_PARSER_ERROR {
+                "the SPEC parser reported an error"
+            } else {
+                "some field values require RPM evaluation"
+            };
+            writeln!(writer, "error: check incomplete because {explanation}")?;
         }
         Ok(())
     }
@@ -167,7 +172,7 @@ impl CheckReport {
                 .iter()
                 .map(parser_diagnostic::Record::from)
                 .collect(),
-            findings: self.findings.iter().map(Finding::from).collect(),
+            findings: &self.findings,
         };
         let json = serde_json::to_string(&report)
             .expect("the machine check report contains only JSON-compatible values");
@@ -180,13 +185,13 @@ impl CheckStatus {
         match self {
             Self::Pass => "pass",
             Self::Fail => "fail",
-            Self::Incomplete => "incomplete",
+            Self::Incomplete(_) => "incomplete",
         }
     }
 
     fn reason(&self) -> Option<&'static str> {
         match self {
-            Self::Incomplete => Some(INCOMPLETE_PARSER_ERROR),
+            Self::Incomplete(reason) => Some(reason),
             Self::Pass | Self::Fail => None,
         }
     }
@@ -202,7 +207,7 @@ struct MachineReport<'a> {
     input: InputIdentity<'a>,
     evidence: Evidence<'a>,
     parser_diagnostics: Vec<parser_diagnostic::Record<'a>>,
-    findings: Vec<Finding<'a>>,
+    findings: &'a [Finding],
 }
 
 #[derive(Serialize)]
@@ -251,22 +256,23 @@ impl<'a> From<&'a SelectedRule> for SelectedRuleRecord<'a> {
     }
 }
 
+/// A finding with its actual producer, independent of the command that requested it.
 #[derive(Serialize)]
-struct Finding<'a> {
-    producer: &'static str,
-    code: &'a str,
-    severity: &'static str,
-    message: &'a str,
-    span: Span,
+pub(crate) struct Finding {
+    pub(crate) producer: &'static str,
+    pub(crate) code: &'static str,
+    pub(crate) severity: Severity,
+    pub(crate) message: String,
+    pub(crate) span: Span,
 }
 
-impl<'a> From<&'a Diagnostic> for Finding<'a> {
-    fn from(diagnostic: &'a Diagnostic) -> Self {
+impl From<Diagnostic> for Finding {
+    fn from(diagnostic: Diagnostic) -> Self {
         Self {
             producer: "rpm-spec-analyzer",
             code: diagnostic.lint_id,
-            severity: analyzer_severity(diagnostic.severity),
-            message: &diagnostic.message,
+            severity: diagnostic.severity,
+            message: diagnostic.message,
             span: diagnostic.primary_span,
         }
     }

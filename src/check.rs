@@ -14,7 +14,9 @@ use rpm_spec_analyzer::{
     config::Config, diagnostic::Severity, registry::builtin_lint_metadata, session::LintSession,
 };
 
-use crate::check_report::{CheckReport, SelectedRule};
+mod license;
+
+use crate::check_report::{CheckReport, Finding, SelectedRule};
 
 const REQUIRED_TAG_LINT_IDS: [&str; 6] =
     ["RPM010", "RPM011", "RPM012", "RPM013", "RPM014", "RPM015"];
@@ -23,7 +25,8 @@ const REQUIRED_TAG_LINT_IDS: [&str; 6] =
 ///
 /// `parsed` must have been produced from `source`.
 pub(crate) fn analyze(source: &str, parsed: ParseResult<Span>) -> CheckReport {
-    let (config, selected_rules) = required_tag_policy();
+    let (config, mut selected_rules) = required_tag_policy();
+    selected_rules.push(license::RULE);
 
     if parsed
         .diagnostics
@@ -33,8 +36,20 @@ pub(crate) fn analyze(source: &str, parsed: ParseResult<Span>) -> CheckReport {
         CheckReport::incomplete(source, selected_rules, parsed.diagnostics)
     } else {
         let mut session = LintSession::from_config(&config);
-        let findings = session.run(&parsed.spec, source);
-        CheckReport::analyzed(source, selected_rules, parsed.diagnostics, findings)
+        let mut findings: Vec<_> = session
+            .run(&parsed.spec, source)
+            .into_iter()
+            .map(Finding::from)
+            .collect();
+        let license = license::LicenseCheck::run(&parsed.spec);
+        findings.extend(license.findings);
+        CheckReport::analyzed(
+            source,
+            selected_rules,
+            parsed.diagnostics,
+            findings,
+            license.unresolved.then_some("unresolved-license"),
+        )
     }
 }
 

@@ -155,3 +155,11 @@ preserves these expressions and URL filename fragments such as `#/name.tar.gz`.
 Declare additional remote inputs as `[sources.1]`, `[sources.2]`, and so on, each
 with `url` and `sha256`. Source numbers are preserved and printed in numeric order.
 `sources.0` supplies the archive for the default unpacking step.
+
+`check`, `gen`, and `edit` share the selected SPEC checks, including SPDX
+expressions in package `License` tags (`RPK001`). Literal expressions are checked
+in main packages, subpackages, and conditional branches. Unresolved values prevent a successful check; the status is incomplete unless
+another finding already proves a failure. No macros are executed. This
+checks the declaration, not whether it matches the upstream source license.
+License IDs are case-insensitive; operators use uppercase. Deprecated IDs remain
+valid. Unknown names are checked against the SPDX data bundled with the tool.

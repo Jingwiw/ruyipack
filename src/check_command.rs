@@ -20,7 +20,7 @@ pub(crate) enum CheckFormat {
     Json,
 }
 
-/// Checks whether one SPEC declares the required main-package tags.
+/// Checks required tags and SPDX License expressions in one SPEC.
 pub(crate) fn run(path: &Path, format: CheckFormat) -> Result<bool, CheckError> {
     let source = utf8_file::read(path)?;
     let report = check::analyze(&source, parse_str_with_spans(&source));
