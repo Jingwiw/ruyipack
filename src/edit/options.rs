@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 #[derive(Args)]
 #[command(
-    after_help = "With no editing option, opens TOML in $VISUAL, $EDITOR, or vim.\nUse --set FIELD=VALUE repeatedly for string fields.\nUse --prepare DIR for persistent drafts; --from DIR reads them back.\nSaving TOML does not overwrite SPEC files. --force applies checked edits.\nExamples:\n  ruyipack edit ed.spec --set package.version=1.22 --diff\n  ruyipack edit ed.spec --editor 'code --wait'\n  ruyipack edit ed.spec make.spec --prepare drafts\n  ruyipack edit --from drafts --check\n  ruyipack edit --from drafts --diff\n  ruyipack edit --from drafts --force"
+    after_help = "By default, opens SPEC files as TOML in $VISUAL, $EDITOR, or vim.\nUse --set FIELD=VALUE repeatedly for string fields.\nUse --prepare DIR for persistent drafts.\nAfter the editor exits, checked edits are written to the source SPEC files.\nUse --diff to preview without writing; --from DIR applies saved drafts.\nExamples:\n  ruyipack edit ed.spec --set package.version=1.22 --diff\n  ruyipack edit ed.spec --editor 'code --wait'\n  ruyipack edit ed.spec make.spec --prepare drafts\n  ruyipack edit --from drafts --check\n  ruyipack edit --from drafts --diff\n  ruyipack edit --from drafts"
 )]
 pub(crate) struct Options {
     /// SPEC files to edit.
@@ -21,7 +21,7 @@ pub(crate) struct Options {
         conflicts_with = "from"
     )]
     pub specs: Vec<PathBuf>,
-    /// Reads a directory previously created by --prepare.
+    /// Applies saved drafts without opening an editor; --editor reopens them.
     #[arg(long, value_name = "DIR", conflicts_with_all = ["prepare", "set", "field", "view", "schema"])]
     pub from: Option<PathBuf>,
     /// Writes editable TOML files and their source bindings to a directory.
@@ -51,8 +51,8 @@ pub(crate) struct Options {
     /// Prints one checked SPEC without writing a file.
     #[arg(long, conflicts_with_all = ["force", "output"])]
     pub stdout: bool,
-    /// Applies checked edits without a confirmation menu.
-    #[arg(long)]
+    /// Replaces an existing --output file without prompting.
+    #[arg(long, requires = "output")]
     pub force: bool,
     /// Writes one edited SPEC to this path instead of replacing its source.
     #[arg(short, long, value_name = "FILE")]

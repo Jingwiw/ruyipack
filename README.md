@@ -38,13 +38,14 @@ Edit an existing SPEC through TOML:
 ruyipack edit ed.spec
 ruyipack edit ed.spec --field package.version
 ruyipack edit ed.spec --set package.version=1.22.6 --diff
-ruyipack edit ed.spec --set package.version=1.22.6 --force
+ruyipack edit ed.spec --set package.version=1.22.6
 ruyipack edit ed.spec --view
 ```
 
 The editor command is selected from `--editor`, `$VISUAL`, `$EDITOR`, then `vim`.
 For VS Code, use `--editor 'code --wait'`; close the edited tabs to return to the
-command. Saving TOML changes the draft, not the SPEC. Editor output stays on stderr.
+command. After the editor exits successfully, checked edits are written to the
+source SPEC. Editor output stays on stderr.
 Commands are split into arguments without running a shell.
 
 `--set FIELD=VALUE` replaces an existing string field; repeat the option for more
@@ -64,9 +65,9 @@ simple file lists, header metadata, comments, and changelog text. Unsupported SP
 constructs stop editing before output rather than being silently omitted. Deleting
 keys or adding unmapped groups is rejected; supported existing lists can change.
 
-Use `--diff` or `--stdout` for a preview, `-o FILE` for a separate destination, and
-`--force` to allow replacement. Without an explicit action, changed existing files
-use the confirmation menu. Showing a diff returns to the menu. `--stdout` and
+Use `--diff` or `--stdout` for a preview, or `-o FILE` for a separate destination.
+Replacing a different existing output file requires confirmation; `--force` with
+`--output` allows replacement without prompting. `--stdout` and
 `--output` accept one SPEC; `--diff` can preview a batch. Source changes detected
 after export or while waiting for the editor or menu stop publication, even with
 `--force`. Editor work is retained when validation fails or edits remain unapplied.
@@ -79,8 +80,11 @@ code drafts
 ruyipack edit --from drafts --check
 ruyipack edit --from drafts --check --format json
 ruyipack edit --from drafts --diff
-ruyipack edit --from drafts --force
+ruyipack edit --from drafts
 ```
+
+`--from` checks and applies the saved drafts without opening an editor. To edit
+those drafts again, add `--editor COMMAND`.
 
 Each draft is named after its source file. The `.state` directory keeps original
 bytes, source identities, and JSON Schemas separate from editable fields. Keep it
@@ -91,8 +95,8 @@ view. Generated drafts declare TOML 1.1 and a local schema for compatible editor
 
 Batch candidates are all checked before publication. Writes are atomic per file,
 not across the batch; a later I/O failure reports files already written. Inspect
-those files before retrying. Source files remain the authority until explicit
-publication; there is no save-triggered write-back.
+those files before retrying. Drafts do not update SPEC files in the background;
+write-back happens only after the command validates them.
 
 Generate a SPEC from an Autotools manifest:
 

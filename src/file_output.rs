@@ -152,7 +152,7 @@ pub(crate) struct EditFile<'a> {
 
 #[derive(Clone, Copy)]
 pub(crate) enum EditMode {
-    Prompt,
+    Write,
     Diff,
     Stdout,
     Overwrite,
@@ -214,20 +214,32 @@ fn run_edit_batch(
     {
         return Ok(());
     }
-    let no_conflicts = files.iter().zip(&existing).all(|(file, existing)| {
-        existing
-            .as_deref()
-            .is_none_or(|bytes| bytes == file.contents.as_bytes())
-    });
+    // Writing back to the source is the edit action, not an output conflict.
+    let no_conflicts =
+        files
+            .iter()
+            .zip(&targets)
+            .zip(&existing)
+            .all(|((file, target), existing)| {
+                target == file.source_path
+                    || existing
+                        .as_deref()
+                        .is_none_or(|bytes| bytes == file.contents.as_bytes())
+            });
     let action = match mode {
         _ if no_conflicts => ConflictAction::Overwrite,
         EditMode::Overwrite => ConflictAction::Overwrite,
-        EditMode::Prompt => loop {
+        EditMode::Write => loop {
             check_sources(files, &overwritten)?;
             let selected = select_edit_action(files, &targets, &existing)?;
             check_sources(files, &overwritten)?;
             if matches!(selected, ConflictAction::Diff) {
-                show_edit_diffs(files)?;
+                for ((file, target), existing) in files.iter().zip(&targets).zip(&existing) {
+                    if read_optional_target(target)? != *existing {
+                        return Err(OutputError::Changed(target.clone()));
+                    }
+                    show_diff(target, existing.as_deref(), file.contents)?;
+                }
             } else {
                 break selected;
             }
@@ -235,8 +247,8 @@ fn run_edit_batch(
         _ => unreachable!("read-only edit modes already returned"),
     };
     if matches!(action, ConflictAction::Skip) {
-        for file in files {
-            writeln!(io::stderr().lock(), "Kept {}", file.source_path.display())
+        for target in &targets {
+            writeln!(io::stderr().lock(), "Kept {}", target.display())
                 .map_err(OutputError::Stderr)?;
         }
         return Ok(());
@@ -348,7 +360,7 @@ fn select_edit_action(
         .map_err(OutputError::Prompt)?;
     selected
         .map(|index| choices[index].0)
-        .ok_or_else(|| OutputError::Cancelled(files[0].source_path.to_path_buf()))
+        .ok_or_else(|| OutputError::Cancelled(targets[0].clone()))
 }
 
 /// Resolves destination parents while keeping the final path entry explicit.
@@ -619,7 +631,9 @@ pub(crate) enum OutputError {
     SourceChanged(PathBuf),
     #[error("cannot publish edit batch: {0}")]
     EditLayout(String),
-    #[error("edit publication requires a terminal; use --diff, --stdout or --force")]
+    #[error(
+        "output already exists with different content; confirmation requires a terminal\nhelp: use --force to replace it, --output FILE for another path, or --diff to preview the source edit"
+    )]
     EditPrompt,
     #[error("batch stopped after writing {written}; remaining files were not published: {source}")]
     Partial {

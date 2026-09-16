@@ -169,6 +169,13 @@ fn unchanged_assignment_preserves_every_source_byte() {
         .unwrap();
     success(&diff);
     assert!(diff.stdout.is_empty());
+    let saved = command(directory.path())
+        .args(["ed.spec", "--set", "package.version=1.22.5"])
+        .output()
+        .unwrap();
+    success(&saved);
+    assert!(saved.stdout.is_empty());
+    assert!(saved.stderr.is_empty());
     unchanged(directory.path());
 }
 
@@ -195,6 +202,16 @@ fn version_assignment_changes_only_the_original_value() {
         1
     );
     unchanged(directory.path());
+    let saved = command(directory.path())
+        .args(["ed.spec", "--set", "package.version=1.22.6"])
+        .output()
+        .unwrap();
+    success(&saved);
+    assert!(saved.stdout.is_empty());
+    assert_eq!(
+        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+        version_source("1.22.6")
+    );
 }
 
 #[test]
@@ -235,7 +252,7 @@ fn invalid_assignments_never_publish_a_partial_edit() {
         for assignment in assignments {
             command.args(["--set", assignment]);
         }
-        let output = command.arg("--force").output().unwrap();
+        let output = command.output().unwrap();
         assert_eq!(output.status.code(), Some(1), "{output:?}");
         unchanged(directory.path());
     }
@@ -281,7 +298,6 @@ fn selected_draft_merges_only_its_allowed_fields() {
     let output = command(directory.path())
         .arg("--from")
         .arg(&drafts)
-        .arg("--force")
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -366,7 +382,6 @@ fn all_prepared_files_are_checked_before_any_source_is_written() {
     let output = command(directory.path())
         .arg("--from")
         .arg(&drafts)
-        .arg("--force")
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -406,14 +421,20 @@ fn static_check_failure_blocks_even_forced_publication() {
     );
     assert_eq!(fs::read_to_string(&path).unwrap(), source);
 
-    let output = command(directory.path())
-        .args(["ed.spec", "--set", "package.version=1.22.6", "--force"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("candidate failed static checks"));
-    assert_eq!(fs::read_to_string(path).unwrap(), source);
+    let target = directory.path().join("other.spec");
+    fs::write(&target, "Keep this output\n").unwrap();
+    for extra in [&[][..], &["--output", "other.spec", "--force"][..]] {
+        let output = command(directory.path())
+            .args(["ed.spec", "--set", "package.version=1.22.6"])
+            .args(extra)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("candidate failed static checks"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), source);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "Keep this output\n");
+    }
 }
 
 #[test]
@@ -440,7 +461,7 @@ fn prepared_dependency_edit_changes_only_its_source_value() {
 }
 
 #[test]
-fn force_applies_each_valid_prepared_candidate() {
+fn saved_drafts_apply_without_reopening_an_editor() {
     let directory = fixture();
     fs::write(directory.path().join("second.spec"), SOURCE).unwrap();
     let drafts = prepare(
@@ -453,7 +474,6 @@ fn force_applies_each_valid_prepared_candidate() {
     let output = command(directory.path())
         .arg("--from")
         .arg(&drafts)
-        .arg("--force")
         .output()
         .unwrap();
     success(&output);
@@ -466,24 +486,29 @@ fn force_applies_each_valid_prepared_candidate() {
 }
 
 #[test]
-fn stale_prepared_source_is_not_overwritten_even_with_force() {
+fn stale_prepared_source_is_not_overwritten() {
     let directory = fixture();
     let drafts = prepare(directory.path(), &["ed.spec"], &["package.version"]);
     change_version(&drafts.join("ed.toml"), "1.22.6");
     let external = format!("{SOURCE}# Concurrent change\n");
     fs::write(directory.path().join("ed.spec"), &external).unwrap();
-    let output = command(directory.path())
-        .arg("--from")
-        .arg(&drafts)
-        .arg("--force")
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("changed"));
-    assert_eq!(
-        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-        external
-    );
+    let target = directory.path().join("other.spec");
+    fs::write(&target, "Other file\n").unwrap();
+    for extra in [&[][..], &["--output", "other.spec", "--force"][..]] {
+        let output = command(directory.path())
+            .arg("--from")
+            .arg(&drafts)
+            .args(extra)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("changed"));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+            external
+        );
+        assert_eq!(fs::read_to_string(&target).unwrap(), "Other file\n");
+    }
 }
 
 #[test]
@@ -590,6 +615,31 @@ fn explicit_output_writes_a_copy_without_changing_the_source() {
         version_source("1.22.6")
     );
     unchanged(directory.path());
+    let target = directory.path().join("edited.spec");
+    fs::write(&target, "Other file\n").unwrap();
+    let args = [
+        "ed.spec",
+        "--set",
+        "package.version=1.22.6",
+        "--output",
+        "edited.spec",
+    ];
+    let refused = command(directory.path()).args(args).output().unwrap();
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("--force"));
+    assert_eq!(fs::read_to_string(&target).unwrap(), "Other file\n");
+    unchanged(directory.path());
+    let forced = command(directory.path())
+        .args(args)
+        .arg("--force")
+        .output()
+        .unwrap();
+    success(&forced);
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        version_source("1.22.6")
+    );
+    unchanged(directory.path());
 }
 
 #[test]
@@ -636,6 +686,47 @@ fn quoted_editor_command_edits_toml_without_polluting_spec_stdout() {
 
 #[cfg(unix)]
 #[test]
+fn successful_editor_saves_checked_changes_and_cleans_temporary_drafts() {
+    for persistent in [false, true] {
+        let directory = fixture();
+        let editor = script(
+            directory.path(),
+            "sed 's/1.22.5/1.22.6/' \"$1\" > \"$1.next\"\nmv \"$1.next\" \"$1\"",
+        );
+        let mut edit = command(directory.path());
+        if persistent {
+            let drafts = prepare(directory.path(), &["ed.spec"], &["package.version"]);
+            edit.arg("--from").arg(drafts);
+        } else {
+            edit.args(["ed.spec", "--field", "package.version"]);
+        }
+        let output = edit.args(["--editor", &editor]).output().unwrap();
+        success(&output);
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+            version_source("1.22.6")
+        );
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("Drafts retained:"));
+        assert!(!fs::read_dir(directory.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("ruyipack-edit-")
+        }));
+        assert_eq!(directory.path().join("drafts").exists(), persistent);
+        if persistent {
+            let draft = fs::read_to_string(directory.path().join("drafts/ed.toml")).unwrap();
+            let document: toml::Table = toml::from_str(&draft).unwrap();
+            assert_eq!(document["package"]["version"].as_str(), Some("1.22.6"));
+            assert!(directory.path().join("drafts/.state/index.json").is_file());
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn source_changed_while_editor_runs_is_not_overwritten() {
     let directory = fixture();
     let editor = script(
@@ -643,14 +734,7 @@ fn source_changed_while_editor_runs_is_not_overwritten() {
         "printf '# Concurrent change\\n' >> ed.spec\nsed 's/1.22.5/1.22.6/' \"$1\" > \"$1.next\"\nmv \"$1.next\" \"$1\"",
     );
     let output = command(directory.path())
-        .args([
-            "ed.spec",
-            "--field",
-            "package.version",
-            "--editor",
-            &editor,
-            "--force",
-        ])
+        .args(["ed.spec", "--field", "package.version", "--editor", &editor])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -670,14 +754,7 @@ fn editor_failure_retains_its_changed_draft() {
         "sed 's/1.22.5/1.22.6/' \"$1\" > \"$1.next\"\nmv \"$1.next\" \"$1\"\nexit 7",
     );
     let output = command(directory.path())
-        .args([
-            "ed.spec",
-            "--field",
-            "package.version",
-            "--editor",
-            &editor,
-            "--force",
-        ])
+        .args(["ed.spec", "--field", "package.version", "--editor", &editor])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -699,6 +776,7 @@ fn invalid_cli_combinations_fail_before_editing() {
     for args in [
         vec!["ed.spec", "--view", "--set", "package.version=2"],
         vec!["ed.spec", "--schema", "--force"],
+        vec!["ed.spec", "--set", "package.version=2", "--force"],
         vec!["ed.spec", "--set", "package.version"],
         vec![
             "ed.spec",

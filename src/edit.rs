@@ -97,12 +97,9 @@ fn execute(options: &Options) -> Result<bool, String> {
         writeln!(io::stderr().lock(), "Drafts: {}\nCheck: ruyipack edit --from '{}' --check\nPreview: ruyipack edit --from '{}' --diff", dir.display(), dir.display(), dir.display()).map_err(|e| e.to_string())?;
         return Ok(true);
     }
-    // An explicit report reads current values; only the default action opens an editor.
+    // Saved drafts already contain the edit; reopening them requires --editor.
     let opens_editor = options.editor.is_some()
-        || (options.set.is_empty()
-            && !options.check
-            && !(options.from.is_some()
-                && (options.diff || options.stdout || options.force || options.output.is_some())));
+        || (options.set.is_empty() && !options.check && options.from.is_none());
     let mut temporary = None;
     if opens_editor {
         if options.from.is_none() {
@@ -286,7 +283,7 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
     } else if options.force {
         file_output::EditMode::Overwrite
     } else {
-        file_output::EditMode::Prompt
+        file_output::EditMode::Write
     };
     file_output::run_edits(&files, mode).map_err(|e| e.to_string())?;
     Ok(true)
