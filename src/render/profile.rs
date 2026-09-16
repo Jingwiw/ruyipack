@@ -8,10 +8,6 @@
 
 use super::{RenderError, manifest::Manifest};
 use crate::profile::Profile;
-use rpm_spec::{
-    ast::{DepExpr, Text},
-    parser::{ParserState, deps::parse_dep_expr},
-};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -33,21 +29,12 @@ pub(crate) fn load(manifest: &Manifest) -> Result<Profile, RenderError> {
             manifest.build.system
         )));
     }
-    let requirements = manifest
-        .build_requires
-        .rpm
-        .iter()
-        .map(|entry| {
-            parse_dep_expr(&ParserState::new(), entry).map_err(|()| {
-                RenderError::Invalid(format!("build-requires.rpm: invalid dependency {entry:?}"))
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let requirements =
+        crate::spec::expression::direct_dependency_names(&manifest.build_requires.rpm)
+            .map_err(RenderError::Invalid)?;
     for required in contract.build_requires {
         // A conditional or alternative dependency does not guarantee this build tool.
-        if !requirements.iter().any(|entry| matches!(entry,
-            DepExpr::Atom(atom) if atom.arch.is_none() && atom.name == Text::from(required.as_str())
-        )) {
+        if !requirements.contains(&required) {
             return Err(RenderError::Invalid(format!(
                 "build-requires.rpm: declare {required:?} required by {}",
                 contract.name

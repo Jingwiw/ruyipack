@@ -18,7 +18,7 @@ pub(crate) enum Scheme {
 /// Checks a Source using only already-known package fields, preserving its spelling.
 /// RPM syntax is recognized before URL validation, including escaped literal percent signs.
 pub(crate) fn validate_expression(value: &str, fields: &[(&str, &str)]) -> Result<Scheme, String> {
-    let resolved = expression::substitute_fields(value, fields)?;
+    let resolved = crate::spec::expression::substitute_fields(value, fields)?;
     validate_url(&resolved)
 }
 
@@ -61,61 +61,5 @@ pub(crate) fn validate_sha256(value: &str) -> Result<(), &'static str> {
         Ok(())
     } else {
         Err("expected 64 hexadecimal digits")
-    }
-}
-
-// This adapter is the only Source-expression code that knows rpm-spec's grammar.
-mod expression {
-    use rpm_spec::{
-        ast::{ConditionalMacro, MacroKind, Text, TextSegment},
-        parser::{Input, ParserState, text::parse_text},
-    };
-
-    pub(super) fn substitute_fields(
-        value: &str,
-        fields: &[(&str, &str)],
-    ) -> Result<String, String> {
-        let text = parse(value)?;
-        let mut resolved = String::with_capacity(value.len());
-        for segment in &text.segments {
-            match segment {
-                TextSegment::Literal(literal) => resolved.push_str(literal),
-                TextSegment::Macro(reference)
-                    if matches!(reference.kind, MacroKind::Plain | MacroKind::Braced)
-                        && reference.conditional == ConditionalMacro::None
-                        && reference.args.is_empty()
-                        && reference.with_value.is_none() =>
-                {
-                    if !matches!(reference.name.as_str(), "name" | "version" | "url") {
-                        return Err(format!(
-                            "unsupported source macro {:?}; available fields are name, version and url",
-                            reference.name
-                        ));
-                    }
-                    let field = fields.iter().find_map(|(name, value)| (*name == reference.name).then_some(*value))
-                        .ok_or_else(|| format!("unsupported source macro {:?}: package field is unavailable or ambiguous", reference.name))?;
-                    let field = parse(field)?;
-                    let literal = field.literal_str().ok_or_else(|| {
-                        format!(
-                            "unsupported source macro {:?}: package field is not a supported static literal",
-                            reference.name
-                        )
-                    })?;
-                    resolved.push_str(literal);
-                }
-                _ => return Err("unsupported Source expression requires RPM evaluation".into()),
-            }
-        }
-        Ok(resolved)
-    }
-
-    fn parse(value: &str) -> Result<Text, String> {
-        let state = ParserState::new();
-        let (_, text) = parse_text(&state, Input::new(value), &|_| false)
-            .map_err(|_| "unsupported or invalid RPM source expression".to_owned())?;
-        if !state.diagnostics.borrow().is_empty() {
-            return Err("unsupported or invalid RPM source expression".into());
-        }
-        Ok(text)
     }
 }

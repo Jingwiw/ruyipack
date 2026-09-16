@@ -9,6 +9,7 @@
 mod analyzer;
 mod diagnostic;
 pub(crate) mod document;
+pub(crate) mod expression;
 pub(crate) mod inspection;
 mod syntax;
 pub(crate) mod verify;
