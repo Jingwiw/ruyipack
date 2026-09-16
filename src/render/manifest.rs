@@ -17,6 +17,7 @@ pub(crate) struct Manifest {
     pub(crate) package: Package,
     #[serde(deserialize_with = "read_sources")]
     pub(crate) sources: BTreeMap<u32, Source>,
+    #[serde(default)]
     pub(crate) build: Build,
     pub(crate) build_requires: BuildRequires,
 }
@@ -80,10 +81,10 @@ pub(crate) struct Source {
     pub(crate) url: String,
     pub(crate) sha256: String,
 }
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Build {
-    pub(crate) system: String,
+    pub(crate) system: Option<String>,
     #[serde(default)]
     pub(crate) stages: BTreeMap<Stage, StageConfig>,
 }
@@ -117,7 +118,7 @@ pub(crate) struct StageConfig {
     pub(crate) options: Vec<String>,
     #[serde(default)]
     pub(crate) prepend: String,
-    /// Absence keeps the default action; an empty string emits an empty main section.
+    /// Sets the main section, overriding any build-system action. An empty string emits an empty section.
     pub(crate) replace: Option<String>,
     #[serde(default)]
     pub(crate) append: String,
@@ -206,6 +207,12 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
             .map_err(|reason| invalid(&format!("sources.{number}.sha256"), reason))?;
     }
     for (stage, config) in &manifest.build.stages {
+        if manifest.build.system.is_none() && !config.options.is_empty() {
+            return Err(invalid(
+                &format!("build.stages.{}.options", stage.as_str()),
+                "requires build.system; put arguments in the explicit stage script",
+            ));
+        }
         if config.replace.is_some() && !config.options.is_empty() {
             return Err(invalid(
                 &format!("build.stages.{}", stage.as_str()),

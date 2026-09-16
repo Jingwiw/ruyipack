@@ -584,3 +584,96 @@ fn stage_options_and_replacement_are_mutually_exclusive_per_stage() {
     );
     assert_eq!(output.stdout, expected.as_bytes());
 }
+
+#[test]
+fn omitted_build_system_adds_no_stages_or_requirements() {
+    let source = MANIFEST
+        .replace("[build]\nsystem = \"autotools\"\n", "")
+        .replace(
+            "[\"autoconf\", \"automake\", \"libtool\", \"make\", \"lzip\"]",
+            "[]",
+        );
+    let expected = SPEC.replace("BuildSystem:    autotools\n", "").replace(
+        concat!(
+            "BuildRequires:  autoconf\nBuildRequires:  automake\n",
+            "BuildRequires:  libtool\nBuildRequires:  make\nBuildRequires:  lzip\n\n",
+        ),
+        "",
+    );
+    for extra in [
+        "",
+        "\n[build]\n",
+        "\n[build.stages.conf]\noptions = []\nprepend = ''\nappend = ''\n",
+    ] {
+        let directory = workspace(&format!("{source}{extra}"));
+        let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+        success(&output);
+        assert_eq!(output.stdout, expected.as_bytes(), "{extra}");
+    }
+}
+
+#[test]
+fn explicit_stages_work_without_build_system_defaults() {
+    let source = MANIFEST
+        .replace("system = \"autotools\"\n", "")
+        .replace("\"autoconf\", \"automake\", \"libtool\", ", "");
+    let extra = r#"
+[build.stages.prep]
+replace = '%autosetup -p1'
+[build.stages.install]
+prepend = 'echo before-install'
+replace = '%make_install'
+append = 'echo after-install'
+"#;
+    let expected = SPEC.replace("BuildSystem:    autotools\n", "").replace(
+        "BuildRequires:  autoconf\nBuildRequires:  automake\nBuildRequires:  libtool\n",
+        "",
+    );
+    // Hooks also work without a main section; no implicit action is inserted.
+    for main in ["%make_install", ""] {
+        let extra = if main.is_empty() {
+            extra.replace("replace = '%make_install'\n", "")
+        } else {
+            extra.into()
+        };
+        let directory = workspace(&format!("{source}{extra}"));
+        let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+        success(&output);
+        let main = if main.is_empty() {
+            String::new()
+        } else {
+            format!("%install\n{main}\n\n")
+        };
+        let expected = expected.replace(
+            "%files\n",
+            &format!(
+                "%prep\n%autosetup -p1\n\n%install -p\necho before-install\n\n\
+                 {main}%install -a\necho after-install\n\n%files\n"
+            ),
+        );
+        assert_eq!(output.stdout, expected.as_bytes());
+    }
+}
+
+#[test]
+fn explicit_build_keeps_validation_and_rejects_options_without_defaults() {
+    let source = MANIFEST.replace("system = \"autotools\"\n", "");
+    rejected(
+        &format!("{source}\n[build.stages.conf]\noptions = ['--enable-nls']\n"),
+        "build.stages.conf.options: requires build.system",
+    );
+    for system in ["", "plain"] {
+        rejected(
+            &MANIFEST.replace("system = \"autotools\"", &format!("system = '{system}'")),
+            "build.system: unsupported build system",
+        );
+    }
+    rejected(
+        &source.replace("\"lzip\"", "\"lzip >=\""),
+        "parser diagnostics",
+    );
+    rejected(
+        &source.replace("GPL-3.0-or-later AND LGPL-2.1-or-later", "MIT AND"),
+        "package.license",
+    );
+}

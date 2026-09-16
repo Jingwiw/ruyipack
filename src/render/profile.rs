@@ -20,13 +20,15 @@ struct Contract {
 /// Checks explicit requirements; the contract does not add package dependencies.
 pub(crate) fn load(manifest: &Manifest) -> Result<Profile, RenderError> {
     let profile = crate::profile::load()?;
+    let Some(system) = manifest.build.system.as_deref() else {
+        return Ok(profile);
+    };
     let contract: Contract = toml::from_str(include_str!(
         "../../profiles/openruyi-v1/buildsystems/autotools.toml"
     ))?;
-    if manifest.build.system != contract.name {
+    if system != contract.name {
         return Err(RenderError::Invalid(format!(
-            "build.system: unsupported build system {:?}",
-            manifest.build.system
+            "build.system: unsupported build system {system:?}"
         )));
     }
     let requirements =

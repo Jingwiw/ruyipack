@@ -49,9 +49,15 @@ pub(crate) fn run(
         (Tag::Summary, &package.summary),
         (Tag::License, &package.license),
         (Tag::URL, &package.url),
-        (Tag::Other("BuildSystem".into()), &recipe.build.system),
     ] {
         tags.push((tag, None, TagValue::Text(text(value)?)));
+    }
+    if let Some(system) = &recipe.build.system {
+        tags.push((
+            Tag::Other("BuildSystem".into()),
+            None,
+            TagValue::Text(text(system)?),
+        ));
     }
     if let Vcs::Git(url) = &package.vcs {
         tags.push((Tag::VCS, None, TagValue::Text(text(&format!("git:{url}"))?)));

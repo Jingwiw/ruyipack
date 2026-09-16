@@ -57,7 +57,9 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
             column,
         );
     }
-    write_tag(&mut output, "BuildSystem:", &recipe.build.system, column);
+    if let Some(system) = &recipe.build.system {
+        write_tag(&mut output, "BuildSystem:", system, column);
+    }
     output.push('\n');
 
     for (stage, config) in &recipe.build.stages {
@@ -79,7 +81,9 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
     for requirement in &recipe.build_requires.rpm {
         write_tag(&mut output, "BuildRequires:", requirement, column);
     }
-    output.push('\n');
+    if !recipe.build_requires.rpm.is_empty() {
+        output.push('\n');
+    }
 
     output.push_str("%description\n");
     output.push_str(recipe.package.description.trim_end_matches('\n'));

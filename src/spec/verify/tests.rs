@@ -322,3 +322,16 @@ fn stage_replacement_checks_explicit_main_sections() {
         assert!(run(&parsed, &recipe, &profile).is_err(), "{before}");
     }
 }
+
+#[test]
+fn build_system_presence_matches_the_manifest() {
+    let mut recipe = manifest::parse(MANIFEST).unwrap();
+    let profile = profile::load(&recipe).unwrap();
+    let declarative = spec::render(&recipe, &profile);
+    recipe.build.system = None;
+    let explicit = spec::render(&recipe, &profile);
+    assert!(run(&ParsedSpec::parse(&explicit), &recipe, &profile).is_ok());
+    assert!(run(&ParsedSpec::parse(&declarative), &recipe, &profile).is_err());
+    recipe.build.system = Some("autotools".into());
+    assert!(run(&ParsedSpec::parse(&explicit), &recipe, &profile).is_err());
+}

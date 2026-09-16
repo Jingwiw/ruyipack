@@ -173,6 +173,26 @@ before and after the replacement. Non-empty `options` cannot accompany `replace`
 in the same stage; put arguments in the replacement script instead. When skipping
 tests, keep the reason in a script comment so it appears in the SPEC.
 
+To write all stage commands explicitly, omit `build.system`:
+
+```toml
+[build.stages.prep]
+replace = '%autosetup -p1'
+
+[build.stages.build]
+replace = '%make_build'
+
+[build.stages.install]
+replace = '%make_install'
+```
+
+Without a build system, only the stages you supply are emitted; there are no
+default unpacking, configuration, build, install, or test actions. `replace` sets
+the main script, and `prepend` and `append` add scripts before and after it.
+`options` requires `build.system`; put arguments directly in explicit scripts.
+Omitting `[build]` emits no build stages. Declare the tools your commands need
+in `[build-requires]`; no build-system requirements are added or enforced.
+
 `gen NAME` reads `./NAME.toml` by default; `--manifest` selects another input file.
 The SPEC is written beside the manifest unless `-o, --output FILE` selects another
 path. Relative output paths are resolved from the current directory. The parent
@@ -224,7 +244,8 @@ SHA-256 values contain 64 hexadecimal digits, with their original case preserved
 
 Declare additional remote inputs as `[sources.1]`, `[sources.2]`, and so on, each
 with `url` and `sha256`. Source numbers are preserved and printed in numeric order.
-`sources.0` supplies the archive for the default unpacking step.
+`sources.0` identifies the primary source. The Autotools default unpacking step
+uses it as the source archive.
 
 `check`, `gen`, and `edit` share the selected SPEC checks, including SPDX
 expressions in package `License` tags (`RPK001`). Literal expressions are checked
