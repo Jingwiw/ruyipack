@@ -32,6 +32,35 @@ value-only or safe replacement ranges. The view omits macro definitions and sect
 bodies and does not evaluate conditions. The preamble tree uses the recorded
 `rpm-spec` revision's serialization format.
 
+Edit a supported SPEC through TOML fields:
+
+```sh
+ruyipack edit ed.spec --view
+ruyipack edit ed.spec --field package.version --schema
+ruyipack edit ed.spec --set package.version=1.22.6 --diff
+ruyipack edit ed.spec --set package.version=1.22.6 --force
+ruyipack edit ed.spec --prepare drafts
+ruyipack edit --from drafts --check --format json
+ruyipack edit --from drafts --diff
+ruyipack edit --from drafts --force
+```
+
+`--set` replaces existing strings; repeat it for more fields. `--field` selects
+fields or groups for the view, schema, or prepared draft. Edit arrays in the TOML
+files. Drafts contain business fields; `.state` keeps original bytes, source paths,
+and per-document schemas. Keep that directory with the drafts. Saving TOML does
+not overwrite SPEC files. Changed sources require fresh drafts, even with --force.
+
+Without an output action, changed existing files prompt before publication. Use
+`--diff`, `--stdout`, or `-o FILE` for a preview or separate output. stdout and
+explicit output accept one SPEC. All candidates must pass before writing starts;
+individual writes are atomic, but the batch is not. I/O failures report files
+already written. Prepare fresh drafts after applying or externally changing sources.
+
+Mapping and static checks reject unsupported constructs, unknown fields, missing
+keys, or changed types rather than dropping source text. RPM expressions stay
+unexpanded. This does not download sources, check patch applicability, or build.
+
 Generate a SPEC from an Autotools manifest:
 
 ```sh
@@ -74,8 +103,8 @@ with each other or with preview options. `--stdout` cannot accompany `--diff` or
 
 When content differs and no action is specified, the command shows the conflicting
 file and available options. If stdin and stderr are terminals, a menu offers to
-keep the file, show a diff and return to the menu, write a copy, or overwrite it.
-Keeping the file is highlighted initially and still requires confirmation. Cancelling, or encountering
+keep the file, show a diff, write a copy, or overwrite it. Keeping the file is
+highlighted initially and still requires confirmation. Cancelling, or encountering
 a conflict without a usable terminal, returns an error without writing.
 
 Menu copies use `ed.spec.new`, then `ed.spec.new.1`, and so on, without replacing
@@ -89,50 +118,3 @@ preserves these expressions and URL filename fragments such as `#/name.tar.gz`.
 Declare additional remote inputs as `[sources.1]`, `[sources.2]`, and so on, each
 with `url` and `sha256`. Source numbers are preserved and printed in numeric order.
 `sources.0` supplies the archive for the default unpacking step.
-
-Edit the source-preserving author fields of a supported SPEC:
-
-```sh
-ruyipack edit ed.spec --view
-ruyipack edit ed.spec --set package.version=1.22 --diff
-ruyipack edit ed.spec --set package.version=1.22 --stdout
-ruyipack edit ed.spec --set package.version=1.22 -o reviewed.spec
-ruyipack edit ed.spec --set package.version=1.22 --force
-ruyipack edit ed.spec --set package.version=1.22 --set spec.release=2
-```
-
-`--view` prints the supported author fields as TOML. `--set FIELD=VALUE` replaces
-an existing string field; repeat it to change several fields. `--diff` prints a
-source-to-candidate diff and `--stdout` prints the complete candidate; neither
-writes files. `--force` overwrites the source without a confirmation menu.
-`-o, --output FILE` selects another destination; missing targets are created and
-identical targets are left unchanged. `--view` cannot accompany `--set` or any
-publication option. `--diff` and `--stdout` cannot accompany another output mode;
-`--force` can accompany `--output`.
-
-For different existing content, the default terminal menu offers to keep it,
-show a diff and return to the menu, write a `.new` copy, or overwrite the target.
-Keep is selected by default. Without a terminal, a conflict fails without writing;
-choose an explicit read-only preview or `--force`. Edits reject source changes
-observed since the candidate was prepared, including when using `--force`.
-On Unix, new edit outputs and copies preserve the source access bits, while
-replacements preserve the target access bits; special mode bits are cleared.
-
-Before previewing or publishing, RuyiPack renders the candidate with source-local changes,
-reparses it, checks that the requested editable fields survived, and runs the
-same selected static checks as `check`. Unsupported or ambiguous source forms
-are rejected rather than rewritten approximately. RPM expressions stay unexpanded;
-changing a version or URL does not fetch sources or validate a package build.
-
-Select only the fields needed for a read-only view or its JSON Schema:
-
-```sh
-ruyipack edit ed.spec --view --field package.files
-ruyipack edit ed.spec --schema --field package.version
-```
-
-Repeat `--field` to select more fields or complete groups. Overlapping selections
-retain one copy of each field in source-derived order. `--schema` describes exactly
-the displayed shape, including value types and field descriptions. Unknown fields
-are errors. `--field` requires `--view` or `--schema` and cannot accompany `--set`;
-these views cannot be combined with publication options.

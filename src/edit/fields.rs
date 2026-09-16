@@ -44,6 +44,19 @@ pub(super) fn select(original: &Table, selected: &[String]) -> Result<Table, Str
     Ok(select_table(original, selected, ""))
 }
 
+/// Merges only the selected shape; unselected or unknown input is an error.
+pub(super) fn merge(
+    original: &Table,
+    selected: &[String],
+    edited: &Table,
+) -> Result<Table, String> {
+    let projection = select(original, selected)?;
+    validate_shape(&projection, edited)?;
+    let mut result = original.clone();
+    merge_table(&mut result, edited);
+    Ok(result)
+}
+
 /// Describes the current draft, not fields unsupported by the source mapping.
 pub(super) fn schema(document: &Table) -> Json {
     let mut schema = table_schema(document, "");
@@ -103,6 +116,16 @@ fn select_table(original: &Table, selected: &[String], parent: &str) -> Table {
         }
     }
     result
+}
+
+fn merge_table(original: &mut Table, edited: &Table) {
+    for (key, changed) in edited {
+        let value = original.get_mut(key).expect("validated field shape");
+        match (value, changed) {
+            (Value::Table(original), Value::Table(edited)) => merge_table(original, edited),
+            (value, changed) => *value = changed.clone(),
+        }
+    }
 }
 
 fn check_table(original: &Table, edited: &Table, parent: &str) -> Result<(), String> {

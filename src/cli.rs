@@ -21,7 +21,7 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
-    /// Edits author fields of an existing SPEC file.
+    /// Edits SPEC fields through TOML or command-line assignments.
     Edit(edit::Options),
     /// Checks required main-package tag presence in an RPM SPEC file.
     Check {
