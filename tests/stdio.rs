@@ -48,6 +48,15 @@ fn disconnected_standard_streams_return_errors_without_panicking() {
         &["inspect", "ed.spec"],
         &["inspect", "ed.spec", "--format", "json"],
         &["gen", "ed", "--stdout"],
+        &["edit", "ed.spec", "--view"],
+        &["edit", "ed.spec", "--check", "--format", "json"],
+        &[
+            "edit",
+            "ed.spec",
+            "--set",
+            "package.version=1.22.6",
+            "--diff",
+        ],
     ] {
         let result = Command::new(env!("CARGO_BIN_EXE_ruyipack"))
             .current_dir(directory.path())

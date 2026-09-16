@@ -272,3 +272,161 @@ fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
     }
     fs::read(path).map_err(|error| format!("cannot read draft file {}: {error}", path.display()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source(dir: &Path, name: &str) -> (PathBuf, String, Vec<String>, toml::Table) {
+        let path = dir.join(name);
+        let original = "Name: demo\n".to_owned();
+        fs::write(&path, &original).unwrap();
+        let table = toml::from_str("name = 'demo'").unwrap();
+        (path, original, vec!["name".into()], table)
+    }
+
+    #[test]
+    fn roundtrip_keeps_business_fields_separate_from_originals() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = source(temp.path(), "demo.spec");
+        let dir = temp.path().join("drafts");
+        let prepared = create(&dir, std::slice::from_ref(&input)).unwrap();
+        assert_eq!(prepared.len(), 1);
+        let text = fs::read_to_string(&prepared[0].path).unwrap();
+        assert!(
+            text.starts_with(
+                "#:tombi toml-version = \"v1.1.0\"\n#:schema .state/schema/0.json\n\n"
+            )
+        );
+        assert_eq!(toml::from_str::<toml::Table>(&text).unwrap(), input.3);
+        let loaded = load(&dir).unwrap();
+        assert_eq!(loaded[0].source, fs::canonicalize(&input.0).unwrap());
+        assert_eq!(loaded[0].original, input.1);
+        assert_eq!(loaded[0].fields, input.2);
+        assert_eq!(loaded[0].path, prepared[0].path);
+        assert_eq!(fs::read_to_string(&input.0).unwrap(), input.1);
+        assert_eq!(
+            fs::read_to_string(dir.join(".state/originals/0.spec")).unwrap(),
+            input.1
+        );
+    }
+
+    #[test]
+    fn source_checks_are_deferred_but_saved_originals_are_verified() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = source(temp.path(), "demo.spec");
+        let dir = temp.path().join("drafts");
+        create(&dir, std::slice::from_ref(&input)).unwrap();
+        fs::write(&input.0, "Name: changed\n").unwrap();
+        assert_eq!(load(&dir).unwrap()[0].original, input.1);
+        fs::write(&input.0, &input.1).unwrap();
+        fs::write(dir.join(".state/originals/0.spec"), "Name: changed\n").unwrap();
+        assert!(load(&dir).err().unwrap().contains("hash mismatch"));
+    }
+
+    #[test]
+    fn all_sources_are_checked_before_preparation_and_keep_their_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = source(temp.path(), "first.spec");
+        let second = source(temp.path(), "second.spec");
+        let inputs = [first, second];
+        let dir = temp.path().join("drafts");
+        fs::write(&inputs[1].0, "Name: stale\n").unwrap();
+        assert!(create(&dir, &inputs).is_err());
+        assert!(!dir.exists());
+        fs::write(&inputs[1].0, &inputs[1].1).unwrap();
+        create(&dir, &inputs).unwrap();
+        let loaded = load(&dir).unwrap();
+        assert_eq!(loaded.len(), 2);
+        for (position, draft) in loaded.iter().enumerate() {
+            assert_eq!(draft.source, fs::canonicalize(&inputs[position].0).unwrap());
+            assert_eq!(draft.original, inputs[position].1);
+            assert!(
+                dir.join(format!(".state/originals/{position}.spec"))
+                    .is_file()
+            );
+            assert!(dir.join(format!(".state/schema/{position}.json")).is_file());
+        }
+    }
+
+    #[test]
+    fn invalid_metadata_is_rejected_before_loading_drafts() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = source(temp.path(), "demo.spec");
+        let dir = temp.path().join("drafts");
+        create(&dir, &[input]).unwrap();
+        let path = dir.join(".state/index.json");
+        let original: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let mut invalid = Vec::new();
+        let mut value = original.clone();
+        value["version"] = 2.into();
+        invalid.push(value);
+        let mut value = original.clone();
+        value["unexpected"] = true.into();
+        invalid.push(value);
+        for field in ["original", "schema", "draft"] {
+            let mut value = original.clone();
+            value["drafts"][0][field] = "../outside".into();
+            invalid.push(value);
+        }
+        let mut value = original.clone();
+        value["drafts"][0]["unexpected"] = true.into();
+        invalid.push(value);
+        for value in invalid {
+            fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(load(&dir).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn preparation_refuses_collisions_without_overwriting() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = source(temp.path(), "demo.spec");
+        let duplicate = source(temp.path(), "demo.other");
+        let dir = temp.path().join("drafts");
+        assert!(
+            create(&dir, &[input.clone(), duplicate])
+                .err()
+                .unwrap()
+                .contains("duplicate source stem")
+        );
+        assert!(!dir.exists());
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("demo.toml"), "keep me").unwrap();
+        assert!(create(&dir, std::slice::from_ref(&input)).is_err());
+        assert_eq!(
+            fs::read_to_string(dir.join("demo.toml")).unwrap(),
+            "keep me"
+        );
+        assert!(!dir.join(".state").exists());
+        let fresh = temp.path().join("fresh");
+        create(&fresh, std::slice::from_ref(&input)).unwrap();
+        let index = fs::read(fresh.join(".state/index.json")).unwrap();
+        assert!(create(&fresh, &[input]).is_err());
+        assert_eq!(fs::read(fresh.join(".state/index.json")).unwrap(), index);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_symlink_replacements_are_rejected() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let input = source(temp.path(), "demo.spec");
+        let replacement = source(temp.path(), "replacement.spec");
+        let dir = temp.path().join("drafts");
+        create(&dir, std::slice::from_ref(&input)).unwrap();
+        fs::remove_file(&input.0).unwrap();
+        symlink(&replacement.0, &input.0).unwrap();
+        assert_eq!(
+            load(&dir).unwrap()[0].source,
+            fs::canonicalize(temp.path()).unwrap().join("demo.spec")
+        );
+        fs::remove_file(&input.0).unwrap();
+        fs::write(&input.0, &input.1).unwrap();
+        let original = dir.join(".state/originals/0.spec");
+        fs::remove_file(&original).unwrap();
+        symlink(&replacement.0, &original).unwrap();
+        assert!(load(&dir).err().unwrap().contains("not a symlink"));
+    }
+}
