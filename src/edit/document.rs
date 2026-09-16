@@ -36,6 +36,7 @@ struct Copyright {
 pub(super) struct Snapshot {
     source: String,
     document: Table,
+    selection: Vec<String>,
     scalars: Vec<Scalar>,
     lists: BTreeMap<String, List>,
     copyright: Option<Copyright>,
@@ -43,6 +44,14 @@ pub(super) struct Snapshot {
 
 impl Snapshot {
     pub(super) fn capture(source: &str, parsed: &ParseResult<Span>) -> Result<Self, String> {
+        Self::capture_selected(source, parsed, &[])
+    }
+
+    pub(super) fn capture_selected(
+        source: &str,
+        parsed: &ParseResult<Span>,
+        selection: &[String],
+    ) -> Result<Self, String> {
         if source.contains(['\r', '\0']) {
             return Err("source: CR and NUL are unsupported".into());
         }
@@ -56,6 +65,7 @@ impl Snapshot {
         let mut snapshot = Self {
             source: source.to_owned(),
             document: Table::new(),
+            selection: selection.to_vec(),
             scalars: Vec::new(),
             lists: BTreeMap::new(),
             copyright: None,
@@ -76,6 +86,11 @@ impl Snapshot {
                     comments.push(range);
                 }
                 SpecItem::Preamble(item) => {
+                    if !selection.is_empty()
+                        && !preamble_field(&item.tag).is_some_and(|field| snapshot.selects(&field))
+                    {
+                        continue;
+                    }
                     let range = checked_range(source, item.data)?;
                     coverage.push(range.clone());
                     if !item.qualifiers.is_empty() || item.lang.is_some() {
@@ -160,6 +175,14 @@ impl Snapshot {
                     snapshot.scalar(&field, value_range, false)?;
                 }
                 SpecItem::Section(section) => {
+                    let selected_section =
+                        section_field(section).is_some_and(|field| snapshot.selects(field));
+                    let selected_comments =
+                        matches!(section.as_ref(), Section::Files { subpkg: None, .. })
+                            && snapshot.selects("spec.comments");
+                    if !(selection.is_empty() || selected_section || selected_comments) {
+                        continue;
+                    }
                     let (name, span) = match section.as_ref() {
                         Section::Description { subpkg: None, data, .. } => ("description", *data),
                         Section::Files { subpkg: None, file_lists, data, .. } if file_lists.is_empty() => ("files", *data),
@@ -191,15 +214,26 @@ impl Snapshot {
                         _ => unreachable!(),
                     }
                 }
+                SpecItem::Conditional(conditional) if !selection.is_empty() => {
+                    for branch in &conditional.branches {
+                        reject_selected_conditional(source, &branch.body, selection)?;
+                    }
+                    if let Some(items) = &conditional.otherwise {
+                        reject_selected_conditional(source, items, selection)?;
+                    }
+                }
+                _ if !selection.is_empty() => {}
                 _ => return Err(
                     "source: conditional, macro definition, include or statement is unsupported"
                         .into(),
                 ),
             }
         }
-        check_coverage(source, 0..source.len(), &mut coverage)?;
+        if selection.is_empty() {
+            check_coverage(source, 0..source.len(), &mut coverage)?;
+        }
         snapshot.comments(comments, &consumed_assets)?;
-        if lookup(&snapshot.document, "package.name").is_none() {
+        if selection.is_empty() && lookup(&snapshot.document, "package.name").is_none() {
             return Err("package.name: required main package is missing".into());
         }
         Ok(snapshot)
@@ -243,9 +277,22 @@ impl Snapshot {
             self.replace_list(list, &values, field, &list.prefix, &mut changes)?;
         }
         if let Some(copyright) = &self.copyright {
-            let years = string(edited, "spec.copyright-years")?;
+            let years = if self.selects("spec.copyright-years") {
+                string(edited, "spec.copyright-years")?
+            } else {
+                &self.source[copyright.years[0].clone()]
+            };
             crate::spec_metadata::validate_years(years)?;
-            let holders = strings(edited, "spec.copyright-holders")?;
+            let holders = if self.selects("spec.copyright-holders") {
+                strings(edited, "spec.copyright-holders")?
+            } else {
+                copyright
+                    .holders
+                    .items
+                    .iter()
+                    .map(|range| &self.source[range.clone()])
+                    .collect()
+            };
             if holders.is_empty() {
                 return Err("spec.copyright-holders: cannot remove every holder while copyright-years is present".into());
             }
@@ -282,7 +329,14 @@ impl Snapshot {
         Ok(output)
     }
 
+    fn selects(&self, field: &str) -> bool {
+        selected(&self.selection, field)
+    }
+
     fn scalar(&mut self, field: &str, range: Range<usize>, multiline: bool) -> Result<(), String> {
+        if !self.selects(field) {
+            return Ok(());
+        }
         let value = self
             .source
             .get(range.clone())
@@ -298,6 +352,9 @@ impl Snapshot {
     }
 
     fn list(&mut self, field: &str, prefix: &str) {
+        if !self.selects(field) {
+            return;
+        }
         self.lists.entry(field.to_owned()).or_insert_with(|| List {
             prefix: prefix.to_owned(),
             ..List::default()
@@ -313,6 +370,9 @@ impl Snapshot {
         range: Range<usize>,
         line: Range<usize>,
     ) -> Result<(), String> {
+        if !self.selects(field) {
+            return Ok(());
+        }
         let value = self
             .source
             .get(range.clone())
@@ -352,6 +412,19 @@ impl Snapshot {
                     comments.push(range);
                 }
                 FilesContent::Entry(entry) => {
+                    if !self.selects("package.files") {
+                        continue;
+                    }
+                    let relevant = if entry.directives.contains(&FileDirective::Doc) {
+                        self.selects("package.files.doc")
+                    } else if entry.directives.contains(&FileDirective::License) {
+                        self.selects("package.files.license")
+                    } else {
+                        self.selects("package.files.entries")
+                    };
+                    if !relevant {
+                        continue;
+                    }
                     let range = checked_range(&self.source, entry.data)?;
                     coverage.push(range.clone());
                     let raw = line(&self.source, &range)?;
@@ -399,7 +472,10 @@ impl Snapshot {
                 _ => return Err("package.files: conditional or unknown item is unsupported".into()),
             }
         }
-        check_coverage(&self.source, body, &mut coverage)
+        if self.selection.is_empty() {
+            check_coverage(&self.source, body, &mut coverage)?;
+        }
+        Ok(())
     }
 
     fn comments(
@@ -417,6 +493,12 @@ impl Snapshot {
         let mut shared_years: Option<String> = None;
         for range in comments {
             let raw = line(&self.source, &range)?.to_owned();
+            let field = comment_field(&raw);
+            if !(self.selects(field)
+                || (field == "spec.copyright-years" && self.selects("spec.copyright-holders")))
+            {
+                continue;
+            }
             if raw.trim() == "#" {
                 continue;
             }
@@ -424,6 +506,9 @@ impl Snapshot {
                 continue;
             }
             if raw.contains("RemoteAsset") {
+                if !self.selection.is_empty() {
+                    continue;
+                }
                 return Err("sources: malformed, duplicate or orphan RemoteAsset comment".into());
             }
             if let Some(value) = raw.strip_prefix("# SPDX-FileCopyrightText: (C) ") {
@@ -481,16 +566,20 @@ impl Snapshot {
             }
         }
         if let Some(years) = shared_years {
-            insert(
-                &mut self.document,
-                "spec.copyright-years",
-                Value::String(years),
-            )?;
-            insert(
-                &mut self.document,
-                "spec.copyright-holders",
-                Value::Array(holder_values),
-            )?;
+            if self.selects("spec.copyright-years") {
+                insert(
+                    &mut self.document,
+                    "spec.copyright-years",
+                    Value::String(years),
+                )?;
+            }
+            if self.selects("spec.copyright-holders") {
+                insert(
+                    &mut self.document,
+                    "spec.copyright-holders",
+                    Value::Array(holder_values),
+                )?;
+            }
             self.copyright = Some(copyright);
         }
         for range in ordinary {
@@ -548,6 +637,94 @@ impl Snapshot {
         }
         Ok(())
     }
+}
+
+// Selection chooses author fields, not RPM execution branches or expanded values.
+fn selected(selection: &[String], field: &str) -> bool {
+    selection.is_empty()
+        || selection.iter().any(|selected| {
+            selected == field
+                || field
+                    .strip_prefix(selected)
+                    .is_some_and(|tail| tail.starts_with('.'))
+                || selected
+                    .strip_prefix(field)
+                    .is_some_and(|tail| tail.starts_with('.'))
+        })
+}
+
+fn preamble_field(tag: &Tag) -> Option<String> {
+    Some(match tag {
+        Tag::Name => "package.name".into(),
+        Tag::Version => "package.version".into(),
+        Tag::Release => "spec.release".into(),
+        Tag::Summary => "package.summary".into(),
+        Tag::License => "package.license".into(),
+        Tag::URL => "package.url".into(),
+        Tag::BuildRequires => "build-requires.rpm".into(),
+        Tag::Source(number) => format!("sources.{}", number.unwrap_or(0)),
+        Tag::Other(name) if name.eq_ignore_ascii_case("BuildSystem") => "build.system".into(),
+        _ => return None,
+    })
+}
+
+fn section_field(section: &Section<Span>) -> Option<&'static str> {
+    match section {
+        Section::Description { subpkg: None, .. } => Some("package.description"),
+        Section::Files { subpkg: None, .. } => Some("package.files"),
+        Section::Changelog { .. } => Some("spec.changelog"),
+        _ => None,
+    }
+}
+
+fn comment_field(raw: &str) -> &'static str {
+    if raw.contains("RemoteAsset") {
+        "sources"
+    } else if raw.contains("SPDX-FileCopyrightText:") {
+        "spec.copyright-years"
+    } else if raw.contains("SPDX-FileContributor:") {
+        "spec.contributors"
+    } else if raw.contains(concat!("SPDX-License-", "Identifier:")) {
+        "spec.license"
+    } else {
+        "spec.comments"
+    }
+}
+
+fn reject_selected_conditional(
+    source: &str,
+    items: &[SpecItem<Span>],
+    selection: &[String],
+) -> Result<(), String> {
+    for item in items {
+        let field = match item {
+            SpecItem::Preamble(item) => preamble_field(&item.tag),
+            SpecItem::Section(section) => section_field(section).map(str::to_owned),
+            SpecItem::Comment(comment) => {
+                let range = checked_range(source, comment.data)?;
+                let field = comment_field(line(source, &range)?);
+                if field == "spec.copyright-years" && selected(selection, "spec.copyright-holders")
+                {
+                    return Err("spec.copyright-holders: conditional selection is ambiguous".into());
+                }
+                Some(field.into())
+            }
+            SpecItem::Conditional(conditional) => {
+                for branch in &conditional.branches {
+                    reject_selected_conditional(source, &branch.body, selection)?;
+                }
+                if let Some(items) = &conditional.otherwise {
+                    reject_selected_conditional(source, items, selection)?;
+                }
+                None
+            }
+            _ => None,
+        };
+        if let Some(field) = field.filter(|field| selected(selection, field)) {
+            return Err(format!("{field}: conditional selection is ambiguous"));
+        }
+    }
+    Ok(())
 }
 
 fn checked_range(source: &str, span: Span) -> Result<Range<usize>, String> {

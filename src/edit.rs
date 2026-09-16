@@ -62,7 +62,12 @@ fn execute(options: &Options) -> Result<bool, String> {
                 let path =
                     fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()))?;
                 let source = utf8_file::read(&path).map_err(|e| e.to_string())?;
-                input(path, source, options.field.clone(), None)
+                let fields = if options.set.is_empty() {
+                    options.field.clone()
+                } else {
+                    options.set.iter().map(|(field, _)| field.clone()).collect()
+                };
+                input(path, source, fields, None)
             })
             .collect::<Result<Vec<_>, _>>()?
     };
@@ -167,8 +172,12 @@ fn input(
     draft: Option<PathBuf>,
 ) -> Result<Input, String> {
     let parsed = parse_str_with_spans(&source);
-    let snapshot =
-        Snapshot::capture(&source, &parsed).map_err(|e| format!("{}: {e}", path.display()))?;
+    let snapshot = if fields.is_empty() {
+        Snapshot::capture(&source, &parsed)
+    } else {
+        Snapshot::capture_selected(&source, &parsed, &fields)
+    }
+    .map_err(|e| format!("{}: {e}", path.display()))?;
     fields::select(snapshot.document(), &fields)?;
     Ok(Input {
         path,
@@ -319,7 +328,7 @@ fn candidate(item: &Input, assignments: &[(String, String)]) -> Result<String, S
         )
     })?;
     let parsed = parse_str_with_spans(&rendered);
-    let observed = Snapshot::capture(&rendered, &parsed).map_err(|e| {
+    let observed = Snapshot::capture_selected(&rendered, &parsed, &item.fields).map_err(|e| {
         format!(
             "{}: {e}",
             item.draft.as_deref().unwrap_or(&item.path).display()
