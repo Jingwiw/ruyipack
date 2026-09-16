@@ -713,7 +713,7 @@ Rust tooling for openRuyi RPM package workflows
 Usage: ruyipack <COMMAND>
 
 Commands:
-  edit     Previews editable SPEC fields and checked changes without writing
+  edit     Edits author fields of an existing SPEC file
   check    Checks required main-package tag presence in an RPM SPEC file
   inspect  Prints the normalized main-package tags from an RPM SPEC file
   gen      Generates an artifact from a `RuyiPack` manifest

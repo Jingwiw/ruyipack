@@ -4,12 +4,13 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Read-only previews of checked, source-preserving SPEC edits.
+//! Checked, source-preserving SPEC edits with explicit publication choices.
 
 mod document;
 mod fields;
 
 use std::{
+    fs,
     io::{self, Write},
     path::PathBuf,
 };
@@ -23,25 +24,43 @@ use document::Snapshot;
 #[derive(Args)]
 #[command(
     group(ArgGroup::new("action").required(true).args(["view", "set"])),
-    after_help = "--view prints editable TOML. --set prints a checked diff by default.\nThese previews never write SPEC files."
+    after_help = "--view prints editable TOML. --set prepares a checked edit.\nChoose --diff or --stdout for a read-only preview, --force to overwrite,\nor -o FILE for another destination. Conflicts otherwise use a confirmation menu."
 )]
 pub(crate) struct Options {
-    /// SPEC file to preview.
+    /// SPEC file to edit.
     #[arg(value_name = "SPEC")]
     spec: PathBuf,
     /// Prints the editable TOML without changing the SPEC.
-    #[arg(long, conflicts_with = "diff")]
+    #[arg(long, conflicts_with = "publication")]
     view: bool,
     /// Sets one existing string field; repeat for more fields.
     #[arg(long, value_name = "FIELD=VALUE", num_args = 1, value_parser = assignment)]
     set: Vec<(String, String)>,
-    /// Explicitly selects the default read-only diff for --set.
-    #[arg(long, requires = "set")]
+    #[command(flatten)]
+    output: PublicationOptions,
+}
+
+#[derive(Args)]
+#[command(group(ArgGroup::new("publication").multiple(true).args(["diff", "stdout", "force", "output"])))]
+struct PublicationOptions {
+    /// Prints a source-to-candidate diff without writing files.
+    #[arg(long, requires = "set", conflicts_with_all = ["stdout", "force", "output"])]
     diff: bool,
+    /// Prints the checked SPEC without writing files.
+    #[arg(long, requires = "set", conflicts_with_all = ["force", "output"])]
+    stdout: bool,
+    /// Applies the checked edit without a confirmation menu.
+    #[arg(long, requires = "set")]
+    force: bool,
+    /// Writes to another destination instead of replacing the source.
+    #[arg(short = 'o', long = "output", value_name = "FILE", requires = "set")]
+    output: Option<PathBuf>,
 }
 
 pub(crate) fn run(options: &Options) -> Result<bool, String> {
-    let source = utf8_file::read(&options.spec).map_err(|error| error.to_string())?;
+    let source_path = fs::canonicalize(&options.spec)
+        .map_err(|error| format!("{}: {error}", options.spec.display()))?;
+    let source = utf8_file::read(&source_path).map_err(|error| error.to_string())?;
     let parsed = parse_str_with_spans(&source);
     let snapshot = Snapshot::capture(&source, &parsed)?;
     if options.view {
@@ -53,7 +72,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
             .map_err(|error| format!("failed to write output to stdout: {error}"))?;
         return Ok(true);
     }
-    if options.diff || !options.set.is_empty() {
+    if !options.set.is_empty() {
         let edited = fields::assign(snapshot.document(), &options.set)?;
         let candidate = snapshot.render(&edited)?;
         let parsed = parse_str_with_spans(&candidate);
@@ -68,8 +87,25 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         if !report.is_success() {
             return Err("candidate failed static checks".into());
         }
-        file_output::show_edit_diff(&options.spec, &source, &candidate)
-            .map_err(|error| error.to_string())?;
+        let mode = if options.output.diff {
+            file_output::EditMode::Diff
+        } else if options.output.stdout {
+            file_output::EditMode::Stdout
+        } else if options.output.force {
+            file_output::EditMode::Overwrite
+        } else {
+            file_output::EditMode::Prompt
+        };
+        file_output::run_edits(
+            &[file_output::EditFile {
+                source_path: &source_path,
+                original: &source,
+                target_path: options.output.output.as_deref().unwrap_or(&source_path),
+                contents: &candidate,
+            }],
+            mode,
+        )
+        .map_err(|error| error.to_string())?;
         return Ok(true);
     }
     Err("choose --view or --set FIELD=VALUE".into())

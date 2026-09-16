@@ -74,8 +74,8 @@ with each other or with preview options. `--stdout` cannot accompany `--diff` or
 
 When content differs and no action is specified, the command shows the conflicting
 file and available options. If stdin and stderr are terminals, a menu offers to
-keep the file, show a diff, write a copy, or overwrite it. Keeping the file is
-highlighted initially and still requires confirmation. Cancelling, or encountering
+keep the file, show a diff and return to the menu, write a copy, or overwrite it.
+Keeping the file is highlighted initially and still requires confirmation. Cancelling, or encountering
 a conflict without a usable terminal, returns an error without writing.
 
 Menu copies use `ed.spec.new`, then `ed.spec.new.1`, and so on, without replacing
@@ -90,20 +90,35 @@ Declare additional remote inputs as `[sources.1]`, `[sources.2]`, and so on, eac
 with `url` and `sha256`. Source numbers are preserved and printed in numeric order.
 `sources.0` supplies the archive for the default unpacking step.
 
-Preview the source-preserving editable fields of a supported SPEC:
+Edit the source-preserving author fields of a supported SPEC:
 
 ```sh
 ruyipack edit ed.spec --view
-ruyipack edit ed.spec --set package.version=1.22
-ruyipack edit ed.spec --set package.version=1.22 --set spec.release=2 --diff
+ruyipack edit ed.spec --set package.version=1.22 --diff
+ruyipack edit ed.spec --set package.version=1.22 --stdout
+ruyipack edit ed.spec --set package.version=1.22 -o reviewed.spec
+ruyipack edit ed.spec --set package.version=1.22 --force
+ruyipack edit ed.spec --set package.version=1.22 --set spec.release=2
 ```
 
 `--view` prints the supported author fields as TOML. `--set FIELD=VALUE` replaces
-an existing string field; repeat it to change several fields. The default result
-is a unified diff, also selected explicitly with `--diff`. These commands never
-write the SPEC. `--view` cannot be combined with `--set` or `--diff`.
+an existing string field; repeat it to change several fields. `--diff` prints a
+source-to-candidate diff and `--stdout` prints the complete candidate; neither
+writes files. `--force` overwrites the source without a confirmation menu.
+`-o, --output FILE` selects another destination; missing targets are created and
+identical targets are left unchanged. `--view` cannot accompany `--set` or any
+publication option. `--diff` and `--stdout` cannot accompany another output mode;
+`--force` can accompany `--output`.
 
-Before showing a diff, RuyiPack renders the candidate with source-local changes,
+For different existing content, the default terminal menu offers to keep it,
+show a diff and return to the menu, write a `.new` copy, or overwrite the target.
+Keep is selected by default. Without a terminal, a conflict fails without writing;
+choose an explicit read-only preview or `--force`. Edits reject source changes
+observed since the candidate was prepared, including when using `--force`.
+On Unix, new edit outputs and copies preserve the source access bits, while
+replacements preserve the target access bits; special mode bits are cleared.
+
+Before previewing or publishing, RuyiPack renders the candidate with source-local changes,
 reparses it, checks that the requested editable fields survived, and runs the
 same selected static checks as `check`. Unsupported or ambiguous source forms
 are rejected rather than rewritten approximately. RPM expressions stay unexpanded;
