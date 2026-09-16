@@ -554,6 +554,112 @@ fn explicit_output_writes_a_copy_without_changing_the_source() {
 }
 
 #[test]
+fn noninteractive_edit_requires_an_explicit_input_mode() {
+    let directory = fixture();
+    let output = command(directory.path()).arg("ed.spec").output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("requires a terminal"));
+    unchanged(directory.path());
+}
+
+#[cfg(unix)]
+fn script(directory: &Path, body: &str) -> String {
+    let path = directory.join("editor with spaces.sh");
+    fs::write(&path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
+    format!("/bin/sh '{}'", path.display())
+}
+
+#[cfg(unix)]
+#[test]
+fn quoted_editor_command_edits_toml_without_polluting_spec_stdout() {
+    let directory = fixture();
+    let editor = script(
+        directory.path(),
+        "printf 'EDITOR_OUTPUT\\n'\nsed 's/1.22.5/1.22.6/' \"$1\" > \"$1.next\"\nmv \"$1.next\" \"$1\"",
+    );
+    let output = command(directory.path())
+        .args([
+            "ed.spec",
+            "--field",
+            "package.version",
+            "--editor",
+            &editor,
+            "--stdout",
+        ])
+        .output()
+        .unwrap();
+    success(&output);
+    assert_eq!(
+        output.stdout,
+        SOURCE
+            .replace("Version:        1.22.5", "Version:        1.22.6")
+            .as_bytes()
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("EDITOR_OUTPUT"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Drafts retained:"));
+    unchanged(directory.path());
+}
+
+#[cfg(unix)]
+#[test]
+fn source_changed_while_editor_runs_is_not_overwritten() {
+    let directory = fixture();
+    let editor = script(
+        directory.path(),
+        "printf '# Concurrent change\\n' >> ed.spec\nsed 's/1.22.5/1.22.6/' \"$1\" > \"$1.next\"\nmv \"$1.next\" \"$1\"",
+    );
+    let output = command(directory.path())
+        .args([
+            "ed.spec",
+            "--field",
+            "package.version",
+            "--editor",
+            &editor,
+            "--force",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("source changed"));
+    assert_eq!(
+        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+        format!("{SOURCE}# Concurrent change\n")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn editor_failure_retains_its_changed_draft() {
+    let directory = fixture();
+    let editor = script(
+        directory.path(),
+        "sed 's/1.22.5/1.22.6/' \"$1\" > \"$1.next\"\nmv \"$1.next\" \"$1\"\nexit 7",
+    );
+    let output = command(directory.path())
+        .args([
+            "ed.spec",
+            "--field",
+            "package.version",
+            "--editor",
+            &editor,
+            "--force",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("editor exited"));
+    let retained = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("Drafts retained: "))
+        .unwrap();
+    let draft = Path::new(retained).join("ed.toml");
+    assert!(draft.is_file());
+    assert!(fs::read_to_string(draft).unwrap().contains("1.22.6"));
+    unchanged(directory.path());
+}
+
+#[test]
 fn invalid_cli_combinations_fail_before_editing() {
     let directory = fixture();
     for args in [
