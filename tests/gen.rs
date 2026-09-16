@@ -289,10 +289,6 @@ fn invalid_stage_options_are_rejected_before_publication() {
             "unknown field `option`",
         ),
         (
-            "\n[build.stages.conf]\nreplace = ''\n",
-            "unknown field `replace`",
-        ),
-        (
             "\n[build.stages.conf]\noptions = \"--enable-nls\"\n",
             "expected a sequence",
         ),
@@ -519,14 +515,72 @@ options = ["--enable-nls"]
 
 #[test]
 fn stage_scripts_reject_literal_section_headers_and_invalid_text() {
-    for (script, message) in [
-        (r"echo bad\u0000", "build.stages.conf.append"),
-        (r"echo bad\r\n", "build.stages.conf.append"),
-        (r"echo one\n%files\n/unexpected", "build.stages.conf.append"),
-        (r"echo one\n%install\necho two", "build.stages.conf.append"),
-        (r"%if 1\necho unfinished", "parser diagnostics"),
-    ] {
-        let extra = format!("\n[build.stages.conf]\nappend = \"{script}\"\n");
-        rejected(&format!("{MANIFEST}{extra}"), message);
+    for field in ["append", "replace"] {
+        let path = format!("build.stages.conf.{field}");
+        for (script, message) in [
+            (r"echo bad\u0000", path.as_str()),
+            (r"echo bad\r\n", path.as_str()),
+            (r"echo one\n%files\n/unexpected", path.as_str()),
+            (r"echo one\n%install\necho two", path.as_str()),
+            (r"%if 1\necho unfinished", "parser diagnostics"),
+        ] {
+            let extra = format!("\n[build.stages.conf]\n{field} = \"{script}\"\n");
+            rejected(&format!("{MANIFEST}{extra}"), message);
+        }
     }
+}
+
+#[test]
+fn stage_replacement_preserves_empty_actions_and_hooks() {
+    for stage in ["prep", "conf", "build", "install", "check"] {
+        for script in [
+            "",
+            "# No action needed.",
+            "cat <<'END'\n\tcontent\n\nEND\n\n",
+        ] {
+            let extra = format!(
+                "\n[build.stages.{stage}]\noptions = []\nprepend = 'echo before'\n\
+                 replace = '''{script}'''\nappend = 'echo after'\n"
+            );
+            let directory = workspace(&format!("{MANIFEST}{extra}"));
+            let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+            success(&output);
+            let body = match script {
+                "" => String::new(),
+                s if s.ends_with('\n') => s.into(),
+                s => format!("{s}\n"),
+            };
+            let expected = SPEC.replace(
+                "%files\n",
+                &format!(
+                    "%{stage} -p\necho before\n\n%{stage}\n{body}\n\
+                     %{stage} -a\necho after\n\n%files\n"
+                ),
+            );
+            assert_eq!(output.stdout, expected.as_bytes(), "{stage}: {script:?}");
+        }
+    }
+}
+
+#[test]
+fn stage_options_and_replacement_are_mutually_exclusive_per_stage() {
+    for script in ["", "echo custom"] {
+        rejected(
+            &format!(
+                "{MANIFEST}\n[build.stages.conf]\noptions = ['--enable-nls']\nreplace = '{script}'\n"
+            ),
+            "build.stages.conf: options cannot be combined with replace",
+        );
+    }
+    let directory = workspace(&format!(
+        "{MANIFEST}\n[build.stages.conf]\nreplace = ''\n\
+         [build.stages.build]\noptions = ['CC_FOR_BUILD=gcc']\n"
+    ));
+    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+    success(&output);
+    let expected = SPEC.replace("%files\n", "%conf\n\n%files\n").replace(
+        "BuildRequires:  autoconf\n",
+        "BuildOption(build):  CC_FOR_BUILD=gcc\n\nBuildRequires:  autoconf\n",
+    );
+    assert_eq!(output.stdout, expected.as_bytes());
 }

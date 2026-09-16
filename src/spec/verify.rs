@@ -204,10 +204,26 @@ fn build_scripts(
             Stage::Check => BuildScriptKind::Check,
         };
         for (name, expected_placement, script) in [
-            ("prepend", BuildScriptPlacement::Prepend, &config.prepend),
-            ("append", BuildScriptPlacement::Append, &config.append),
+            (
+                "prepend",
+                BuildScriptPlacement::Prepend,
+                Some(config.prepend.as_str()),
+            ),
+            (
+                "replace",
+                BuildScriptPlacement::Main,
+                config.replace.as_deref(),
+            ),
+            (
+                "append",
+                BuildScriptPlacement::Append,
+                Some(config.append.as_str()),
+            ),
         ] {
-            if script.is_empty() {
+            let Some(script) = script else {
+                continue;
+            };
+            if script.is_empty() && expected_placement != BuildScriptPlacement::Main {
                 continue;
             }
             let field = format!("build.stages.{}.{name}", stage.as_str());
@@ -231,7 +247,11 @@ fn build_scripts(
                 .and_then(|section| section.split_once('\n'))
                 .map(|(_, body)| body)
                 .ok_or_else(|| mismatch(&field))?;
-            let separator = if script.ends_with('\n') { "\n" } else { "\n\n" };
+            let separator = if script.is_empty() || script.ends_with('\n') {
+                "\n"
+            } else {
+                "\n\n"
+            };
             check(
                 body.strip_prefix(script)
                     .is_some_and(|tail| tail == separator),

@@ -295,3 +295,30 @@ fn stage_scripts_match_kind_placement_and_exact_body() {
         assert!(run(&parsed, &recipe, &profile).is_err(), "{before}");
     }
 }
+
+#[test]
+fn stage_replacement_checks_explicit_main_sections() {
+    let input = format!(
+        "{MANIFEST}\n[build.stages.conf]\nreplace = ''\n\
+         [build.stages.check]\nreplace = '# Tests require unavailable hardware.'\n"
+    );
+    let recipe = manifest::parse(&input).unwrap();
+    let profile = profile::load(&recipe).unwrap();
+    let original = spec::render(&recipe, &profile);
+    assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
+    for (before, after) in [
+        ("%conf\n\n", ""),
+        ("%conf\n", "%conf -p\n"),
+        ("%conf\n", "%conf -a\n"),
+        ("%conf\n", "%build\n"),
+        ("%conf\n", "%conf\necho unexpected\n"),
+        ("%conf\n\n", "%conf\n\n%conf\n\n"),
+        ("# Tests require unavailable hardware.", "# No tests."),
+    ] {
+        let changed = original.replacen(before, after, 1);
+        assert_ne!(changed, original);
+        let parsed = ParsedSpec::parse(&changed);
+        assert!(parsed.parsed.diagnostics.is_empty(), "{before}");
+        assert!(run(&parsed, &recipe, &profile).is_err(), "{before}");
+    }
+}

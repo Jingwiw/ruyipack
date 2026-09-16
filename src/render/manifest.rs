@@ -117,6 +117,8 @@ pub(crate) struct StageConfig {
     pub(crate) options: Vec<String>,
     #[serde(default)]
     pub(crate) prepend: String,
+    /// Absence keeps the default action; an empty string emits an empty main section.
+    pub(crate) replace: Option<String>,
     #[serde(default)]
     pub(crate) append: String,
 }
@@ -196,10 +198,7 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
         ));
     }
     if !manifest.sources.contains_key(&0) {
-        return Err(invalid(
-            "sources",
-            "sources.0 is required for default unpacking",
-        ));
+        return Err(invalid("sources", "sources.0 is required"));
     }
     for (number, source) in &manifest.sources {
         source_url(&format!("sources.{number}.url"), &source.url, package)?;
@@ -207,10 +206,23 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
             .map_err(|reason| invalid(&format!("sources.{number}.sha256"), reason))?;
     }
     for (stage, config) in &manifest.build.stages {
+        if config.replace.is_some() && !config.options.is_empty() {
+            return Err(invalid(
+                &format!("build.stages.{}", stage.as_str()),
+                "options cannot be combined with replace; put arguments in the replacement script",
+            ));
+        }
         for option in &config.options {
             single_line(&format!("build.stages.{}.options", stage.as_str()), option)?;
         }
-        for (name, script) in [("prepend", &config.prepend), ("append", &config.append)] {
+        for (name, script) in [
+            ("prepend", Some(config.prepend.as_str())),
+            ("replace", config.replace.as_deref()),
+            ("append", Some(config.append.as_str())),
+        ] {
+            let Some(script) = script else {
+                continue;
+            };
             if script
                 .chars()
                 .any(|c| c.is_control() && c != '\n' && c != '\t')

@@ -160,6 +160,19 @@ Scripts use LF line endings. Indentation, comments, and RPM macros are preserved
 empty strings add no script. Generation checks static section boundaries and exact
 text, not macro expansion, shell correctness, or build success.
 
+Replace a default action with `replace`:
+
+```toml
+[build.stages.conf]
+replace = '# Upstream has no configuration step.'
+```
+
+This emits `%conf` without a flag. Omit `replace` to keep the default action;
+`replace = ""` emits an empty section to skip it. `prepend` and `append` still run
+before and after the replacement. Non-empty `options` cannot accompany `replace`
+in the same stage; put arguments in the replacement script instead. When skipping
+tests, keep the reason in a script comment so it appears in the SPEC.
+
 `gen NAME` reads `./NAME.toml` by default; `--manifest` selects another input file.
 The SPEC is written beside the manifest unless `-o, --output FILE` selects another
 path. Relative output paths are resolved from the current directory. The parent

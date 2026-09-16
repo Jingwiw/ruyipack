@@ -85,14 +85,24 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
     output.push_str(recipe.package.description.trim_end_matches('\n'));
     output.push_str("\n\n");
     for (stage, config) in &recipe.build.stages {
-        for (flag, script) in [("p", &config.prepend), ("a", &config.append)] {
-            if script.is_empty() {
+        for (suffix, script) in [
+            (
+                " -p",
+                Some(config.prepend.as_str()).filter(|s| !s.is_empty()),
+            ),
+            ("", config.replace.as_deref()),
+            (
+                " -a",
+                Some(config.append.as_str()).filter(|s| !s.is_empty()),
+            ),
+        ] {
+            let Some(script) = script else {
                 continue;
-            }
-            writeln!(output, "%{} -{flag}", stage.as_str())
+            };
+            writeln!(output, "%{}{suffix}", stage.as_str())
                 .expect("writing to a String cannot fail");
             output.push_str(script);
-            if !script.ends_with('\n') {
+            if !script.is_empty() && !script.ends_with('\n') {
                 output.push('\n');
             }
             output.push('\n');
