@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Static Source references and dependency syntax queries.
+//! Static Source references from explicitly supplied package fields.
 
 use rpm_spec::{
     ast::{ConditionalMacro, MacroKind, Text, TextSegment},
@@ -23,12 +23,6 @@ pub(crate) fn substitute_fields(value: &str, fields: &[(&str, &str)]) -> Result<
                     && reference.args.is_empty()
                     && reference.with_value.is_none() =>
             {
-                if !matches!(reference.name.as_str(), "name" | "version" | "url") {
-                    return Err(format!(
-                        "unsupported source macro {:?}; available fields are name, version and url",
-                        reference.name
-                    ));
-                }
                 let field = fields.iter().find_map(|(name, value)| (*name == reference.name).then_some(*value))
                     .ok_or_else(|| format!("unsupported source macro {:?}: package field is unavailable or ambiguous", reference.name))?;
                 let field = parse(field)?;
