@@ -160,26 +160,12 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
             ));
         }
     }
-    if !package
-        .name
-        .bytes()
-        .next()
-        .is_some_and(|b| b.is_ascii_alphanumeric())
-        || !package
-            .name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
-    {
-        return Err(invalid("package.name", "expected an RPM package name"));
-    }
-    if package.version.is_empty()
-        || !package
-            .version
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._+~^".contains(&b))
-    {
-        return Err(invalid("package.version", "expected a literal RPM version"));
-    }
+    crate::check::metadata::Field::Name
+        .validate(&package.name)
+        .map_err(RenderError::Invalid)?;
+    crate::check::metadata::Field::Version
+        .validate(&package.version)
+        .map_err(RenderError::Invalid)?;
     single_line("package.summary", &package.summary)?;
     single_line("package.license", &package.license)?;
     https_url("package.url", &package.url)?;

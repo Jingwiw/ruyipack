@@ -47,6 +47,10 @@ impl<'src> ParsedSpec<'src> {
         analyzer::Analyzer::new(rules).run(self.source, &self.parsed.spec)
     }
 
+    pub(crate) fn metadata_findings(&self) -> Vec<Finding> {
+        syntax::metadata(&self.parsed.spec)
+    }
+
     pub(crate) fn licenses(&self) -> LicenseCheck {
         syntax::license(&self.parsed.spec)
     }

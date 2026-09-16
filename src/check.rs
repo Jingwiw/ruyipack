@@ -7,6 +7,7 @@
 //! Shared static SPEC checks and rule selection.
 
 pub(crate) mod license;
+pub(crate) mod metadata;
 
 use crate::{
     check_report::{CheckReport, SelectedRule, Severity},
@@ -31,23 +32,27 @@ pub(crate) fn analyze(spec: &ParsedSpec<'_>) -> CheckReport {
         .collect();
     let diagnostics = spec.diagnostics();
 
-    if diagnostics
+    let parser_error = diagnostics
         .iter()
-        .any(|item| item.severity == parser_diagnostic::Severity::Error)
-    {
-        selected_rules.push(license::RULE);
-        CheckReport::incomplete(source, selected_rules, diagnostics)
+        .any(|item| item.severity == parser_diagnostic::Severity::Error);
+    let mut findings = if parser_error {
+        Vec::new()
     } else {
-        let mut findings = spec.findings(&selected_rules);
-        selected_rules.push(license::RULE);
-        let license = spec.licenses();
-        findings.extend(license.findings);
-        CheckReport::analyzed(
-            source,
-            selected_rules,
-            diagnostics,
-            findings,
-            license.unresolved.then_some("unresolved-license"),
-        )
+        spec.findings(&selected_rules)
+    };
+    selected_rules.push(license::RULE);
+    selected_rules.extend(metadata::RULES);
+    if parser_error {
+        return CheckReport::incomplete(source, selected_rules, diagnostics);
     }
+    let license = spec.licenses();
+    findings.extend(license.findings);
+    findings.extend(spec.metadata_findings());
+    CheckReport::analyzed(
+        source,
+        selected_rules,
+        diagnostics,
+        findings,
+        license.unresolved.then_some("unresolved-license"),
+    )
 }

@@ -123,3 +123,164 @@ fn license_checks_visit_subpackages_and_conditions_without_expanding_macros() {
         );
     }
 }
+
+fn run(directory: &std::path::Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_ruyipack"))
+        .current_dir(directory)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn literal_metadata_checks_reject_invalid_edits_and_keep_sources_unchanged() {
+    for (field, original, value, rule) in [
+        ("package.name", "Name:           ed", "ed/test", "RPK002"),
+        ("package.version", "Version:        1.22.5", "1 2", "RPK002"),
+        (
+            "spec.release",
+            "Release:        %autorelease",
+            "1-2",
+            "RPK002",
+        ),
+        (
+            "package.url",
+            "URL:            https://www.gnu.org/software/ed/",
+            "https:/example.org",
+            "RPK003",
+        ),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("ed.spec"), SPEC).unwrap();
+        let (tag, _) = original.split_once(':').unwrap();
+        let invalid = SPEC.replace(original, &format!("{tag}: {value}"));
+        fs::write(directory.path().join("invalid.spec"), &invalid).unwrap();
+        let assignment = format!("{field}={value}");
+        for args in [
+            vec!["check", "invalid.spec"],
+            vec!["edit", "ed.spec", "--set", &assignment],
+        ] {
+            let output = run(directory.path(), &args);
+            assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains(rule),
+                "{output:?}"
+            );
+            assert!(output.stdout.is_empty());
+            assert_eq!(
+                fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+                SPEC
+            );
+            assert_eq!(
+                fs::read_to_string(directory.path().join("invalid.spec")).unwrap(),
+                invalid
+            );
+        }
+    }
+}
+
+#[test]
+fn editor_and_saved_drafts_share_metadata_checks() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("ed.spec"), SPEC).unwrap();
+    assert!(
+        run(
+            directory.path(),
+            &[
+                "edit",
+                "ed.spec",
+                "--field",
+                "package.version",
+                "--prepare",
+                "drafts"
+            ]
+        )
+        .status
+        .success()
+    );
+    fs::write(
+        directory.path().join("drafts/ed.toml"),
+        "[package]\nversion = '1 2'\n",
+    )
+    .unwrap();
+    let output = run(directory.path(), &["edit", "--from", "drafts"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("RPK002"));
+    assert_eq!(
+        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+        SPEC
+    );
+
+    #[cfg(unix)]
+    {
+        fs::write(
+            directory.path().join("editor.sh"),
+            "#!/bin/sh\nprintf \"[package]\\nversion = '1 2'\\n\" > \"$1\"\n",
+        )
+        .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_ruyipack"))
+            .current_dir(directory.path())
+            .env("TMPDIR", directory.path())
+            .args([
+                "edit",
+                "ed.spec",
+                "--field",
+                "package.version",
+                "--editor",
+                "sh editor.sh",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("RPK002") && error.contains("Drafts retained"),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+            SPEC
+        );
+    }
+}
+
+#[test]
+fn metadata_checks_preserve_literal_versions_http_and_unevaluated_macros() {
+    let directory = tempfile::tempdir().unwrap();
+    for (field, value) in [
+        ("package.name", "_ed"),
+        ("package.version", "2.0~rc1^20260917"),
+        ("package.version", "%{upstream_version}"),
+        ("spec.release", "1%{?dist}"),
+        ("package.url", "http://example.org/project"),
+    ] {
+        fs::write(directory.path().join("ed.spec"), SPEC).unwrap();
+        let output = run(
+            directory.path(),
+            &[
+                "edit",
+                "ed.spec",
+                "--set",
+                &format!("{field}={value}"),
+                "--stdout",
+            ],
+        );
+        assert!(output.status.success(), "{field}: {output:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains(value));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+            SPEC
+        );
+    }
+    fs::write(
+        directory.path().join("ed.spec"),
+        SPEC.replace("Name:           ed", "Epoch: 0\nName:           ed"),
+    )
+    .unwrap();
+    assert!(
+        run(directory.path(), &["check", "ed.spec"])
+            .status
+            .success()
+    );
+}

@@ -254,3 +254,9 @@ another finding already proves a failure. No macros are executed. This
 checks the declaration, not whether it matches the upstream source license.
 License IDs are case-insensitive; operators use uppercase. Deprecated IDs remain
 valid. Unknown names are checked against the SPDX data bundled with the tool.
+
+Literal Name, Version, and Release values share lexical checks (`RPK002`).
+Literal project URLs use the same URL parser as Source URLs (`RPK003`): existing
+HTTP and HTTPS URLs are accepted; new manifests require HTTPS. An unchanged
+invalid literal also fails the candidate check. Values containing RPM expressions
+are not evaluated or certified by these lexical checks. `Epoch: 0` is not rejected.

@@ -29,7 +29,7 @@ impl LicenseCheck {
             Some(value) => match validate_expression(value) {
                 Ok(_) => return,
                 Err(error) => (
-                    Severity::Deny,
+                    RULE.severity,
                     format!("package.license: invalid or unrecognized SPDX expression: {error}"),
                 ),
             },
