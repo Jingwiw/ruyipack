@@ -6,7 +6,8 @@
 
 //! Checks generated facts against the manifest and distribution defaults.
 
-use super::{RenderError, manifest::Manifest, profile::Profile};
+use super::{RenderError, manifest::Manifest};
+use crate::profile::Profile;
 use rpm_spec::{
     ast::{
         ChangelogItem, CommentStyle, FileDirective, FilesContent, Section, Span, SpecItem, Tag,

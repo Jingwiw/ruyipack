@@ -7,23 +7,13 @@
 //! Embedded openRuyi rendering policy and Autotools requirements.
 
 use super::{RenderError, manifest::Manifest};
+use crate::profile::Profile;
 use rpm_spec::{
     ast::{DepExpr, Text},
     parser::{ParserState, deps::parse_dep_expr},
 };
 use serde::Deserialize;
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub(super) struct Profile {
-    pub(super) spec_license: String,
-    pub(super) copyright_holders: Vec<String>,
-    pub(super) release: String,
-    pub(super) changelog: String,
-    pub(super) no_public_vcs_comment: String,
-    pub(super) remote_asset_prefix: String,
-    pub(super) preamble_value_column: usize,
-}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct Contract {
@@ -33,7 +23,7 @@ struct Contract {
 
 /// Checks explicit requirements; the contract does not add package dependencies.
 pub(super) fn load(manifest: &Manifest) -> Result<Profile, RenderError> {
-    let profile = toml::from_str(include_str!("../../profiles/openruyi-v1/profile.toml"))?;
+    let profile = crate::profile::load()?;
     let contract: Contract = toml::from_str(include_str!(
         "../../profiles/openruyi-v1/buildsystems/autotools.toml"
     ))?;

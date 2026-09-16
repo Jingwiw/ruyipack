@@ -15,6 +15,7 @@ mod file_output;
 mod generate;
 mod inspect;
 mod parser_diagnostic;
+mod profile;
 mod render;
 mod source;
 mod source_location;

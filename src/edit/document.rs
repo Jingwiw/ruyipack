@@ -75,6 +75,7 @@ impl Snapshot {
         snapshot.list("spec.contributors", "# SPDX-FileContributor: ");
         snapshot.list("spec.comments", "");
         snapshot.list("build-requires.rpm", "BuildRequires:  ");
+        let profile = crate::profile::load().map_err(|error| error.to_string())?;
         let mut coverage = Vec::new();
         let mut comments = Vec::new();
         let mut consumed_assets = Vec::new();
@@ -147,7 +148,7 @@ impl Snapshot {
                                 ));
                             }
                             let asset_text = &source[asset.clone()];
-                            let prefix = "#!RemoteAsset:  sha256:";
+                            let prefix = profile.remote_asset_prefix.as_str();
                             let hash = asset_text
                                 .strip_prefix(prefix)
                                 .and_then(|s| s.strip_suffix('\n'))

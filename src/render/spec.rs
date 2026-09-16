@@ -6,7 +6,8 @@
 
 //! Complete SPEC text rendering.
 
-use super::{manifest::Manifest, profile::Profile};
+use super::manifest::Manifest;
+use crate::profile::Profile;
 use std::fmt::Write as _;
 
 /// Renders a complete SPEC from validated manifest fields and distribution defaults.
