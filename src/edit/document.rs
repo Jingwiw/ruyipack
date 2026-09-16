@@ -244,7 +244,7 @@ impl Snapshot {
         }
         if let Some(copyright) = &self.copyright {
             let years = string(edited, "spec.copyright-years")?;
-            valid_years(years)?;
+            crate::spec_metadata::validate_years(years)?;
             let holders = strings(edited, "spec.copyright-holders")?;
             if holders.is_empty() {
                 return Err("spec.copyright-holders: cannot remove every holder while copyright-years is present".into());
@@ -430,7 +430,7 @@ impl Snapshot {
                 let (years, holder) = value
                     .split_once(' ')
                     .ok_or("spec.copyright-holders: missing holder")?;
-                valid_years(years)?;
+                crate::spec_metadata::validate_years(years)?;
                 valid_text(holder, "spec.copyright-holders", false)?;
                 if let Some(previous) = copyright.holders.lines.last()
                     && previous.end != range.start
@@ -653,21 +653,6 @@ fn valid_hash(value: &str, field: &str) -> Result<(), String> {
         Err(format!("{field}: expected 64 hexadecimal digits"))
     } else {
         Ok(())
-    }
-}
-
-fn valid_years(value: &str) -> Result<(), String> {
-    let year = |value: &str| {
-        value.len() == 4 && value != "0000" && value.bytes().all(|byte| byte.is_ascii_digit())
-    };
-    let valid = match value.split_once('-') {
-        Some((start, end)) => year(start) && year(end) && start <= end,
-        None => year(value),
-    };
-    if valid {
-        Ok(())
-    } else {
-        Err("spec.copyright-years: expected YYYY or YYYY-YYYY".into())
     }
 }
 

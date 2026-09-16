@@ -16,6 +16,7 @@ mod generate;
 mod inspect;
 mod parser_diagnostic;
 mod render;
+mod spec_metadata;
 mod utf8_file;
 
 use std::{

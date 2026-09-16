@@ -79,19 +79,8 @@ pub(super) fn parse(source: &str) -> Result<Manifest, RenderError> {
     let manifest: Manifest = toml::from_str(source)?;
     let package = &manifest.package;
     let invalid = |field: &str, reason: &str| RenderError::Invalid(format!("{field}: {reason}"));
-    let years = &manifest.spec.copyright_years;
-    let valid_year =
-        |year: &str| year.len() == 4 && year.bytes().all(|b| b.is_ascii_digit()) && year != "0000";
-    let valid_years = match years.split_once('-') {
-        Some((start, end)) => valid_year(start) && valid_year(end) && start <= end,
-        None => valid_year(years),
-    };
-    if !valid_years {
-        return Err(invalid(
-            "spec.copyright-years",
-            "expected YYYY or YYYY-YYYY",
-        ));
-    }
+    crate::spec_metadata::validate_years(&manifest.spec.copyright_years)
+        .map_err(|error| RenderError::Invalid(error.into()))?;
     if manifest.spec.contributors.is_empty() {
         return Err(invalid(
             "spec.contributors",
