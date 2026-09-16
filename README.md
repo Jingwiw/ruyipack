@@ -32,14 +32,13 @@ value-only or safe replacement ranges. The view omits macro definitions and sect
 bodies and does not evaluate conditions. The preamble tree uses the recorded
 `rpm-spec` revision's serialization format.
 
-Edit an existing SPEC through TOML:
+Select supported fields to edit through TOML:
 
 ```sh
-ruyipack edit ed.spec
 ruyipack edit ed.spec --field package.version
 ruyipack edit ed.spec --set package.version=1.22.6 --diff
 ruyipack edit ed.spec --set package.version=1.22.6
-ruyipack edit ed.spec --view
+ruyipack edit ed.spec --field package.version --view
 ```
 
 The editor command is selected from `--editor`, `$VISUAL`, `$EDITOR`, then `vim`.
@@ -62,7 +61,7 @@ evaluate macros, or build packages.
 The editable subset includes main-package metadata, numbered remote Sources with
 adjacent SHA-256 markers, declarative BuildSystem, BuildRequires, descriptions,
 simple file lists, header metadata, comments, and changelog text. Full views require
-a mapping for the whole source. `--field` and `--set` map only the selected fields,
+a mapping for the whole source. VCS tags and build scripts require selected-field editing. `--field` and `--set` map only the selected fields,
 so unrelated constructs such as VCS tags or build scripts remain untouched.
 Ambiguous selected fields and parser errors stop the operation. Deleting keys or
 adding unmapped groups is rejected; supported existing lists can change.
@@ -77,7 +76,7 @@ after export or while waiting for the editor or menu stop publication, even with
 Prepare ordinary files for longer or batch editing:
 
 ```sh
-ruyipack edit ed.spec other.spec --prepare drafts
+ruyipack edit ed.spec other.spec --field package.version --prepare drafts
 code drafts
 ruyipack edit --from drafts --check
 ruyipack edit --from drafts --check --format json

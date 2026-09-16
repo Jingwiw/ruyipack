@@ -677,3 +677,47 @@ fn explicit_build_keeps_validation_and_rejects_options_without_defaults() {
         "package.license",
     );
 }
+
+#[test]
+fn generated_vcs_and_scripts_offer_selected_editing_when_full_views_are_unsupported() {
+    for manifest in [
+        MANIFEST.replace(
+            "no-public-repository = true",
+            "git = \"https://example.org/ed.git\"",
+        ),
+        format!(
+            "{}\n[build.stages.build]\nreplace = '%make_build'\n",
+            MANIFEST.replace("system = \"autotools\"", "")
+        ),
+    ] {
+        let directory = workspace(&manifest);
+        let generated = run(directory.path(), &["gen", "ed", "--stdout"]);
+        success(&generated);
+        fs::write(directory.path().join("ed.spec"), &generated.stdout).unwrap();
+        let full = run(directory.path(), &["edit", "ed.spec", "--view"]);
+        assert_eq!(full.status.code(), Some(1));
+        assert!(full.stdout.is_empty());
+        let error = String::from_utf8_lossy(&full.stderr);
+        assert!(error.contains("--field package.version --view"), "{error}");
+        success(&run(
+            directory.path(),
+            &["edit", "ed.spec", "--field", "package.version", "--view"],
+        ));
+        let diff = run(
+            directory.path(),
+            &[
+                "edit",
+                "ed.spec",
+                "--set",
+                "package.version=1.22.6",
+                "--diff",
+            ],
+        );
+        success(&diff);
+        assert!(String::from_utf8_lossy(&diff.stdout).contains("+Version:        1.22.6"));
+        assert_eq!(
+            fs::read(directory.path().join("ed.spec")).unwrap(),
+            generated.stdout
+        );
+    }
+}

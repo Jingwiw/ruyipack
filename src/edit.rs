@@ -178,7 +178,19 @@ fn input(
     } else {
         Snapshot::capture_selected(&parsed, &fields)
     }
-    .map_err(|e| format!("{}: {e}", path.display()))?;
+    .map_err(|error| {
+        let mut message = format!("{}: {error}", path.display());
+        if fields.is_empty() && !parsed.diagnostics().iter().any(|diagnostic| {
+            diagnostic.severity == crate::parser_diagnostic::Severity::Error
+        }) {
+            let name = path.to_string_lossy();
+            let quoted = shell_words::quote(&name);
+            message.push_str(&format!(
+                "\nFull-view editing requires a mapping for every construct. Select supported fields instead, for example:\n  ruyipack edit {quoted} --field package.version --view\nOmit --view to edit the selected field. Use inspect to read the main-package tags."
+            ));
+        }
+        message
+    })?;
     fields::select(snapshot.document(), &fields)?;
     Ok(Input {
         path,
