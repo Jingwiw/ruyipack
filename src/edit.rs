@@ -23,8 +23,9 @@ use document::Snapshot;
 
 #[derive(Args)]
 #[command(
-    group(ArgGroup::new("action").required(true).args(["view", "set"])),
-    after_help = "--view prints editable TOML. --set prepares a checked edit.\nChoose --diff or --stdout for a read-only preview, --force to overwrite,\nor -o FILE for another destination. Conflicts otherwise use a confirmation menu."
+    group(ArgGroup::new("action").required(true).args(["view", "schema", "set"])),
+    group(ArgGroup::new("view_action").args(["view", "schema"])),
+    after_help = "--view prints editable TOML; --schema describes its fields.\nUse --field with either view to select fields or groups. --set prepares a checked edit.\nChoose --diff or --stdout for a read-only preview, --force to overwrite,\nor -o FILE for another destination. Conflicts otherwise use a confirmation menu."
 )]
 pub(crate) struct Options {
     /// SPEC file to edit.
@@ -33,6 +34,17 @@ pub(crate) struct Options {
     /// Prints the editable TOML without changing the SPEC.
     #[arg(long, conflicts_with = "publication")]
     view: bool,
+    /// Prints a JSON Schema for the displayed editable fields.
+    #[arg(long, conflicts_with = "publication")]
+    schema: bool,
+    /// Selects a field or table for --view or --schema; repeat to add fields.
+    #[arg(
+        long,
+        value_name = "FIELD",
+        requires = "view_action",
+        conflicts_with = "set"
+    )]
+    field: Vec<String>,
     /// Sets one existing string field; repeat for more fields.
     #[arg(long, value_name = "FIELD=VALUE", num_args = 1, value_parser = assignment)]
     set: Vec<(String, String)>,
@@ -63,9 +75,15 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
     let source = utf8_file::read(&source_path).map_err(|error| error.to_string())?;
     let parsed = parse_str_with_spans(&source);
     let snapshot = Snapshot::capture(&source, &parsed)?;
-    if options.view {
-        let text =
-            toml::to_string_pretty(snapshot.document()).map_err(|error| error.to_string())?;
+    if options.view || options.schema {
+        let selected = fields::select(snapshot.document(), &options.field)?;
+        let text = if options.schema {
+            serde_json::to_string_pretty(&fields::schema(&selected))
+                .map_err(|error| error.to_string())?
+                + "\n"
+        } else {
+            toml::to_string_pretty(&selected).map_err(|error| error.to_string())?
+        };
         io::stdout()
             .lock()
             .write_all(text.as_bytes())
@@ -108,7 +126,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         .map_err(|error| error.to_string())?;
         return Ok(true);
     }
-    Err("choose --view or --set FIELD=VALUE".into())
+    Err("choose --view, --schema or --set FIELD=VALUE".into())
 }
 
 fn assignment(text: &str) -> Result<(String, String), String> {

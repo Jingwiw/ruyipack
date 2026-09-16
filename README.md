@@ -123,3 +123,16 @@ reparses it, checks that the requested editable fields survived, and runs the
 same selected static checks as `check`. Unsupported or ambiguous source forms
 are rejected rather than rewritten approximately. RPM expressions stay unexpanded;
 changing a version or URL does not fetch sources or validate a package build.
+
+Select only the fields needed for a read-only view or its JSON Schema:
+
+```sh
+ruyipack edit ed.spec --view --field package.files
+ruyipack edit ed.spec --schema --field package.version
+```
+
+Repeat `--field` to select more fields or complete groups. Overlapping selections
+retain one copy of each field in source-derived order. `--schema` describes exactly
+the displayed shape, including value types and field descriptions. Unknown fields
+are errors. `--field` requires `--view` or `--schema` and cannot accompany `--set`;
+these views cannot be combined with publication options.
