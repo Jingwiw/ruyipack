@@ -32,34 +32,67 @@ value-only or safe replacement ranges. The view omits macro definitions and sect
 bodies and does not evaluate conditions. The preamble tree uses the recorded
 `rpm-spec` revision's serialization format.
 
-Edit a supported SPEC through TOML fields:
+Edit an existing SPEC through TOML:
 
 ```sh
-ruyipack edit ed.spec --view
-ruyipack edit ed.spec --field package.version --schema
+ruyipack edit ed.spec
+ruyipack edit ed.spec --field package.version
 ruyipack edit ed.spec --set package.version=1.22.6 --diff
 ruyipack edit ed.spec --set package.version=1.22.6 --force
-ruyipack edit ed.spec --prepare drafts
+ruyipack edit ed.spec --view
+```
+
+The editor command is selected from `--editor`, `$VISUAL`, `$EDITOR`, then `vim`.
+For VS Code, use `--editor 'code --wait'`; close the edited tabs to return to the
+command. Saving TOML changes the draft, not the SPEC. Editor output stays on stderr.
+Commands are split into arguments without running a shell.
+
+`--set FIELD=VALUE` replaces an existing string field; repeat the option for more
+fields. Values are literal strings, including `=` characters after the first one.
+Use the editor for arrays. `--field` selects existing fields or complete tables
+and can be repeated. Unselected fields retain their original values.
+
+Before publication, edit checks the TOML shape, renders source-local replacements,
+parses the candidate, compares the edited fields, and runs the same static checks
+as `check`. Text outside the selected replacements is preserved. Macro expressions
+remain expressions: this does not download archives, verify patch applicability,
+evaluate macros, or build packages.
+
+The editable subset includes main-package metadata, numbered remote Sources with
+adjacent SHA-256 markers, declarative BuildSystem, BuildRequires, descriptions,
+simple file lists, header metadata, comments, and changelog text. Unsupported SPEC
+constructs stop editing before output rather than being silently omitted. Deleting
+keys or adding unmapped groups is rejected; supported existing lists can change.
+
+Use `--diff` or `--stdout` for a preview, `-o FILE` for a separate destination, and
+`--force` to allow replacement. Without an explicit action, changed existing files
+use the confirmation menu. Showing a diff returns to the menu. `--stdout` and
+`--output` accept one SPEC; `--diff` can preview a batch. Source changes detected
+after export or while waiting for the editor or menu stop publication, even with
+`--force`. Editor work is retained when validation fails or edits remain unapplied.
+
+Prepare ordinary files for longer or batch editing:
+
+```sh
+ruyipack edit ed.spec other.spec --prepare drafts
+code drafts
+ruyipack edit --from drafts --check
 ruyipack edit --from drafts --check --format json
 ruyipack edit --from drafts --diff
 ruyipack edit --from drafts --force
 ```
 
-`--set` replaces existing strings; repeat it for more fields. `--field` selects
-fields or groups for the view, schema, or prepared draft. Edit arrays in the TOML
-files. Drafts contain business fields; `.state` keeps original bytes, source paths,
-and per-document schemas. Keep that directory with the drafts. Saving TOML does
-not overwrite SPEC files. Changed sources require fresh drafts, even with --force.
+Each draft is named after its source file. The `.state` directory keeps original
+bytes, source identities, and JSON Schemas separate from editable fields. Keep it
+with the drafts. The directory is local to these source paths; prepare new drafts
+after the sources change or after applying a batch. Duplicate source basenames
+require separate draft directories. `--schema` prints a schema for one displayed
+view. Generated drafts declare TOML 1.1 and a local schema for compatible editors.
 
-Without an output action, changed existing files prompt before publication. Use
-`--diff`, `--stdout`, or `-o FILE` for a preview or separate output. stdout and
-explicit output accept one SPEC. All candidates must pass before writing starts;
-individual writes are atomic, but the batch is not. I/O failures report files
-already written. Prepare fresh drafts after applying or externally changing sources.
-
-Mapping and static checks reject unsupported constructs, unknown fields, missing
-keys, or changed types rather than dropping source text. RPM expressions stay
-unexpanded. This does not download sources, check patch applicability, or build.
+Batch candidates are all checked before publication. Writes are atomic per file,
+not across the batch; a later I/O failure reports files already written. Inspect
+those files before retrying. Source files remain the authority until explicit
+publication; there is no save-triggered write-back.
 
 Generate a SPEC from an Autotools manifest:
 

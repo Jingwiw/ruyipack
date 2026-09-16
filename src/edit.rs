@@ -8,6 +8,7 @@
 
 mod document;
 mod drafts;
+mod editor;
 mod fields;
 mod options;
 
@@ -48,7 +49,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, EditError> {
 }
 
 fn execute(options: &Options) -> Result<bool, String> {
-    let inputs = if let Some(dir) = &options.from {
+    let mut inputs = if let Some(dir) = &options.from {
         drafts::load(dir)?
             .into_iter()
             .map(|draft| input(draft.source, draft.original, draft.fields, Some(draft.path)))
@@ -96,10 +97,70 @@ fn execute(options: &Options) -> Result<bool, String> {
         writeln!(io::stderr().lock(), "Drafts: {}\nCheck: ruyipack edit --from '{}' --check\nPreview: ruyipack edit --from '{}' --diff", dir.display(), dir.display(), dir.display()).map_err(|e| e.to_string())?;
         return Ok(true);
     }
-    if options.from.is_none() && options.set.is_empty() && !options.check {
-        return Err("choose --view, --schema, --set FIELD=VALUE, or --prepare DIR".into());
+    // An explicit report reads current values; only the default action opens an editor.
+    let opens_editor = options.editor.is_some()
+        || (options.set.is_empty()
+            && !options.check
+            && !(options.from.is_some()
+                && (options.diff || options.stdout || options.force || options.output.is_some())));
+    let mut temporary = None;
+    if opens_editor {
+        if options.from.is_none() {
+            let dir = tempfile::Builder::new()
+                .prefix("ruyipack-edit-")
+                .tempdir()
+                .map_err(|e| e.to_string())?;
+            let created = create_drafts(dir.path(), &inputs)?;
+            for (item, draft) in inputs.iter_mut().zip(created) {
+                item.draft = Some(draft.path);
+            }
+            temporary = Some(dir);
+        }
+        let paths = inputs
+            .iter()
+            .filter_map(|item| item.draft.as_deref())
+            .collect::<Vec<_>>();
+        if let Err(error) = editor::open(&paths, options.editor.as_deref()) {
+            return Err(retain(error, temporary, &inputs));
+        }
     }
-    apply(options, &inputs)
+    let result = apply(options, &inputs);
+    match result {
+        Err(error) => Err(retain(error, temporary, &inputs)),
+        Ok(success) => {
+            // Keep an editor's work when it was only previewed, copied, or declined.
+            if let Some(dir) = temporary {
+                let unapplied = inputs.iter().any(|item| {
+                    let Some(path) = &item.draft else {
+                        return false;
+                    };
+                    let Ok(text) = fs::read_to_string(path) else {
+                        return true;
+                    };
+                    let Ok(table) = toml::from_str::<Table>(&text) else {
+                        return true;
+                    };
+                    let Ok(expected) = fields::select(item.snapshot.document(), &item.fields)
+                    else {
+                        return true;
+                    };
+                    table != expected
+                        && fs::read_to_string(&item.path).is_ok_and(|now| now == item.source)
+                });
+                if unapplied {
+                    let path = dir.keep();
+                    writeln!(
+                        io::stderr().lock(),
+                        "Drafts retained: {}\nResume: ruyipack edit --from '{}'",
+                        path.display(),
+                        path.display()
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+            Ok(success)
+        }
+    }
 }
 
 fn input(
@@ -322,6 +383,29 @@ fn protect_drafts(output: &Path, inputs: &[Input]) -> Result<(), String> {
     Ok(())
 }
 
+fn retain(error: String, temporary: Option<tempfile::TempDir>, inputs: &[Input]) -> String {
+    match temporary {
+        Some(dir) => {
+            let path = dir.keep();
+            if inputs
+                .iter()
+                .any(|item| fs::read_to_string(&item.path).is_ok_and(|now| now != item.source))
+            {
+                format!(
+                    "{error}\nDrafts retained: {}\nSources changed; review the written files and prepare fresh drafts before retrying.",
+                    path.display()
+                )
+            } else {
+                format!(
+                    "{error}\nDrafts retained: {}\nResume: ruyipack edit --from '{}'",
+                    path.display(),
+                    path.display()
+                )
+            }
+        }
+        None => error,
+    }
+}
 fn write_stdout(text: &str) -> Result<(), String> {
     io::stdout()
         .lock()
