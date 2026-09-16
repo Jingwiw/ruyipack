@@ -84,6 +84,37 @@ pub(crate) struct Source {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Build {
     pub(crate) system: String,
+    #[serde(default)]
+    pub(crate) stages: BTreeMap<Stage, StageConfig>,
+}
+
+#[derive(Deserialize, Eq, Ord, PartialEq, PartialOrd)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Stage {
+    Prep,
+    Conf,
+    Build,
+    Install,
+    Check,
+}
+
+impl Stage {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Prep => "prep",
+            Self::Conf => "conf",
+            Self::Build => "build",
+            Self::Install => "install",
+            Self::Check => "check",
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StageConfig {
+    #[serde(default)]
+    pub(crate) options: Vec<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -170,6 +201,11 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
         source_url(&format!("sources.{number}.url"), &source.url, package)?;
         crate::source::validate_sha256(&source.sha256)
             .map_err(|reason| invalid(&format!("sources.{number}.sha256"), reason))?;
+    }
+    for (stage, config) in &manifest.build.stages {
+        for option in &config.options {
+            single_line(&format!("build.stages.{}.options", stage.as_str()), option)?;
+        }
     }
     for requirement in &manifest.build_requires.rpm {
         single_line("build-requires.rpm", requirement)?;

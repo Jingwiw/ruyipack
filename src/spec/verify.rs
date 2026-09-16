@@ -51,23 +51,34 @@ pub(crate) fn run(
         (Tag::URL, &package.url),
         (Tag::Other("BuildSystem".into()), &recipe.build.system),
     ] {
-        tags.push((tag, TagValue::Text(text(value)?)));
+        tags.push((tag, None, TagValue::Text(text(value)?)));
     }
     if let Vcs::Git(url) = &package.vcs {
-        tags.push((Tag::VCS, TagValue::Text(text(&format!("git:{url}"))?)));
+        tags.push((Tag::VCS, None, TagValue::Text(text(&format!("git:{url}"))?)));
     }
     for (number, source) in &recipe.sources {
         tags.push((
             Tag::Source(Some(*number)),
+            None,
             TagValue::Text(text(&source.url)?),
         ));
+    }
+    for (stage, config) in &recipe.build.stages {
+        for option in &config.options {
+            // rpm-spec stores an unknown tag's parenthesized argument in `lang`.
+            tags.push((
+                Tag::Other("BuildOption".into()),
+                Some(stage.as_str()),
+                TagValue::Text(text(option)?),
+            ));
+        }
     }
     for requirement in &recipe.build_requires.rpm {
         let state = ParserState::new();
         let value =
             parse_dep_expr(&state, requirement).map_err(|()| mismatch("build-requires.rpm"))?;
         check(state.diagnostics.borrow().is_empty(), "build-requires.rpm")?;
-        tags.push((Tag::BuildRequires, TagValue::Dep(value)));
+        tags.push((Tag::BuildRequires, None, TagValue::Dep(value)));
     }
 
     let mut comments = Vec::new();
@@ -76,12 +87,14 @@ pub(crate) fn run(
         match item {
             SpecItem::Preamble(item) => {
                 let field = format!("{:?}", item.tag);
-                check(item.qualifiers.is_empty() && item.lang.is_none(), &field)?;
+                check(item.qualifiers.is_empty(), &field)?;
                 let position = tags
                     .iter()
-                    .position(|(tag, _)| *tag == item.tag)
+                    .position(|(tag, argument, _)| {
+                        *tag == item.tag && *argument == item.lang.as_deref()
+                    })
                     .ok_or_else(|| mismatch(&field))?;
-                let (_, expected) = tags.remove(position);
+                let (_, _, expected) = tags.remove(position);
                 check(item.value == expected, &field)?;
                 if let Tag::Source(Some(number)) = item.tag {
                     let expected = format!(

@@ -60,6 +60,22 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
     write_tag(&mut output, "BuildSystem:", &recipe.build.system, column);
     output.push('\n');
 
+    for (stage, config) in &recipe.build.stages {
+        let label = format!("BuildOption({}):", stage.as_str());
+        for option in &config.options {
+            // openRuyi requires two spaces after each BuildOption label.
+            write_tag(&mut output, &label, option, label.len() + 2);
+        }
+    }
+    if recipe
+        .build
+        .stages
+        .values()
+        .any(|stage| !stage.options.is_empty())
+    {
+        output.push('\n');
+    }
+
     for requirement in &recipe.build_requires.rpm {
         write_tag(&mut output, "BuildRequires:", requirement, column);
     }

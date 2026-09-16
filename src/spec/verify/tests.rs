@@ -226,3 +226,35 @@ fn preserves_remote_asset_marker_bytes() {
             .contains("sources.0.sha256")
     );
 }
+
+#[test]
+fn stage_options_match_their_stage_value_and_order() {
+    let input = format!(
+        "{MANIFEST}\n[build.stages.conf]\noptions = [\"--enable-nls\", \"--disable-rpath\"]\n\
+         [build.stages.build]\noptions = [\"CC_FOR_BUILD=gcc\"]\n"
+    );
+    let recipe = manifest::parse(&input).unwrap();
+    let profile = profile::load(&recipe).unwrap();
+    let original = spec::render(&recipe, &profile);
+    assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
+    for (before, after) in [
+        ("BuildOption(conf):  --enable-nls\n", ""),
+        ("--enable-nls", "--disable-nls"),
+        ("BuildOption(conf):", "BuildOption(install):"),
+        ("BuildOption(conf):", "BuildOption:"),
+        (
+            "BuildOption(conf):  --enable-nls\nBuildOption(conf):  --disable-rpath\n",
+            "BuildOption(conf):  --disable-rpath\nBuildOption(conf):  --enable-nls\n",
+        ),
+        (
+            "BuildOption(conf):  --enable-nls\n",
+            "BuildOption(conf):  --enable-nls\nBuildOption(conf):  --enable-nls\n",
+        ),
+    ] {
+        let changed = original.replacen(before, after, 1);
+        assert_ne!(changed, original);
+        let parsed = ParsedSpec::parse(&changed);
+        assert!(parsed.parsed.diagnostics.is_empty(), "{before}");
+        assert!(run(&parsed, &recipe, &profile).is_err(), "{before}");
+    }
+}

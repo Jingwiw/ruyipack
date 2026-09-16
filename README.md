@@ -126,6 +126,22 @@ points to the source repository; the VCS tag is then omitted. Use
 this generates the distribution's no-repository comment. Empty or conflicting
 declarations are errors. Addresses are checked locally, not contacted.
 
+Pass options to the default Autotools stages:
+
+```toml
+[build.stages.conf]
+options = ["--enable-largefile", "--enable-nls"]
+
+[build.stages.build]
+options = ["CC_FOR_BUILD=gcc"]
+```
+
+Stages are `prep`, `conf`, `build`, `install`, and `check`. Each array entry is one
+single-line RPM option string, emitted as `BuildOption(stage):  ...` in array order.
+Stage tables are emitted in build order. RPM macros and shell quoting are preserved;
+entries are not automatically quoted as individual shell arguments. Empty arrays
+add no options. The distribution's default actions and options remain in effect.
+
 `gen NAME` reads `./NAME.toml` by default; `--manifest` selects another input file.
 The SPEC is written beside the manifest unless `-o, --output FILE` selects another
 path. Relative output paths are resolved from the current directory. The parent

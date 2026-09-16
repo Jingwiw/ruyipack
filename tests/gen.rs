@@ -222,6 +222,86 @@ fn vcs_requires_one_valid_repository_choice_before_publication() {
 }
 
 #[test]
+fn stage_options_preserve_strings_and_order_without_changing_defaults() {
+    let extra = r#"
+[build.stages.check]
+options = ["TESTS=smoke"]
+[build.stages.install]
+options = ['INSTALL="install -p"']
+[build.stages.build]
+options = ['CFLAGS="%{optflags} -fPIC"', "CC_FOR_BUILD=gcc"]
+[build.stages.conf]
+options = ["--enable-largefile", "--enable-nls", "--disable-rpath"]
+[build.stages.prep]
+options = ["-p0"]
+"#;
+    let directory = workspace(&format!("{MANIFEST}{extra}"));
+    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+    success(&output);
+    let expected = SPEC.replace(
+        "BuildRequires:  autoconf\n",
+        concat!(
+            "BuildOption(prep):  -p0\n",
+            "BuildOption(conf):  --enable-largefile\n",
+            "BuildOption(conf):  --enable-nls\n",
+            "BuildOption(conf):  --disable-rpath\n",
+            "BuildOption(build):  CFLAGS=\"%{optflags} -fPIC\"\n",
+            "BuildOption(build):  CC_FOR_BUILD=gcc\n",
+            "BuildOption(install):  INSTALL=\"install -p\"\n",
+            "BuildOption(check):  TESTS=smoke\n\n",
+            "BuildRequires:  autoconf\n",
+        ),
+    );
+    assert_eq!(output.stdout, expected.as_bytes());
+
+    for extra in [
+        "\n[build.stages.conf]\n",
+        "\n[build.stages.conf]\noptions = []\n",
+    ] {
+        fs::write(
+            directory.path().join("ed.toml"),
+            format!("{MANIFEST}{extra}"),
+        )
+        .unwrap();
+        let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+        success(&output);
+        assert_eq!(output.stdout, SPEC.as_bytes());
+    }
+}
+
+#[test]
+fn invalid_stage_options_are_rejected_before_publication() {
+    for extra in [
+        "\n[build.stages.conf]\noptions = [\"\"]\n",
+        "\n[build.stages.conf]\noptions = [\" --enable-nls\"]\n",
+        "\n[build.stages.conf]\noptions = [\"--enable-nls\\nVersion: 2\"]\n",
+        "\n[build.stages.conf]\noptions = [\"--enable-nls\\\\\"]\n",
+    ] {
+        rejected(&format!("{MANIFEST}{extra}"), "build.stages.conf.options");
+    }
+    for (extra, error) in [
+        (
+            "\n[build.stages.configure]\noptions = []\n",
+            "unknown variant `configure`",
+        ),
+        (
+            "\n[build.stages.conf]\noption = []\n",
+            "unknown field `option`",
+        ),
+        (
+            "\n[build.stages.conf]\nreplace = ''\n",
+            "unknown field `replace`",
+        ),
+        (
+            "\n[build.stages.conf]\noptions = \"--enable-nls\"\n",
+            "expected a sequence",
+        ),
+    ] {
+        rejected(&format!("{MANIFEST}{extra}"), error);
+    }
+}
+
+#[test]
 fn required_and_invalid_fields_are_rejected_before_publication() {
     for (before, after, message) in [
         ("version = \"1.22.5\"\n", "", "missing field `version`"),
