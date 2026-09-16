@@ -61,9 +61,11 @@ evaluate macros, or build packages.
 
 The editable subset includes main-package metadata, numbered remote Sources with
 adjacent SHA-256 markers, declarative BuildSystem, BuildRequires, descriptions,
-simple file lists, header metadata, comments, and changelog text. Unsupported SPEC
-constructs stop editing before output rather than being silently omitted. Deleting
-keys or adding unmapped groups is rejected; supported existing lists can change.
+simple file lists, header metadata, comments, and changelog text. Full views require
+a mapping for the whole source. `--field` and `--set` map only the selected fields,
+so unrelated constructs such as VCS tags or build scripts remain untouched.
+Ambiguous selected fields and parser errors stop the operation. Deleting keys or
+adding unmapped groups is rejected; supported existing lists can change.
 
 Use `--diff` or `--stdout` for a preview, or `-o FILE` for a separate destination.
 Replacing a different existing output file requires confirmation; `--force` with
@@ -151,6 +153,11 @@ status 1. A file remains written if reporting its path subsequently fails.
 
 Source URLs may reference `%{name}`, `%{version}` and `%{url}`. The SPEC
 preserves these expressions and URL filename fragments such as `#/name.tar.gz`.
+Generation and editing share URL and SHA-256 validation. New manifests require
+HTTPS; editing also accepts existing HTTP sources. Referenced package fields must
+be available as unambiguous static literals. Literal percent escapes use `%%`
+(for example, `a%%20b.tar.gz`); unhandled macro tokens are reported as unsupported.
+SHA-256 values contain 64 hexadecimal digits, with their original case preserved.
 
 Declare additional remote inputs as `[sources.1]`, `[sources.2]`, and so on, each
 with `url` and `sha256`. Source numbers are preserved and printed in numeric order.
