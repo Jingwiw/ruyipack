@@ -6,7 +6,7 @@
 
 //! Complete SPEC text rendering.
 
-use super::manifest::Manifest;
+use super::manifest::{Manifest, Vcs};
 use crate::profile::Profile;
 use std::fmt::Write as _;
 
@@ -39,7 +39,14 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
     write_tag(&mut output, "Summary:", &recipe.package.summary, column);
     write_tag(&mut output, "License:", &recipe.package.license, column);
     write_tag(&mut output, "URL:", &recipe.package.url, column);
-    writeln!(output, "{}", profile.no_public_vcs_comment).expect("writing to a String cannot fail");
+    match &recipe.package.vcs {
+        Vcs::Git(url) => write_tag(&mut output, "VCS:", &format!("git:{url}"), column),
+        Vcs::SameAsUrl => {}
+        Vcs::NoPublicRepository => {
+            writeln!(output, "{}", profile.no_public_vcs_comment)
+                .expect("writing to a String cannot fail");
+        }
+    }
     for (number, source) in &recipe.sources {
         writeln!(output, "{}{}", profile.remote_asset_prefix, source.sha256)
             .expect("writing to a String cannot fail");

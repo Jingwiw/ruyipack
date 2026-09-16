@@ -161,6 +161,67 @@ fn changed_input_values_change_the_rendered_facts() {
 }
 
 #[test]
+fn vcs_choices_generate_distinct_repository_declarations() {
+    for (choice, expected) in [
+        (
+            "git = \"https://example.org/project.git\"",
+            "VCS:            git:https://example.org/project.git\n",
+        ),
+        (
+            "git = \"https://example.org/project\"\nno-public-repository = false",
+            "VCS:            git:https://example.org/project\n",
+        ),
+        ("same-as-url = true", ""),
+    ] {
+        let source = MANIFEST.replace("no-public-repository = true", choice);
+        let directory = workspace(&source);
+        let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+        success(&output);
+        assert_eq!(
+            output.stdout,
+            SPEC.replace("# VCS: No VCS link available\n", expected)
+                .as_bytes(),
+            "{choice}"
+        );
+    }
+}
+
+#[test]
+fn vcs_requires_one_valid_repository_choice_before_publication() {
+    for choice in [
+        "",
+        "no-public-repository = false",
+        "same-as-url = false\nno-public-repository = false",
+        "same-as-url = true\nno-public-repository = true",
+        "git = \"https://example.org/project\"\nsame-as-url = true",
+        "git = \"https://example.org/project\"\nno-public-repository = true",
+        "git = \"https://example.org/project\"\nsame-as-url = true\nno-public-repository = true",
+        "git = \"\"",
+        "git = \"\"\nno-public-repository = true",
+        "git = \"http://example.org/project\"",
+        "git = \"git:https://example.org/project\"",
+        "git = \"https:/example.org/project\"",
+        "git = \"https://example.org/project\\nVersion: 2\"",
+    ] {
+        rejected(
+            &MANIFEST.replace("no-public-repository = true", choice),
+            "package.vcs",
+        );
+    }
+    rejected(
+        &MANIFEST.replace("no-public-repository = true", "same-as-url = \"true\""),
+        "expected a boolean",
+    );
+    rejected(
+        &MANIFEST.replace(
+            "no-public-repository = true",
+            "gti = \"https://example.org/project\"",
+        ),
+        "unknown field `gti`",
+    );
+}
+
+#[test]
 fn required_and_invalid_fields_are_rejected_before_publication() {
     for (before, after, message) in [
         ("version = \"1.22.5\"\n", "", "missing field `version`"),

@@ -110,6 +110,22 @@ The command validates the authoring fields, parses the generated SPEC, compares 
 facts with the manifest and distribution defaults, and runs the selected static
 checks before writing it. Macro expressions are compared without evaluating them.
 
+Select one repository declaration in `[package.vcs]`:
+
+```toml
+[package.vcs]
+git = "https://example.org/project.git"
+# same-as-url = true
+# no-public-repository = true
+```
+
+`git` takes an HTTPS checkout address without the `git:` prefix and generates a
+`VCS: git:...` tag. Use `same-as-url = true` instead when `package.url` already
+points to the source repository; the VCS tag is then omitted. Use
+`no-public-repository = true` instead when no public repository is available;
+this generates the distribution's no-repository comment. Empty or conflicting
+declarations are errors. Addresses are checked locally, not contacted.
+
 `gen NAME` reads `./NAME.toml` by default; `--manifest` selects another input file.
 The SPEC is written beside the manifest unless `-o, --output FILE` selects another
 path. Relative output paths are resolved from the current directory. The parent

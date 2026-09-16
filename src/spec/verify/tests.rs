@@ -96,6 +96,44 @@ fn rejects_changed_facts_even_when_the_spec_still_parses() {
 }
 
 #[test]
+fn rejects_changed_vcs_declarations() {
+    for choice in [
+        "git = \"https://example.org/project.git\"",
+        "same-as-url = true",
+        "no-public-repository = true",
+    ] {
+        let input = MANIFEST.replace("no-public-repository = true", choice);
+        let recipe = manifest::parse(&input).unwrap();
+        let profile = profile::load(&recipe).unwrap();
+        let original = spec::render(&recipe, &profile);
+        assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
+        for declaration in [
+            "VCS: git:https://example.org/another.git\n",
+            "# VCS: No VCS link available\n",
+        ] {
+            let changed = original.replace("BuildSystem:", &format!("{declaration}BuildSystem:"));
+            let parsed = ParsedSpec::parse(&changed);
+            assert!(parsed.parsed.diagnostics.is_empty());
+            assert!(
+                run(&parsed, &recipe, &profile).is_err(),
+                "{choice}: {declaration}"
+            );
+        }
+        if choice.starts_with("git =") {
+            for replacement in ["", "VCS: git:https://example.org/another.git\n"] {
+                let changed = original.replace(
+                    "VCS:            git:https://example.org/project.git\n",
+                    replacement,
+                );
+                let parsed = ParsedSpec::parse(&changed);
+                assert!(parsed.parsed.diagnostics.is_empty());
+                assert!(run(&parsed, &recipe, &profile).is_err());
+            }
+        }
+    }
+}
+
+#[test]
 fn rejects_missing_duplicate_and_unexpected_units() {
     let recipe = manifest::parse(MANIFEST).unwrap();
     let profile = profile::load(&recipe).unwrap();

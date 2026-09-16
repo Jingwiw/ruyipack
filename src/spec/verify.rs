@@ -8,7 +8,10 @@
 
 use super::ParsedSpec;
 use crate::profile::Profile;
-use crate::render::{RenderError, manifest::Manifest};
+use crate::render::{
+    RenderError,
+    manifest::{Manifest, Vcs},
+};
 use rpm_spec::{
     ast::{
         ChangelogItem, CommentStyle, FileDirective, FilesContent, Section, Span, SpecItem, Tag,
@@ -49,6 +52,9 @@ pub(crate) fn run(
         (Tag::Other("BuildSystem".into()), &recipe.build.system),
     ] {
         tags.push((tag, TagValue::Text(text(value)?)));
+    }
+    if let Vcs::Git(url) = &package.vcs {
+        tags.push((Tag::VCS, TagValue::Text(text(&format!("git:{url}"))?)));
     }
     for (number, source) in &recipe.sources {
         tags.push((
@@ -121,7 +127,9 @@ pub(crate) fn run(
     expected_comments.push(text(
         &["SPDX-License-", "Identifier: ", &profile.spec_license].concat(),
     )?);
-    expected_comments.push(hash_comment(&profile.no_public_vcs_comment)?);
+    if matches!(package.vcs, Vcs::NoPublicRepository) {
+        expected_comments.push(hash_comment(&profile.no_public_vcs_comment)?);
+    }
     for source in recipe.sources.values() {
         expected_comments.push(hash_comment(&format!(
             "{}{}",

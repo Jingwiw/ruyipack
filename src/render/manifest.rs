@@ -39,9 +39,40 @@ pub(crate) struct Package {
     pub(crate) files: Files,
 }
 #[derive(Deserialize)]
+#[serde(try_from = "VcsInput")]
+pub(crate) enum Vcs {
+    Git(String),
+    SameAsUrl,
+    NoPublicRepository,
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub(crate) struct Vcs {
-    pub(crate) no_public_repository: bool,
+struct VcsInput {
+    git: Option<String>,
+    #[serde(default)]
+    same_as_url: bool,
+    #[serde(default)]
+    no_public_repository: bool,
+}
+
+impl TryFrom<VcsInput> for Vcs {
+    type Error = RenderError;
+
+    fn try_from(input: VcsInput) -> Result<Self, Self::Error> {
+        match (input.git, input.same_as_url, input.no_public_repository) {
+            (Some(url), false, false) => {
+                https_url("package.vcs.git", &url)?;
+                Ok(Self::Git(url))
+            }
+            (None, true, false) => Ok(Self::SameAsUrl),
+            (None, false, true) => Ok(Self::NoPublicRepository),
+            _ => Err(RenderError::Invalid(
+                "package.vcs: choose exactly one of git, same-as-url = true, or no-public-repository = true"
+                    .into(),
+            )),
+        }
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -114,12 +145,6 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
     single_line("package.summary", &package.summary)?;
     single_line("package.license", &package.license)?;
     https_url("package.url", &package.url)?;
-    if !package.vcs.no_public_repository {
-        return Err(invalid(
-            "package.vcs",
-            "this renderer requires no-public-repository = true",
-        ));
-    }
     if package.description.trim().is_empty()
         || package
             .description
@@ -242,7 +267,7 @@ fn https_url(field: &str, value: &str) -> Result<(), RenderError> {
 fn require_https(field: &str, scheme: crate::source::Scheme) -> Result<(), RenderError> {
     if scheme != crate::source::Scheme::Https {
         return Err(RenderError::Invalid(format!(
-            "{field}: new openRuyi sources require HTTPS"
+            "{field}: expected an HTTPS URL"
         )));
     }
     Ok(())

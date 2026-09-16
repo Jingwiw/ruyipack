@@ -151,7 +151,7 @@ fn existing_http_sources_remain_editable_but_new_generation_requires_https() {
     fs::write(directory.path().join("ed.toml"), MANIFEST.replace(URL, url)).unwrap();
     rejected(
         &run(directory.path(), &["gen", "ed", "--stdout"]),
-        "require HTTPS",
+        "expected an HTTPS URL",
     );
     let spec = SPEC.replace(URL, url);
     fs::write(directory.path().join("ed.spec"), &spec).unwrap();
