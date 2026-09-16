@@ -199,7 +199,9 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
         protect_drafts(output, inputs)?;
     }
     let mut candidates = Vec::with_capacity(inputs.len());
-    let mut records = Vec::with_capacity(inputs.len());
+    let json_output = options.check && matches!(options.format, Some(CheckFormat::Json));
+    let mut records = Vec::new();
+    let mut valid = Vec::with_capacity(inputs.len());
     let mut errors = Vec::new();
     for item in inputs {
         match candidate(item, &options.set) {
@@ -207,12 +209,11 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
                 let report = check::analyze(&text, parse_str_with_spans(&text));
                 let success = report.is_success();
                 let label = format!("{} (candidate)", item.path.display());
-                let mut serialized = Vec::new();
-                report
-                    .write_json(Path::new(&label), &mut serialized)
-                    .map_err(|e| e.to_string())?;
-                records.push(json!({"source": item.path, "draft": item.draft, "valid": success,
-                    "changed": text != item.source, "report": serde_json::from_slice::<serde_json::Value>(&serialized).map_err(|e| e.to_string())?}));
+                valid.push(success);
+                if json_output {
+                    records.push(json!({"source": item.path, "draft": item.draft, "valid": success,
+                        "changed": text != item.source, "report": report.structured(Path::new(&label))}));
+                }
                 if !matches!(options.format, Some(CheckFormat::Json)) {
                     report
                         .write_human(Path::new(&label), &mut io::stderr().lock())
@@ -227,9 +228,12 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
                 candidates.push(text);
             }
             Err(error) => {
-                records.push(
-                    json!({"source":item.path, "draft":item.draft, "valid":false, "error":error}),
-                );
+                valid.push(false);
+                if json_output {
+                    records.push(
+                        json!({"source":item.path, "draft":item.draft, "valid":false, "error":error}),
+                    );
+                }
                 errors.push(error);
             }
         }
@@ -244,16 +248,12 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
                     + "\n"),
             )?;
         } else {
-            for record in &records {
+            for (item, valid) in inputs.iter().zip(&valid) {
                 writeln!(
                     io::stdout().lock(),
                     "{}: {}",
-                    record["source"].as_str().unwrap_or(""),
-                    if record["valid"] == true {
-                        "valid"
-                    } else {
-                        "invalid"
-                    }
+                    item.path.display(),
+                    if *valid { "valid" } else { "invalid" }
                 )
                 .map_err(|e| e.to_string())?;
             }

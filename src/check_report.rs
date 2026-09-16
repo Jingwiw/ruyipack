@@ -7,6 +7,7 @@
 //! Human and machine reports for one static SPEC check.
 
 use std::{
+    borrow::Cow,
     io::{self, Write},
     path::Path,
 };
@@ -34,6 +35,7 @@ const RPM_SPEC_REPOSITORY: &str = "https://github.com/openRuyi-Project/rpm-spec"
 const RPM_SPEC_TOOL_REPOSITORY: &str = "https://github.com/openRuyi-Project/rpm-spec-tool";
 
 /// One selected static rule and its severity for confirmed violations.
+#[derive(Serialize)]
 pub(crate) struct SelectedRule {
     pub(crate) code: &'static str,
     pub(crate) severity: Severity,
@@ -141,13 +143,12 @@ impl CheckReport {
         Ok(())
     }
 
-    /// Writes one deterministic JSON object.
-    pub(crate) fn write_json(&self, path: &Path, writer: &mut impl Write) -> io::Result<()> {
-        let path = path.to_string_lossy();
-        let report = MachineReport {
+    /// Borrows the structured report for embedding without a JSON round trip.
+    pub(crate) fn structured<'a>(&'a self, path: &'a Path) -> impl Serialize + 'a {
+        MachineReport {
             format_version: FORMAT_VERSION,
             input: InputIdentity {
-                display_path: &path,
+                display_path: path.to_string_lossy(),
                 sha256: &self.sha256,
             },
             evidence: Evidence {
@@ -172,15 +173,16 @@ impl CheckReport {
                         revision: env!("RUYIPACK_RPM_SPEC_ANALYZER_REVISION"),
                     },
                 ],
-                selected_rules: self
-                    .selected_rules
-                    .iter()
-                    .map(SelectedRuleRecord::from)
-                    .collect(),
+                selected_rules: &self.selected_rules,
             },
             parser_diagnostics: &self.parser_diagnostics,
             findings: &self.findings,
-        };
+        }
+    }
+
+    /// Writes one deterministic JSON object.
+    pub(crate) fn write_json(&self, path: &Path, writer: &mut impl Write) -> io::Result<()> {
+        let report = self.structured(path);
         let json = serde_json::to_string(&report)
             .expect("the machine check report contains only JSON-compatible values");
         writeln!(writer, "{json}")
@@ -219,7 +221,7 @@ struct MachineReport<'a> {
 
 #[derive(Serialize)]
 struct InputIdentity<'a> {
-    display_path: &'a str,
+    display_path: Cow<'a, str>,
     sha256: &'a str,
 }
 
@@ -231,7 +233,7 @@ struct Evidence<'a> {
     reason: Option<&'static str>,
     tool: ToolIdentity,
     components: [ComponentIdentity; 2],
-    selected_rules: Vec<SelectedRuleRecord<'a>>,
+    selected_rules: &'a [SelectedRule],
 }
 
 #[derive(Serialize)]
@@ -248,21 +250,6 @@ struct ComponentIdentity {
     revision: &'static str,
 }
 
-#[derive(Serialize)]
-struct SelectedRuleRecord<'a> {
-    code: &'a str,
-    severity: &'static str,
-}
-
-impl<'a> From<&'a SelectedRule> for SelectedRuleRecord<'a> {
-    fn from(rule: &'a SelectedRule) -> Self {
-        Self {
-            code: rule.code,
-            severity: severity_name(rule.severity),
-        }
-    }
-}
-
 /// A finding with its actual producer, independent of the command that requested it.
 #[derive(Serialize)]
 pub(crate) struct Finding {
@@ -271,12 +258,4 @@ pub(crate) struct Finding {
     pub(crate) severity: Severity,
     pub(crate) message: String,
     pub(crate) span: SourceLocation,
-}
-
-fn severity_name(severity: Severity) -> &'static str {
-    match severity {
-        Severity::Allow => "allow",
-        Severity::Warn => "warn",
-        Severity::Deny => "deny",
-    }
 }
