@@ -9,6 +9,7 @@
 mod check;
 mod check_command;
 mod check_report;
+mod cli;
 mod file_output;
 mod generate;
 mod inspect;
@@ -19,64 +20,11 @@ mod utf8_file;
 use std::{
     fmt,
     io::{self, Write},
-    path::PathBuf,
     process::ExitCode,
 };
 
-use clap::{Parser, Subcommand, ValueEnum};
-
-#[derive(Parser)]
-#[command(version, about)]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(Subcommand)]
-enum Command {
-    /// Checks required main-package tag presence in an RPM SPEC file.
-    Check {
-        /// RPM SPEC file to check.
-        #[arg(value_name = "SPEC")]
-        spec: PathBuf,
-        /// Selects human or JSON output.
-        #[arg(long, value_enum, default_value_t = check_command::CheckFormat::Human)]
-        format: check_command::CheckFormat,
-    },
-    /// Prints the normalized main-package tags from an RPM SPEC file.
-    Inspect {
-        /// RPM SPEC file to inspect.
-        #[arg(value_name = "SPEC")]
-        spec: PathBuf,
-        /// Selects human or JSON output.
-        #[arg(long, value_enum, default_value_t = inspect::InspectFormat::Human)]
-        format: inspect::InspectFormat,
-    },
-    /// Generates an artifact from a `RuyiPack` manifest.
-    #[command(
-        after_help = "The default output is NAME.spec beside the manifest. Its parent directory must exist.\n\
-For different existing content, select an output option or use the terminal menu.\n\
-Without a usable terminal or an explicit action, conflicting output is an error."
-    )]
-    Gen {
-        /// Package to generate.
-        #[arg(value_name = "NAME")]
-        name: String,
-        /// Artifact format to generate.
-        #[arg(long, value_enum, default_value = "spec")]
-        format: ArtifactFormat,
-        /// Manifest to read; defaults to NAME.toml in the current directory.
-        #[arg(long, value_name = "PATH")]
-        manifest: Option<PathBuf>,
-        #[command(flatten, next_help_heading = "Output options")]
-        output: file_output::OutputOptions,
-    },
-}
-
-#[derive(Clone, ValueEnum)]
-enum ArtifactFormat {
-    Spec,
-}
+use clap::Parser;
+use cli::{ArtifactFormat, Cli, Command};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
