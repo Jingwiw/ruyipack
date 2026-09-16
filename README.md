@@ -8,7 +8,34 @@ SPDX-License-Identifier: MulanPSL-2.0
 
 # RuyiPack
 
-RuyiPack is a project for openRuyi RPM package workflows.
+RuyiPack inspects, checks, edits selected fields in, and generates SPEC files for openRuyi.
+
+## Installation
+
+Build from the source directory with Rust 1.91.0, a C linker, and network access
+for the locked registry and Git dependencies:
+
+```sh
+cargo install --path . --locked
+ruyipack --version
+```
+
+Cargo installs the executable in `$CARGO_HOME/bin` (normally `$HOME/.cargo/bin`).
+Add that directory to `PATH`. Keep `Cargo.lock` with source distributions;
+`--locked` uses the reviewed dependency versions.
+
+To check a source checkout and test the installed executable:
+
+```sh
+./scripts/check
+./scripts/smoke-test "$HOME/.cargo/bin/ruyipack"
+```
+
+The smoke test uses temporary files and does not modify packages in the checkout.
+The commands below perform static analysis without executing RPM macros or builds.
+
+## Inspect
+
 
 Inspect an existing SPEC without changing it:
 
@@ -32,7 +59,9 @@ value-only or safe replacement ranges. The view omits macro definitions and sect
 bodies and does not evaluate conditions. The preamble tree uses the recorded
 `rpm-spec` revision's serialization format.
 
-Select supported fields to edit through TOML:
+## Edit
+
+Select existing fields to edit through TOML:
 
 ```sh
 ruyipack edit ed.spec --field package.version
@@ -49,7 +78,7 @@ Commands are split into arguments without running a shell.
 
 `--set FIELD=VALUE` replaces an existing string field; repeat the option for more
 fields. Values are literal strings, including `=` characters after the first one.
-Use the editor for arrays. `--field` selects existing fields or complete tables
+Use the editor for arrays. `--field` selects existing supported fields or tables
 and can be repeated. Unselected fields retain their original values.
 
 Before publication, edit checks the TOML shape, renders source-local replacements,
@@ -60,8 +89,9 @@ evaluate macros, or build packages.
 
 The editable subset includes main-package metadata, numbered remote Sources with
 adjacent SHA-256 markers, declarative BuildSystem, BuildRequires, descriptions,
-simple file lists, header metadata, comments, and changelog text. Full views require
-a mapping for the whole source. VCS tags and build scripts require selected-field editing. `--field` and `--set` map only the selected fields,
+simple file lists, header metadata, comments, and changelog text. Without `--field`,
+editing opens a full view, which requires a mapping for the whole source. This is
+limited to simple SPECs; VCS tags and build scripts require a selected-field view. `--field` and `--set` map only the selected fields,
 so unrelated constructs such as VCS tags or build scripts remain untouched.
 Ambiguous selected fields and parser errors stop the operation. Deleting keys or
 adding unmapped groups is rejected; supported existing lists can change.
@@ -99,10 +129,12 @@ not across the batch; a later I/O failure reports files already written. Inspect
 those files before retrying. Drafts do not update SPEC files in the background;
 write-back happens only after the command validates them.
 
+## Generate
+
 Generate a SPEC from an Autotools manifest:
 
 ```sh
-cargo run -- gen ed --manifest examples/ed/ed.toml
+ruyipack gen ed --manifest examples/ed/ed.toml
 ```
 
 The command validates the authoring fields, parses the generated SPEC, compares its
@@ -245,6 +277,13 @@ Declare additional remote inputs as `[sources.1]`, `[sources.2]`, and so on, eac
 with `url` and `sha256`. Source numbers are preserved and printed in numeric order.
 `sources.0` identifies the primary source. The Autotools default unpacking step
 uses it as the source archive.
+
+## Check
+
+```sh
+ruyipack check ed.spec
+ruyipack check ed.spec --format json
+```
 
 `check`, `gen`, and `edit` share the selected SPEC checks, including SPDX
 expressions in package `License` tags (`RPK001`). Literal expressions are checked

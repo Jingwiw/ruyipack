@@ -1,0 +1,51 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+set -eu
+if [ "$#" -ne 1 ]; then
+    echo "Usage: $0 /absolute/path/to/ruyipack" >&2
+    exit 2
+fi
+case "$1" in
+    /*) binary=$1 ;;
+    *) echo "The executable path must be absolute." >&2; exit 2 ;;
+esac
+root=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+cp "$root/examples/ed/ed.toml" "$work/ed.toml"
+cd "$work"
+"$binary" --version
+"$binary" gen ed
+"$binary" check ed.spec
+"$binary" inspect ed.spec > inspect.txt
+cp ed.spec original.spec
+"$binary" edit ed.spec --field package.version --view > version.toml
+"$binary" edit ed.spec --set package.version=1.22.6 --diff > version.diff
+test -s version.toml && test -s version.diff
+cmp ed.spec original.spec
+if "$binary" edit ed.spec --set 'package.version=1 2'; then
+    echo "An invalid Version was accepted." >&2
+    exit 1
+fi
+cmp ed.spec original.spec
+"$binary" edit ed.spec --set package.version=1.22.6
+cp ed.spec edited.spec
+if "$binary" gen ed </dev/null; then
+    echo "Conflicting output was accepted without an action." >&2
+    exit 1
+fi
+cmp ed.spec edited.spec
+"$binary" edit ed.spec --field package.version --prepare drafts
+printf '\n# Concurrent modification\n' >> ed.spec
+cp ed.spec concurrent.spec
+if "$binary" edit --from drafts; then
+    echo "A stale draft was accepted." >&2
+    exit 1
+fi
+cmp ed.spec concurrent.spec
+echo "Installation smoke test passed."

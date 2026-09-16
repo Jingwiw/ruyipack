@@ -23,7 +23,7 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// Edits SPEC fields through TOML or command-line assignments.
     Edit(edit::Options),
-    /// Checks required main-package tags and package License expressions.
+    /// Checks selected static package metadata and build requirements.
     Check {
         /// RPM SPEC file to check.
         #[arg(value_name = "SPEC")]
