@@ -13,6 +13,7 @@ use serde::{Serialize, Serializer, ser::SerializeStruct};
 /// Half-open byte range and 1-based (line, byte-column) endpoints.
 ///
 /// Zero endpoints retain an upstream diagnostic with no line information.
+#[derive(Clone)]
 pub(crate) struct SourceLocation {
     pub(crate) bytes: Range<usize>,
     pub(crate) start: (u32, u32),

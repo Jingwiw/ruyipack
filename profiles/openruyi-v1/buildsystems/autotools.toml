@@ -10,5 +10,7 @@
 # 1e97c41664d3d1543b6b8a458a1540343c5dc266 at
 # SPECS/rpm-config-openruyi/macros.buildsystem, SHA-256
 # fa5d1c07c0f97610a1ae164c83d0c46052b3435716f28f0123de411639700a24.
+# TODO: Clarify required tools for replaced stages and toolchain bootstrapping
+# with openRuyi before adding exceptions to the documented dependency list.
 name = "autotools"
 build-requires = ["autoconf", "automake", "libtool", "make"]

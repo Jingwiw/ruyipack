@@ -6,6 +6,7 @@
 
 //! Shared static SPEC checks and rule selection.
 
+pub(crate) mod build;
 pub(crate) mod license;
 pub(crate) mod metadata;
 
@@ -42,17 +43,26 @@ pub(crate) fn analyze(spec: &ParsedSpec<'_>) -> CheckReport {
     };
     selected_rules.push(license::RULE);
     selected_rules.extend(metadata::RULES);
+    selected_rules.push(build::RULE);
     if parser_error {
         return CheckReport::incomplete(source, selected_rules, diagnostics);
     }
     let license = spec.licenses();
     findings.extend(license.findings);
     findings.extend(spec.metadata_findings());
+    let build = spec.build_requirements().findings();
+    let unresolved_build = build
+        .iter()
+        .any(|finding| finding.severity == Severity::Warn);
+    findings.extend(build);
     CheckReport::analyzed(
         source,
         selected_rules,
         diagnostics,
         findings,
-        license.unresolved.then_some("unresolved-license"),
+        license
+            .unresolved
+            .then_some("unresolved-license")
+            .or(unresolved_build.then_some("unresolved-build-requirements")),
     )
 }

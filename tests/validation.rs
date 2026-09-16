@@ -284,3 +284,92 @@ fn metadata_checks_preserve_literal_versions_http_and_unevaluated_macros() {
             .success()
     );
 }
+
+#[test]
+fn autotools_requirements_are_checked_by_check_gen_and_saved_edits() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("ed.spec"), SPEC).unwrap();
+    fs::write(
+        directory.path().join("invalid.spec"),
+        SPEC.replace("BuildRequires:  autoconf\n", ""),
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("ed.toml"),
+        MANIFEST.replace("\"autoconf\", ", ""),
+    )
+    .unwrap();
+    assert!(
+        run(
+            directory.path(),
+            &[
+                "edit",
+                "ed.spec",
+                "--field",
+                "build-requires",
+                "--prepare",
+                "drafts"
+            ]
+        )
+        .status
+        .success()
+    );
+    let draft = directory.path().join("drafts/ed.toml");
+    let mut doc: toml::Table = toml::from_str(&fs::read_to_string(&draft).unwrap()).unwrap();
+    doc["build-requires"]["rpm"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|value| value.as_str() != Some("autoconf"));
+    fs::write(&draft, toml::to_string_pretty(&doc).unwrap()).unwrap();
+    for args in [
+        vec!["check", "invalid.spec"],
+        vec!["gen", "ed", "--force"],
+        vec!["edit", "--from", "drafts"],
+    ] {
+        let output = run(directory.path(), &args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("RPK004") && error.contains("autoconf"),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+            SPEC
+        );
+    }
+}
+
+#[test]
+fn build_requirements_do_not_guess_conditions_macros_or_unknown_systems() {
+    let directory = tempfile::tempdir().unwrap();
+    for dependency in [
+        "%if 0\nBuildRequires: autoconf\n%endif",
+        "BuildRequires: %{autoconf_requirement}",
+        "BuildRequires: (autoconf or other-tool)",
+    ] {
+        fs::write(
+            directory.path().join("ed.spec"),
+            SPEC.replace("BuildRequires:  autoconf", dependency),
+        )
+        .unwrap();
+        let output = run(directory.path(), &["check", "ed.spec", "--format", "json"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["evidence"]["status"], "incomplete", "{report}");
+        assert_eq!(
+            report["evidence"]["reason"],
+            "unresolved-build-requirements"
+        );
+        assert_eq!(report["findings"][0]["severity"], "warn");
+        assert_eq!(output.status.code(), Some(1));
+    }
+    let source = SPEC
+        .replace("BuildSystem:    autotools", "BuildSystem:    meson")
+        .replace("BuildRequires:  autoconf\n", "");
+    fs::write(directory.path().join("ed.spec"), source).unwrap();
+    assert!(
+        run(directory.path(), &["check", "ed.spec"])
+            .status
+            .success()
+    );
+}

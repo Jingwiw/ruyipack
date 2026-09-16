@@ -51,6 +51,10 @@ impl<'src> ParsedSpec<'src> {
         syntax::metadata(&self.parsed.spec)
     }
 
+    pub(crate) fn build_requirements(&self) -> crate::check::build::BuildRequirements {
+        syntax::build_requirements(&self.parsed.spec)
+    }
+
     pub(crate) fn licenses(&self) -> LicenseCheck {
         syntax::license(&self.parsed.spec)
     }

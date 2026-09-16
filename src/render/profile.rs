@@ -8,40 +8,17 @@
 
 use super::{RenderError, manifest::Manifest};
 use crate::profile::Profile;
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
-struct Contract {
-    name: String,
-    build_requires: Vec<String>,
-}
-
-/// Checks explicit requirements; the contract does not add package dependencies.
+/// Selects a supported rendering system; shared checks enforce its requirements.
 pub(crate) fn load(manifest: &Manifest) -> Result<Profile, RenderError> {
     let profile = crate::profile::load()?;
     let Some(system) = manifest.build.system.as_deref() else {
         return Ok(profile);
     };
-    let contract: Contract = toml::from_str(include_str!(
-        "../../profiles/openruyi-v1/buildsystems/autotools.toml"
-    ))?;
+    let contract = crate::check::build::autotools();
     if system != contract.name {
         return Err(RenderError::Invalid(format!(
             "build.system: unsupported build system {system:?}"
         )));
-    }
-    let requirements =
-        crate::spec::expression::direct_dependency_names(&manifest.build_requires.rpm)
-            .map_err(RenderError::Invalid)?;
-    for required in contract.build_requires {
-        // A conditional or alternative dependency does not guarantee this build tool.
-        if !requirements.contains(&required) {
-            return Err(RenderError::Invalid(format!(
-                "build-requires.rpm: declare {required:?} required by {}",
-                contract.name
-            )));
-        }
     }
     Ok(profile)
 }

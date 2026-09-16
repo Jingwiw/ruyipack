@@ -260,3 +260,10 @@ Literal project URLs use the same URL parser as Source URLs (`RPK003`): existing
 HTTP and HTTPS URLs are accepted; new manifests require HTTPS. An unchanged
 invalid literal also fails the candidate check. Values containing RPM expressions
 are not evaluated or certified by these lexical checks. `Epoch: 0` is not rejected.
+
+A single literal `BuildSystem: autotools` activates the profile's direct build
+requirements (`RPK004`). Missing tools are errors. If conditions, rich dependencies,
+or unevaluated declarations could supply them, the result is incomplete rather
+than a claim that they are absent. Other build systems and context-dependent
+BuildSystem selections are outside this contract check. This is a declaration
+check, not dependency resolution or proof that a package builds.

@@ -55,20 +55,3 @@ fn parse(value: &str) -> Result<Text, String> {
     }
     Ok(text)
 }
-
-/// Returns direct, unqualified dependency names; alternatives are not guarantees.
-pub(crate) fn direct_dependency_names(requirements: &[String]) -> Result<Vec<String>, String> {
-    use rpm_spec::{ast::DepExpr, parser::deps::parse_dep_expr};
-    let mut names = Vec::new();
-    for value in requirements {
-        let parsed = parse_dep_expr(&ParserState::new(), value)
-            .map_err(|()| format!("build-requires.rpm: invalid dependency {value:?}"))?;
-        if let DepExpr::Atom(atom) = parsed
-            && atom.arch.is_none()
-            && let Some(name) = atom.name.literal_str()
-        {
-            names.push(name.to_owned());
-        }
-    }
-    Ok(names)
-}
