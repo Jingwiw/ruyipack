@@ -16,6 +16,7 @@ mod generate;
 mod inspect;
 mod parser_diagnostic;
 mod render;
+mod source;
 mod source_location;
 mod spec_metadata;
 mod syntax_diagnostic;

@@ -37,6 +37,7 @@ pub(super) struct Snapshot {
     source: String,
     document: Table,
     selection: Vec<String>,
+    source_fields: BTreeMap<String, String>,
     scalars: Vec<Scalar>,
     lists: BTreeMap<String, List>,
     copyright: Option<Copyright>,
@@ -66,6 +67,7 @@ impl Snapshot {
             source: source.to_owned(),
             document: Table::new(),
             selection: selection.to_vec(),
+            source_fields: source_fields(source, parsed),
             scalars: Vec::new(),
             lists: BTreeMap::new(),
             copyright: None,
@@ -124,12 +126,6 @@ impl Snapshot {
                         Tag::Source(number) => {
                             let number = number.unwrap_or(0);
                             let identity = format!("sources.{number}");
-                            valid_source_url(
-                                source
-                                    .get(value_range.clone())
-                                    .ok_or_else(|| format!("{identity}.url: invalid value span"))?,
-                                &format!("{identity}.url"),
-                            )?;
                             if lookup(&snapshot.document, &format!("{identity}.url")).is_some() {
                                 return Err(format!("{identity}: duplicate Source identity"));
                             }
@@ -236,6 +232,15 @@ impl Snapshot {
         if selection.is_empty() && lookup(&snapshot.document, "package.name").is_none() {
             return Err("package.name: required main package is missing".into());
         }
+        for scalar in &snapshot.scalars {
+            if scalar.field.starts_with("sources.") && scalar.field.ends_with(".url") {
+                valid_source_url(
+                    string(&snapshot.document, &scalar.field)?,
+                    &scalar.field,
+                    &snapshot.source_fields,
+                )?;
+            }
+        }
         Ok(snapshot)
     }
 
@@ -245,12 +250,19 @@ impl Snapshot {
 
     pub(super) fn render(&self, edited: &Table) -> Result<String, String> {
         validate_shape(&self.document, edited)?;
+        let mut fields = self.source_fields.clone();
+        for name in ["name", "version", "url"] {
+            if let Some(value) = lookup(edited, &format!("package.{name}")).and_then(Value::as_str)
+            {
+                fields.insert(name.to_owned(), value.to_owned());
+            }
+        }
         let mut changes = Vec::new();
         for scalar in &self.scalars {
             let value = string(edited, &scalar.field)?;
             valid_text(value, &scalar.field, scalar.multiline)?;
             if scalar.field.starts_with("sources.") && scalar.field.ends_with(".url") {
-                valid_source_url(value, &scalar.field)?;
+                valid_source_url(value, &scalar.field, &fields)?;
             }
             if scalar.field.ends_with(".sha256") {
                 valid_hash(value, &scalar.field)?;
@@ -815,22 +827,93 @@ fn valid_text(value: &str, field: &str, multiline: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn valid_source_url(value: &str, field: &str) -> Result<(), String> {
-    if value.starts_with("https://") || value.starts_with("http://") {
-        Ok(())
-    } else {
-        Err(format!(
-            "{field}: only explicit http:// or https:// Source values are supported; local and unresolved Source forms are unmapped"
-        ))
+/// Retains raw main-package context even when an edit projects only Source fields.
+/// Missing and repeated fields are unavailable, not guessed from an arbitrary tag.
+fn source_fields(source: &str, parsed: &ParseResult<Span>) -> BTreeMap<String, String> {
+    fn collect(
+        source: &str,
+        items: &[SpecItem<Span>],
+        conditional: bool,
+        fields: &mut BTreeMap<String, String>,
+        unavailable: &mut Vec<String>,
+    ) {
+        for item in items {
+            let item = match item {
+                SpecItem::Preamble(item) => item,
+                SpecItem::Conditional(condition) => {
+                    for branch in &condition.branches {
+                        collect(source, &branch.body, true, fields, unavailable);
+                    }
+                    if let Some(items) = &condition.otherwise {
+                        collect(source, items, true, fields, unavailable);
+                    }
+                    continue;
+                }
+                SpecItem::MacroDef(definition) => {
+                    unavailable.push(definition.name.clone());
+                    continue;
+                }
+                SpecItem::Include(_) | SpecItem::Statement(_) => {
+                    unavailable.extend(["name", "version", "url"].map(str::to_owned));
+                    continue;
+                }
+                _ => continue,
+            };
+            let name = match item.tag {
+                Tag::Name => "name",
+                Tag::Version => "version",
+                Tag::URL => "url",
+                _ => continue,
+            };
+            if conditional || !item.qualifiers.is_empty() || item.lang.is_some() {
+                unavailable.push(name.to_owned());
+                continue;
+            }
+            let Some(raw) = source.get(item.data.start_byte..item.data.end_byte) else {
+                continue;
+            };
+            let Some((_, value)) = raw.split_once(':') else {
+                continue;
+            };
+            if fields
+                .insert(name.to_owned(), value.trim().to_owned())
+                .is_some()
+            {
+                unavailable.push(name.to_owned());
+            }
+        }
     }
+    let mut fields = BTreeMap::new();
+    let mut unavailable = Vec::new();
+    collect(
+        source,
+        &parsed.spec.items,
+        false,
+        &mut fields,
+        &mut unavailable,
+    );
+    for name in unavailable {
+        fields.remove(&name);
+    }
+    fields
+}
+
+fn valid_source_url(
+    value: &str,
+    field: &str,
+    context: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let fields = context
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect::<Vec<_>>();
+    crate::source::validate_expression(value, &fields)
+        .map(|_| ())
+        .map_err(|reason| format!("{field}: {reason}"))
 }
 
 fn valid_hash(value: &str, field: &str) -> Result<(), String> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        Err(format!("{field}: expected 64 hexadecimal digits"))
-    } else {
-        Ok(())
-    }
+    crate::source::validate_sha256(value).map_err(|reason| format!("{field}: {reason}"))
 }
 
 fn valid_path(value: &str, field: &str) -> Result<(), String> {

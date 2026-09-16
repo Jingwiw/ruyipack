@@ -208,7 +208,7 @@ fn sources_keep_macros_rename_fragments_and_encoded_paths() {
     for url in [
         "%{url}/download#/%{name}-%{version}.tar.lz",
         "%url/download#/%name-%version.tar.lz",
-        "https://example.org/a%20b.tar.lz",
+        "https://example.org/a%%20b.tar.lz",
     ] {
         let directory = workspace(&MANIFEST.replace(SOURCE, url));
         let output = run(directory.path(), &["gen", "ed", "--stdout"]);
@@ -217,6 +217,9 @@ fn sources_keep_macros_rename_fragments_and_encoded_paths() {
     }
     for url in [
         "https:/example.org/ed.tar.lz",
+        // The pinned rpm-spec parser represents these as unsupported macro tokens.
+        "https://example.org/a%20b.tar.lz",
+        "https://example.org/%AF.tar.lz",
         "https://example.org/a b.tar.lz",
         "https://example.org/%{version.tar.lz",
         "https://example.org/%{release_tag}.tar.lz",

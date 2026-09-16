@@ -7,13 +7,8 @@
 //! Typed authoring input and validation before SPEC rendering.
 
 use super::RenderError;
-use rpm_spec::{
-    ast::{ConditionalMacro, MacroKind, TextSegment},
-    parser::{Input, ParserState, text::parse_text},
-};
 use serde::{Deserialize, Deserializer, de::Error as _};
-use std::{cell::Cell, collections::BTreeMap};
-use url::{SyntaxViolation, Url};
+use std::collections::BTreeMap;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
@@ -148,17 +143,8 @@ pub(super) fn parse(source: &str) -> Result<Manifest, RenderError> {
     }
     for (number, source) in &manifest.sources {
         source_url(&format!("sources.{number}.url"), &source.url, package)?;
-        if source.sha256.len() != 64
-            || !source
-                .sha256
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
-            return Err(invalid(
-                &format!("sources.{number}.sha256"),
-                "expected 64 lowercase hexadecimal digits",
-            ));
-        }
+        crate::source::validate_sha256(&source.sha256)
+            .map_err(|reason| invalid(&format!("sources.{number}.sha256"), reason))?;
     }
     for requirement in &manifest.build_requires.rpm {
         single_line("build-requires.rpm", requirement)?;
@@ -231,76 +217,32 @@ fn single_line(field: &str, value: &str) -> Result<(), RenderError> {
     Ok(())
 }
 
-/// Checks a source expression using package fields without executing RPM macros.
+/// Generation has an HTTPS-only policy; editing existing HTTP sources is supported.
 fn source_url(field: &str, value: &str, package: &Package) -> Result<(), RenderError> {
     single_line(field, value)?;
-    // Preserve already valid URLs, including percent-encoded paths.
-    if https_url(field, value).is_ok() {
-        return Ok(());
-    }
-    let state = ParserState::new();
-    let (_, text) = parse_text(&state, Input::new(value), &|_| false)
-        .map_err(|_| RenderError::Invalid(format!("{field}: invalid RPM source expression")))?;
-    if let Some(diagnostic) = state.diagnostics.borrow().first() {
-        return Err(RenderError::Invalid(format!(
-            "{field}: {}",
-            diagnostic.message
-        )));
-    }
-    let mut resolved = String::new();
-    for segment in &text.segments {
-        let part = match segment {
-            TextSegment::Literal(literal) => literal,
-            TextSegment::Macro(reference)
-                if matches!(reference.kind, MacroKind::Plain | MacroKind::Braced)
-                    && reference.conditional == ConditionalMacro::None
-                    && reference.args.is_empty()
-                    && reference.with_value.is_none() =>
-            {
-                match reference.name.as_str() {
-                    "name" => &package.name,
-                    "version" => &package.version,
-                    "url" => &package.url,
-                    name => {
-                        return Err(RenderError::Invalid(format!(
-                            "{field}: unsupported source macro {name:?}; available fields are name, version and url"
-                        )));
-                    }
-                }
-            }
-            _ => {
-                return Err(RenderError::Invalid(format!(
-                    "{field}: source expression requires RPM evaluation"
-                )));
-            }
-        };
-        resolved.push_str(part);
-    }
-    // Keep the original expression for rendering; only the check uses these values.
-    https_url(field, &resolved)
+    let scheme = crate::source::validate_expression(
+        value,
+        &[
+            ("name", &package.name),
+            ("version", &package.version),
+            ("url", &package.url),
+        ],
+    )
+    .map_err(|reason| RenderError::Invalid(format!("{field}: {reason}")))?;
+    require_https(field, scheme)
 }
 
-/// Rejects recoverable URL typos instead of publishing the original typo.
 fn https_url(field: &str, value: &str) -> Result<(), RenderError> {
     single_line(field, value)?;
-    let repaired = Cell::new(false);
-    let capture = |violation| {
-        if matches!(
-            violation,
-            SyntaxViolation::ExpectedDoubleSlash
-                | SyntaxViolation::Backslash
-                | SyntaxViolation::NonUrlCodePoint
-                | SyntaxViolation::PercentDecode
-        ) {
-            repaired.set(true);
-        }
-    };
-    let parsed = Url::options()
-        .syntax_violation_callback(Some(&capture))
-        .parse(value);
-    if repaired.get() || !parsed.is_ok_and(|url| url.scheme() == "https" && url.host().is_some()) {
+    let scheme = crate::source::validate_url(value)
+        .map_err(|reason| RenderError::Invalid(format!("{field}: {reason}")))?;
+    require_https(field, scheme)
+}
+
+fn require_https(field: &str, scheme: crate::source::Scheme) -> Result<(), RenderError> {
+    if scheme != crate::source::Scheme::Https {
         return Err(RenderError::Invalid(format!(
-            "{field}: expected an absolute HTTPS URL without repaired syntax; encode spaces as %20"
+            "{field}: new openRuyi sources require HTTPS"
         )));
     }
     Ok(())
