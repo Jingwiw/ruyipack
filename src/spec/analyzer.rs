@@ -12,10 +12,7 @@ use rpm_spec_analyzer::{
     session::LintSession,
 };
 
-use crate::{
-    check_report::{Finding, SelectedRule, Severity},
-    syntax_diagnostic,
-};
+use crate::check_report::{Finding, SelectedRule, Severity};
 
 pub(super) struct Analyzer {
     config: Config,
@@ -57,7 +54,7 @@ impl Analyzer {
                     AnalyzerSeverity::Deny => Severity::Deny,
                 },
                 message: diagnostic.message,
-                span: syntax_diagnostic::location(diagnostic.primary_span),
+                span: super::diagnostic::location(diagnostic.primary_span),
             })
             .collect()
     }

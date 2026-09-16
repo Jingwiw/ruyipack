@@ -12,65 +12,65 @@ use std::collections::BTreeMap;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub(super) struct Manifest {
-    pub(super) spec: SpecMetadata,
-    pub(super) package: Package,
+pub(crate) struct Manifest {
+    pub(crate) spec: SpecMetadata,
+    pub(crate) package: Package,
     #[serde(deserialize_with = "read_sources")]
-    pub(super) sources: BTreeMap<u32, Source>,
-    pub(super) build: Build,
-    pub(super) build_requires: BuildRequires,
+    pub(crate) sources: BTreeMap<u32, Source>,
+    pub(crate) build: Build,
+    pub(crate) build_requires: BuildRequires,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub(super) struct SpecMetadata {
-    pub(super) copyright_years: String,
-    pub(super) contributors: Vec<String>,
+pub(crate) struct SpecMetadata {
+    pub(crate) copyright_years: String,
+    pub(crate) contributors: Vec<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Package {
-    pub(super) name: String,
-    pub(super) version: String,
-    pub(super) summary: String,
-    pub(super) license: String,
-    pub(super) url: String,
-    pub(super) description: String,
-    pub(super) vcs: Vcs,
-    pub(super) files: Files,
+pub(crate) struct Package {
+    pub(crate) name: String,
+    pub(crate) version: String,
+    pub(crate) summary: String,
+    pub(crate) license: String,
+    pub(crate) url: String,
+    pub(crate) description: String,
+    pub(crate) vcs: Vcs,
+    pub(crate) files: Files,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub(super) struct Vcs {
-    pub(super) no_public_repository: bool,
+pub(crate) struct Vcs {
+    pub(crate) no_public_repository: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Source {
-    pub(super) url: String,
-    pub(super) sha256: String,
+pub(crate) struct Source {
+    pub(crate) url: String,
+    pub(crate) sha256: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Build {
-    pub(super) system: String,
+pub(crate) struct Build {
+    pub(crate) system: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct BuildRequires {
-    pub(super) rpm: Vec<String>,
+pub(crate) struct BuildRequires {
+    pub(crate) rpm: Vec<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Files {
+pub(crate) struct Files {
     #[serde(default)]
-    pub(super) license: Vec<String>,
+    pub(crate) license: Vec<String>,
     #[serde(default)]
-    pub(super) doc: Vec<String>,
-    pub(super) entries: Vec<String>,
+    pub(crate) doc: Vec<String>,
+    pub(crate) entries: Vec<String>,
 }
 
 /// Reads the supported authoring fields without evaluating RPM macros.
-pub(super) fn parse(source: &str) -> Result<Manifest, RenderError> {
+pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
     let manifest: Manifest = toml::from_str(source)?;
     let package = &manifest.package;
     let invalid = |field: &str, reason: &str| RenderError::Invalid(format!("{field}: {reason}"));

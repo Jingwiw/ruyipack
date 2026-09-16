@@ -22,7 +22,7 @@ struct Contract {
 }
 
 /// Checks explicit requirements; the contract does not add package dependencies.
-pub(super) fn load(manifest: &Manifest) -> Result<Profile, RenderError> {
+pub(crate) fn load(manifest: &Manifest) -> Result<Profile, RenderError> {
     let profile = crate::profile::load()?;
     let contract: Contract = toml::from_str(include_str!(
         "../../profiles/openruyi-v1/buildsystems/autotools.toml"

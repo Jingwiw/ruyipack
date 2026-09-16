@@ -6,7 +6,7 @@
 
 //! Source-local field changes through the complete document boundary.
 
-use rpm_spec::parser::parse_str_with_spans;
+use crate::spec::ParsedSpec;
 use toml::Value;
 
 use super::Snapshot;
@@ -16,7 +16,7 @@ const DEPENDENCIES: &str =
 const ED: &str = include_str!("../../../tests/fixtures/ed.spec");
 
 fn capture(source: &str) -> Snapshot {
-    Snapshot::capture(source, &parse_str_with_spans(source)).unwrap()
+    Snapshot::capture(&ParsedSpec::parse(source)).unwrap()
 }
 
 fn dependencies(values: &[&str]) -> String {

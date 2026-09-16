@@ -6,18 +6,19 @@
 
 //! Source-preserving edits through TOML fields and external editors.
 
-mod document;
 mod drafts;
 mod editor;
-mod fields;
+pub(crate) mod fields;
 mod options;
 
 pub(crate) use options::Options;
 
 use crate::{check, file_output, utf8_file};
-use document::Snapshot;
+use crate::{
+    check_report::CheckReport,
+    spec::{ParsedSpec, document::Snapshot},
+};
 use options::CheckFormat;
-use rpm_spec::parser::parse_str_with_spans;
 use serde_json::json;
 use std::{
     fs,
@@ -171,11 +172,11 @@ fn input(
     fields: Vec<String>,
     draft: Option<PathBuf>,
 ) -> Result<Input, String> {
-    let parsed = parse_str_with_spans(&source);
+    let parsed = ParsedSpec::parse(&source);
     let snapshot = if fields.is_empty() {
-        Snapshot::capture(&source, &parsed)
+        Snapshot::capture(&parsed)
     } else {
-        Snapshot::capture_selected(&source, &parsed, &fields)
+        Snapshot::capture_selected(&parsed, &fields)
     }
     .map_err(|e| format!("{}: {e}", path.display()))?;
     fields::select(snapshot.document(), &fields)?;
@@ -214,8 +215,7 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
     let mut errors = Vec::new();
     for item in inputs {
         match candidate(item, &options.set) {
-            Ok(text) => {
-                let report = check::analyze(&text, parse_str_with_spans(&text));
+            Ok((text, report)) => {
                 let success = report.is_success();
                 let label = format!("{} (candidate)", item.path.display());
                 valid.push(success);
@@ -298,7 +298,10 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
     Ok(true)
 }
 
-fn candidate(item: &Input, assignments: &[(String, String)]) -> Result<String, String> {
+fn candidate(
+    item: &Input,
+    assignments: &[(String, String)],
+) -> Result<(String, CheckReport), String> {
     if !utf8_file::is_unchanged(&item.path, &item.source)
         .map_err(|e| format!("{}: {e}", item.path.display()))?
     {
@@ -327,8 +330,8 @@ fn candidate(item: &Input, assignments: &[(String, String)]) -> Result<String, S
             item.draft.as_deref().unwrap_or(&item.path).display()
         )
     })?;
-    let parsed = parse_str_with_spans(&rendered);
-    let observed = Snapshot::capture_selected(&rendered, &parsed, &item.fields).map_err(|e| {
+    let parsed = ParsedSpec::parse(&rendered);
+    let observed = Snapshot::capture_selected(&parsed, &item.fields).map_err(|e| {
         format!(
             "{}: {e}",
             item.draft.as_deref().unwrap_or(&item.path).display()
@@ -340,7 +343,8 @@ fn candidate(item: &Input, assignments: &[(String, String)]) -> Result<String, S
             item.path.display()
         ));
     }
-    Ok(rendered)
+    let report = check::analyze(&parsed);
+    Ok((rendered, report))
 }
 
 /// A destination must not replace the draft or its recovery inputs.

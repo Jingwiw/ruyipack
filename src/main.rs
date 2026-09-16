@@ -19,8 +19,8 @@ mod profile;
 mod render;
 mod source;
 mod source_location;
+mod spec;
 mod spec_metadata;
-mod syntax_diagnostic;
 mod utf8_file;
 
 use std::{

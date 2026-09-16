@@ -17,14 +17,14 @@ pub(super) const RULE: SelectedRule = SelectedRule {
 };
 
 #[derive(Default)]
-pub(super) struct LicenseCheck {
+pub(crate) struct LicenseCheck {
     pub(super) findings: Vec<Finding>,
     pub(super) unresolved: bool,
 }
 
 impl LicenseCheck {
     /// Checks a literal value, or records that syntax requires RPM evaluation.
-    pub(super) fn check(&mut self, literal: Option<&str>, span: SourceLocation) {
+    pub(crate) fn check(&mut self, literal: Option<&str>, span: SourceLocation) {
         let (severity, message) = match literal {
             Some(value) => match validate_expression(value) {
                 Ok(_) => return,

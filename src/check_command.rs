@@ -9,9 +9,8 @@
 use std::{io, path::Path};
 
 use clap::ValueEnum;
-use rpm_spec::parser::parse_str_with_spans;
 
-use crate::{check, utf8_file};
+use crate::{check, spec::ParsedSpec, utf8_file};
 
 /// Output format supported by the check command.
 #[derive(Clone, ValueEnum)]
@@ -23,7 +22,7 @@ pub(crate) enum CheckFormat {
 /// Checks required tags and SPDX License expressions in one SPEC.
 pub(crate) fn run(path: &Path, format: CheckFormat) -> Result<bool, CheckError> {
     let source = utf8_file::read(path)?;
-    let report = check::analyze(&source, parse_str_with_spans(&source));
+    let report = check::analyze(&ParsedSpec::parse(&source));
 
     match format {
         CheckFormat::Human => report

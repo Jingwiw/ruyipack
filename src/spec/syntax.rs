@@ -9,8 +9,7 @@
 use rpm_spec::ast::{PreambleItem, Span, SpecFile, Tag, TagValue};
 use rpm_spec_analyzer::visit::Visit;
 
-use super::license::LicenseCheck;
-use crate::syntax_diagnostic;
+use crate::check::license::LicenseCheck;
 
 pub(super) fn license(spec: &SpecFile<Span>) -> LicenseCheck {
     let mut visitor = LicenseVisitor(LicenseCheck::default());
@@ -28,7 +27,7 @@ impl<'ast> Visit<'ast> for LicenseVisitor {
                 _ => None,
             };
             self.0
-                .check(literal, syntax_diagnostic::location(item.data));
+                .check(literal, super::diagnostic::location(item.data));
         }
     }
 }

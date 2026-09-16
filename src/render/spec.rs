@@ -11,7 +11,7 @@ use crate::profile::Profile;
 use std::fmt::Write as _;
 
 /// Renders a complete SPEC from validated manifest fields and distribution defaults.
-pub(super) fn render(recipe: &Manifest, profile: &Profile) -> String {
+pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
     let mut output = String::new();
     let header = &recipe.spec;
 

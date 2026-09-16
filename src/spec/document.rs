@@ -13,7 +13,8 @@ use rpm_spec::{
 use std::{collections::BTreeMap, ops::Range};
 use toml::{Table, Value};
 
-use super::fields::{lookup, lookup_mut, validate_shape};
+use super::ParsedSpec;
+use crate::edit::fields::{lookup, lookup_mut, validate_shape};
 
 struct Scalar {
     field: String,
@@ -33,7 +34,7 @@ struct Copyright {
     holders: List,
 }
 
-pub(super) struct Snapshot {
+pub(crate) struct Snapshot {
     source: String,
     document: Table,
     selection: Vec<String>,
@@ -44,15 +45,16 @@ pub(super) struct Snapshot {
 }
 
 impl Snapshot {
-    pub(super) fn capture(source: &str, parsed: &ParseResult<Span>) -> Result<Self, String> {
-        Self::capture_selected(source, parsed, &[])
+    pub(crate) fn capture(spec: &ParsedSpec<'_>) -> Result<Self, String> {
+        Self::capture_selected(spec, &[])
     }
 
-    pub(super) fn capture_selected(
-        source: &str,
-        parsed: &ParseResult<Span>,
+    pub(crate) fn capture_selected(
+        spec: &ParsedSpec<'_>,
         selection: &[String],
     ) -> Result<Self, String> {
+        let source = spec.source;
+        let parsed = &spec.parsed;
         if source.contains(['\r', '\0']) {
             return Err("source: CR and NUL are unsupported".into());
         }
@@ -245,11 +247,11 @@ impl Snapshot {
         Ok(snapshot)
     }
 
-    pub(super) fn document(&self) -> &Table {
+    pub(crate) fn document(&self) -> &Table {
         &self.document
     }
 
-    pub(super) fn render(&self, edited: &Table) -> Result<String, String> {
+    pub(crate) fn render(&self, edited: &Table) -> Result<String, String> {
         validate_shape(&self.document, edited)?;
         let mut fields = self.source_fields.clone();
         for name in ["name", "version", "url"] {

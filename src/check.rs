@@ -6,24 +6,20 @@
 
 //! Shared static SPEC checks and rule selection.
 
-use rpm_spec::{ast::Span, parse_result::ParseResult};
-
-mod analyzer;
-mod license;
-mod syntax;
+pub(crate) mod license;
 
 use crate::{
     check_report::{CheckReport, SelectedRule, Severity},
-    parser_diagnostic, syntax_diagnostic,
+    parser_diagnostic,
+    spec::ParsedSpec,
 };
 
 const REQUIRED_TAG_LINT_IDS: [&str; 6] =
     ["RPM010", "RPM011", "RPM012", "RPM013", "RPM014", "RPM015"];
 
 /// Runs the selected static checks without file or terminal I/O.
-///
-/// `parsed` must have been produced from `source`.
-pub(crate) fn analyze(source: &str, parsed: ParseResult<Span>) -> CheckReport {
+pub(crate) fn analyze(spec: &ParsedSpec<'_>) -> CheckReport {
+    let source = spec.source();
     let mut selected_rules: Vec<_> = REQUIRED_TAG_LINT_IDS
         .iter()
         .map(|&code| SelectedRule {
@@ -31,18 +27,18 @@ pub(crate) fn analyze(source: &str, parsed: ParseResult<Span>) -> CheckReport {
             severity: Severity::Deny,
         })
         .collect();
-    let analyzer = analyzer::Analyzer::new(&selected_rules);
-    selected_rules.push(license::RULE);
-    let diagnostics = syntax_diagnostic::diagnostics(parsed.diagnostics);
+    let diagnostics = spec.diagnostics();
 
     if diagnostics
         .iter()
         .any(|item| item.severity == parser_diagnostic::Severity::Error)
     {
+        selected_rules.push(license::RULE);
         CheckReport::incomplete(source, selected_rules, diagnostics)
     } else {
-        let mut findings = analyzer.run(source, &parsed.spec);
-        let license = syntax::license(&parsed.spec);
+        let mut findings = spec.findings(&selected_rules);
+        selected_rules.push(license::RULE);
+        let license = spec.licenses();
         findings.extend(license.findings);
         CheckReport::analyzed(
             source,

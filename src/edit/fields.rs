@@ -66,7 +66,7 @@ pub(super) fn schema(document: &Table) -> Json {
     schema
 }
 
-pub(super) fn lookup<'a>(table: &'a Table, field: &str) -> Option<&'a Value> {
+pub(crate) fn lookup<'a>(table: &'a Table, field: &str) -> Option<&'a Value> {
     let (head, tail) = field
         .split_once('.')
         .map_or((field, None), |(head, tail)| (head, Some(tail)));
@@ -80,7 +80,7 @@ pub(super) fn lookup<'a>(table: &'a Table, field: &str) -> Option<&'a Value> {
     }
 }
 
-pub(super) fn lookup_mut<'a>(table: &'a mut Table, field: &str) -> Option<&'a mut Value> {
+pub(crate) fn lookup_mut<'a>(table: &'a mut Table, field: &str) -> Option<&'a mut Value> {
     let (head, tail) = field
         .split_once('.')
         .map_or((field, None), |(head, tail)| (head, Some(tail)));
@@ -94,7 +94,7 @@ pub(super) fn lookup_mut<'a>(table: &'a mut Table, field: &str) -> Option<&'a mu
     }
 }
 
-pub(super) fn validate_shape(original: &Table, edited: &Table) -> Result<(), String> {
+pub(crate) fn validate_shape(original: &Table, edited: &Table) -> Result<(), String> {
     check_table(original, edited, "")
 }
 

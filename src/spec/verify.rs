@@ -6,26 +6,25 @@
 
 //! Checks generated facts against the manifest and distribution defaults.
 
-use super::{RenderError, manifest::Manifest};
+use super::ParsedSpec;
 use crate::profile::Profile;
+use crate::render::{RenderError, manifest::Manifest};
 use rpm_spec::{
     ast::{
         ChangelogItem, CommentStyle, FileDirective, FilesContent, Section, Span, SpecItem, Tag,
         TagValue, Text, TextSegment,
     },
-    parse_result::ParseResult,
     parser::{Input, ParserState, deps::parse_dep_expr, text::parse_text},
 };
 
 /// Checks candidate facts against the manifest and profile.
-///
-/// `parsed` must have been produced from `source`.
-pub(super) fn run(
-    source: &str,
-    parsed: &ParseResult<Span>,
+pub(crate) fn run(
+    spec: &ParsedSpec<'_>,
     recipe: &Manifest,
     profile: &Profile,
 ) -> Result<(), RenderError> {
+    let source = spec.source;
+    let parsed = &spec.parsed;
     if !parsed.diagnostics.is_empty() {
         return Err(RenderError::Invalid(format!(
             "generated SPEC produced parser diagnostics:\n{}",

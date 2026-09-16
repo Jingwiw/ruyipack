@@ -6,22 +6,24 @@
 
 //! Manifest-to-SPEC rendering with the shared static checks.
 
-mod manifest;
-mod profile;
-mod spec;
-mod verify;
+pub(crate) mod manifest;
+pub(crate) mod profile;
+pub(crate) mod spec;
 
-use crate::{check, check_report::CheckReport};
-use rpm_spec::parser::parse_str_with_spans;
+use crate::{
+    check,
+    check_report::CheckReport,
+    spec::{ParsedSpec, verify},
+};
 
 /// Renders one manifest without file or terminal I/O.
 pub(crate) fn run(source: &str) -> Result<RenderedSpec, RenderError> {
     let manifest = manifest::parse(source)?;
     let profile = profile::load(&manifest)?;
     let contents = spec::render(&manifest, &profile);
-    let parsed = parse_str_with_spans(&contents);
-    verify::run(&contents, &parsed, &manifest, &profile)?;
-    let report = check::analyze(&contents, parsed);
+    let parsed = ParsedSpec::parse(&contents);
+    verify::run(&parsed, &manifest, &profile)?;
+    let report = check::analyze(&parsed);
     Ok(RenderedSpec {
         name: manifest.package.name,
         contents,

@@ -8,7 +8,7 @@
 
 use super::run;
 use crate::render::{manifest, profile, spec};
-use rpm_spec::parser::parse_str_with_spans;
+use crate::spec::ParsedSpec;
 
 const MANIFEST: &str = include_str!("../../../examples/ed/ed.toml");
 
@@ -85,14 +85,12 @@ fn rejects_changed_facts_even_when_the_spec_still_parses() {
     ] {
         let changed = original.replacen(before, after, 1);
         assert_ne!(changed, original, "mutation did not apply: {before}");
-        let parsed = parse_str_with_spans(&changed);
+        let parsed = ParsedSpec::parse(&changed);
         assert!(
-            parsed.diagnostics.is_empty(),
+            parsed.parsed.diagnostics.is_empty(),
             "not a clean parser result: {before}"
         );
-        let error = run(&changed, &parsed, &recipe, &profile)
-            .unwrap_err()
-            .to_string();
+        let error = run(&parsed, &recipe, &profile).unwrap_err().to_string();
         assert!(error.contains(field), "{before}: {error}");
     }
 }
@@ -114,9 +112,9 @@ fn rejects_missing_duplicate_and_unexpected_units() {
         ),
         original.replace("\n%changelog\n%autochangelog\n", ""),
     ] {
-        let parsed = parse_str_with_spans(&changed);
-        assert!(parsed.diagnostics.is_empty());
-        assert!(run(&changed, &parsed, &recipe, &profile).is_err());
+        let parsed = ParsedSpec::parse(&changed);
+        assert!(parsed.parsed.diagnostics.is_empty());
+        assert!(run(&parsed, &recipe, &profile).is_err());
     }
 }
 
@@ -143,10 +141,10 @@ fn keeps_each_checksum_bound_to_its_source() {
     lines[positions[1]] = source_lines[0];
     // All tags and all comments remain present; only their association is wrong.
     let changed = lines.join("\n") + "\n";
-    let parsed = parse_str_with_spans(&changed);
-    assert!(parsed.diagnostics.is_empty());
+    let parsed = ParsedSpec::parse(&changed);
+    assert!(parsed.parsed.diagnostics.is_empty());
     assert!(
-        run(&changed, &parsed, &recipe, &profile)
+        run(&parsed, &recipe, &profile)
             .unwrap_err()
             .to_string()
             .contains("sources.2.sha256")
@@ -167,9 +165,9 @@ fn ignores_layout_but_preserves_prose_and_macro_structure() {
     let changed = original
         .replace("Name:           ", "Name:\t")
         .replace("%files\n", "%files\n\n");
-    assert!(run(&changed, &parse_str_with_spans(&changed), &recipe, &profile).is_ok());
+    assert!(run(&ParsedSpec::parse(&changed), &recipe, &profile).is_ok());
     let changed = original.replace("  Indented text  ", "Indented text");
-    assert!(run(&changed, &parse_str_with_spans(&changed), &recipe, &profile).is_err());
+    assert!(run(&ParsedSpec::parse(&changed), &recipe, &profile).is_err());
 }
 
 #[test]
@@ -177,22 +175,14 @@ fn preserves_remote_asset_marker_bytes() {
     let recipe = manifest::parse(MANIFEST).unwrap();
     let profile = profile::load(&recipe).unwrap();
     let original = spec::render(&recipe, &profile);
-    assert!(
-        run(
-            &original,
-            &parse_str_with_spans(&original),
-            &recipe,
-            &profile
-        )
-        .is_ok()
-    );
+    assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
 
     let changed = original.replacen("#!RemoteAsset:", "# !RemoteAsset:", 1);
     assert_ne!(changed, original);
-    let parsed = parse_str_with_spans(&changed);
-    assert!(parsed.diagnostics.is_empty());
+    let parsed = ParsedSpec::parse(&changed);
+    assert!(parsed.parsed.diagnostics.is_empty());
     assert!(
-        run(&changed, &parsed, &recipe, &profile)
+        run(&parsed, &recipe, &profile)
             .unwrap_err()
             .to_string()
             .contains("sources.0.sha256")
