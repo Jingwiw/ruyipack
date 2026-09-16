@@ -698,3 +698,6 @@ fn valid_comments(value: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+[spec]
+contributors = [
+  "Zheng Junjie <zhengjunjie@iscas.ac.cn>",
+  "misaka00251 <liuxin@iscas.ac.cn>",
+]
+comments = ["# VCS: No VCS link available"]
+release = "%autorelease"
+changelog = "%autochangelog\n"
+license = "MulanPSL-2.0"
+copyright-years = "2025"
+copyright-holders = [
+  "Institute of Software, Chinese Academy of Sciences (ISCAS)",
+  "openRuyi Project Contributors",
+]
+
+[package]
+name = "ed"
+version = "1.22.5"
+summary = "A line-oriented text editor"
+license = "GPL-3.0-or-later AND LGPL-2.1-or-later"
+url = "https://www.gnu.org/software/ed/"
+description = '''
+GNU ed is a line-oriented text editor. It is used to create, display,
+modify and otherwise manipulate text files, both interactively and via
+shell scripts. A restricted version of ed, red, can only edit files in
+the current directory and cannot execute shell commands. Ed is the
+"standard" text editor in the sense that it is the original editor for
+Unix, and thus widely available. For most purposes, however, it is
+superseded by full-screen editors such as GNU Emacs or GNU Moe.
+
+'''
+
+[package.files]
+license = ["COPYING"]
+doc = ["AUTHORS", "ChangeLog", "NEWS", "README"]
+entries = [
+  "%{_bindir}/%{name}",
+  "%{_bindir}/r%{name}",
+  "%{_infodir}/%{name}.info%{?ext_info}",
+  "%{_mandir}/man1/%{name}.1%{?ext_man}",
+  "%{_mandir}/man1/r%{name}.1%{?ext_man}",
+]
+
+[sources.0]
+sha256 = "56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc"
+url = "https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz"
+
+[build]
+system = "autotools"
+
+[build-requires]
+rpm = ["autoconf", "automake", "libtool", "make", "lzip"]

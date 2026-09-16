@@ -71,23 +71,8 @@ fn full_view_exposes_existing_fields_without_writing_files() {
     assert!(first.stderr.is_empty());
     let document: toml::Table =
         toml::from_str(std::str::from_utf8(&first.stdout).unwrap()).unwrap();
-    assert_eq!(document["package"]["version"].as_str(), Some("1.22.5"));
-    assert_eq!(document["spec"]["release"].as_str(), Some("%autorelease"));
-    assert_eq!(document["build"]["system"].as_str(), Some("autotools"));
-    assert_eq!(
-        document["sources"]["0"]["sha256"].as_str().unwrap().len(),
-        64
-    );
-    assert_eq!(
-        document["build-requires"]["rpm"].as_array().unwrap().len(),
-        5
-    );
-    assert!(
-        document["package"]["files"]["entries"]
-            .as_array()
-            .unwrap()
-            .contains(&"%{_bindir}/%{name}".into())
-    );
+    let expected: toml::Table = toml::from_str(include_str!("fixtures/ed.edit.toml")).unwrap();
+    assert_eq!(document, expected);
     assert_eq!(
         first.stdout,
         command(directory.path())
@@ -395,6 +380,68 @@ fn all_prepared_files_are_checked_before_any_source_is_written() {
         fs::read_to_string(directory.path().join("second.spec")).unwrap(),
         SOURCE
     );
+}
+
+#[test]
+fn static_check_failure_blocks_even_forced_publication() {
+    let directory = fixture();
+    let source = SOURCE.replace("URL:            https://www.gnu.org/software/ed/\n", "");
+    assert_ne!(source, SOURCE);
+    let path = directory.path().join("ed.spec");
+    fs::write(&path, &source).unwrap();
+    let checked = command(directory.path())
+        .args([
+            "ed.spec",
+            "--set",
+            "package.version=1.22.6",
+            "--check",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(checked.status.code(), Some(1), "{checked:?}");
+    assert!(checked.stderr.is_empty());
+    let report: serde_json::Value = serde_json::from_slice(&checked.stdout).unwrap();
+    assert_eq!(report["valid"], false);
+    assert_eq!(report["files"][0]["valid"], false);
+    assert_eq!(
+        report["files"][0]["report"]["findings"][0]["code"],
+        "RPM015"
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), source);
+
+    let output = command(directory.path())
+        .args(["ed.spec", "--set", "package.version=1.22.6", "--force"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("candidate failed static checks"));
+    assert_eq!(fs::read_to_string(path).unwrap(), source);
+}
+
+#[test]
+fn prepared_dependency_edit_changes_only_its_source_value() {
+    let directory = fixture();
+    let drafts = prepare(directory.path(), &["ed.spec"], &["build-requires"]);
+    let path = drafts.join("ed.toml");
+    let mut document: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let dependencies = document["build-requires"]["rpm"].as_array_mut().unwrap();
+    assert_eq!(dependencies[4].as_str(), Some("lzip"));
+    dependencies[4] = "xz".into();
+    fs::write(path, toml::to_string_pretty(&document).unwrap()).unwrap();
+    let output = command(directory.path())
+        .arg("--from")
+        .arg(drafts)
+        .arg("--stdout")
+        .output()
+        .unwrap();
+    success(&output);
+    let expected = SOURCE.replace("BuildRequires:  lzip\n", "BuildRequires:  xz\n");
+    assert_ne!(expected, SOURCE);
+    assert_eq!(output.stdout, expected.as_bytes());
+    unchanged(directory.path());
 }
 
 #[test]

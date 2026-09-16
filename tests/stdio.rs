@@ -55,6 +55,13 @@ fn disconnected_standard_streams_return_errors_without_panicking() {
             "ed.spec",
             "--set",
             "package.version=1.22.6",
+            "--stdout",
+        ],
+        &[
+            "edit",
+            "ed.spec",
+            "--set",
+            "package.version=1.22.6",
             "--diff",
         ],
     ] {
