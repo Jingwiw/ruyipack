@@ -31,8 +31,6 @@ pub(crate) enum Severity {
 
 const FORMAT_VERSION: u32 = 1;
 const INCOMPLETE_PARSER_ERROR: &str = "parser-error";
-const RPM_SPEC_REPOSITORY: &str = "https://github.com/openRuyi-Project/rpm-spec";
-const RPM_SPEC_TOOL_REPOSITORY: &str = "https://github.com/openRuyi-Project/rpm-spec-tool";
 
 /// One selected static rule and its severity for confirmed violations.
 #[derive(Serialize)]
@@ -163,13 +161,13 @@ impl CheckReport {
                     ComponentIdentity {
                         name: "rpm-spec",
                         version: env!("RUYIPACK_RPM_SPEC_VERSION"),
-                        repository: RPM_SPEC_REPOSITORY,
+                        repository: env!("RUYIPACK_RPM_SPEC_REPOSITORY"),
                         revision: env!("RUYIPACK_RPM_SPEC_REVISION"),
                     },
                     ComponentIdentity {
                         name: "rpm-spec-analyzer",
                         version: env!("RUYIPACK_RPM_SPEC_ANALYZER_VERSION"),
-                        repository: RPM_SPEC_TOOL_REPOSITORY,
+                        repository: env!("RUYIPACK_RPM_SPEC_ANALYZER_REPOSITORY"),
                         revision: env!("RUYIPACK_RPM_SPEC_ANALYZER_REVISION"),
                     },
                 ],
