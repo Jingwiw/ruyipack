@@ -258,3 +258,40 @@ fn stage_options_match_their_stage_value_and_order() {
         assert!(run(&parsed, &recipe, &profile).is_err(), "{before}");
     }
 }
+
+#[test]
+fn stage_scripts_match_kind_placement_and_exact_body() {
+    let input = format!(
+        "{MANIFEST}\n[build.stages.conf]\nprepend = 'autoreconf -fiv'\n\
+         append = '''echo configured\n'''\n\
+         [build.stages.install]\nappend = '''cat <<'END' > generated\n\tcontent\n\nEND\n\n'''\n"
+    );
+    let recipe = manifest::parse(&input).unwrap();
+    let profile = profile::load(&recipe).unwrap();
+    let original = spec::render(&recipe, &profile);
+    assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
+    for (before, after) in [
+        ("%conf -p", "%build -p"),
+        ("%conf -p", "%conf -a"),
+        ("%conf -p", "%conf"),
+        ("autoreconf -fiv", "autoreconf -fi"),
+        ("\tcontent", "content"),
+        ("content\n\nEND", "content\nEND"),
+        ("END\n\n\n", "END\n\n"),
+        ("%conf -p\nautoreconf -fiv\n\n", ""),
+        (
+            "%conf -p\nautoreconf -fiv\n\n",
+            "%conf -p\nautoreconf -fiv\n\n%conf -p\nautoreconf -fiv\n\n",
+        ),
+        (
+            "%conf -p\nautoreconf -fiv\n\n%conf -a\necho configured\n\n",
+            "%conf -a\necho configured\n\n%conf -p\nautoreconf -fiv\n\n",
+        ),
+    ] {
+        let changed = original.replacen(before, after, 1);
+        assert_ne!(changed, original);
+        let parsed = ParsedSpec::parse(&changed);
+        assert!(parsed.parsed.diagnostics.is_empty(), "{before}");
+        assert!(run(&parsed, &recipe, &profile).is_err(), "{before}");
+    }
+}

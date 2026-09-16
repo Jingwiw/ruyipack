@@ -457,3 +457,76 @@ fn generation_errors_identify_the_selected_manifest_without_writing() {
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 }
+
+#[test]
+fn stage_scripts_preserve_bodies_and_keep_default_actions() {
+    let extra = r#"
+[build.stages.install]
+append = '''
+# Remove an upstream-created directory index.
+rm -f %{buildroot}%{_infodir}/dir
+'''
+[build.stages.conf]
+prepend = 'autoreconf -fiv'
+append = "echo configured\n"
+options = ["--enable-nls"]
+"#;
+    let directory = workspace(&format!("{MANIFEST}{extra}"));
+    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+    success(&output);
+    let expected = SPEC
+        .replace(
+            "BuildRequires:  autoconf\n",
+            "BuildOption(conf):  --enable-nls\n\nBuildRequires:  autoconf\n",
+        )
+        .replace(
+            "%files\n",
+            concat!(
+                "%conf -p\nautoreconf -fiv\n\n",
+                "%conf -a\necho configured\n\n",
+                "%install -a\n# Remove an upstream-created directory index.\n",
+                "rm -f %{buildroot}%{_infodir}/dir\n\n%files\n",
+            ),
+        );
+    assert_eq!(output.stdout, expected.as_bytes());
+
+    // Blank lines and tabs inside a heredoc are script data, not layout to trim.
+    let script = "cat <<'END' > generated.txt\n\tindented\n\nEND\n\n";
+    for stage in ["prep", "conf", "build", "install", "check"] {
+        for (field, flag) in [("prepend", "p"), ("append", "a")] {
+            let extra = format!("\n[build.stages.{stage}]\n{field} = '''{script}'''\n");
+            fs::write(
+                directory.path().join("ed.toml"),
+                format!("{MANIFEST}{extra}"),
+            )
+            .unwrap();
+            let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+            success(&output);
+            let expected =
+                SPEC.replace("%files\n", &format!("%{stage} -{flag}\n{script}\n%files\n"));
+            assert_eq!(output.stdout, expected.as_bytes());
+        }
+    }
+    fs::write(
+        directory.path().join("ed.toml"),
+        format!("{MANIFEST}\n[build.stages.conf]\nprepend = ''\nappend = ''\n"),
+    )
+    .unwrap();
+    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+    success(&output);
+    assert_eq!(output.stdout, SPEC.as_bytes());
+}
+
+#[test]
+fn stage_scripts_reject_literal_section_headers_and_invalid_text() {
+    for (script, message) in [
+        (r"echo bad\u0000", "build.stages.conf.append"),
+        (r"echo bad\r\n", "build.stages.conf.append"),
+        (r"echo one\n%files\n/unexpected", "build.stages.conf.append"),
+        (r"echo one\n%install\necho two", "build.stages.conf.append"),
+        (r"%if 1\necho unfinished", "parser diagnostics"),
+    ] {
+        let extra = format!("\n[build.stages.conf]\nappend = \"{script}\"\n");
+        rejected(&format!("{MANIFEST}{extra}"), message);
+    }
+}

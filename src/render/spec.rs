@@ -83,7 +83,22 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
 
     output.push_str("%description\n");
     output.push_str(recipe.package.description.trim_end_matches('\n'));
-    output.push_str("\n\n%files\n");
+    output.push_str("\n\n");
+    for (stage, config) in &recipe.build.stages {
+        for (flag, script) in [("p", &config.prepend), ("a", &config.append)] {
+            if script.is_empty() {
+                continue;
+            }
+            writeln!(output, "%{} -{flag}", stage.as_str())
+                .expect("writing to a String cannot fail");
+            output.push_str(script);
+            if !script.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push('\n');
+        }
+    }
+    output.push_str("%files\n");
     if !recipe.package.files.license.is_empty() {
         writeln!(
             output,

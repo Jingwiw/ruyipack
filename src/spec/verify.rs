@@ -10,12 +10,12 @@ use super::ParsedSpec;
 use crate::profile::Profile;
 use crate::render::{
     RenderError,
-    manifest::{Manifest, Vcs},
+    manifest::{Manifest, Stage, Vcs},
 };
 use rpm_spec::{
     ast::{
-        ChangelogItem, CommentStyle, FileDirective, FilesContent, Section, Span, SpecItem, Tag,
-        TagValue, Text, TextSegment,
+        BuildScriptKind, BuildScriptPlacement, ChangelogItem, CommentStyle, FileDirective,
+        FilesContent, Section, Span, SpecItem, Tag, TagValue, Text, TextSegment,
     },
     parser::{Input, ParserState, deps::parse_dep_expr, text::parse_text},
 };
@@ -158,6 +158,7 @@ pub(crate) fn run(
         Section::Description {
             subpkg: None, body, ..
         },
+        scripts @ ..,
         Section::Files {
             subpkg: None,
             file_lists,
@@ -176,6 +177,7 @@ pub(crate) fn run(
     }
     let expected_body = lines.into_iter().map(text).collect::<Result<Vec<_>, _>>()?;
     check(body.lines == expected_body, "package.description")?;
+    build_scripts(scripts, source, recipe)?;
     check(file_lists.is_empty(), "package.files")?;
     files(content, recipe)?;
     let expected_changelog = text(&profile.changelog)?;
@@ -185,6 +187,59 @@ pub(crate) fn run(
         "changelog",
     )?;
     Ok(())
+}
+
+fn build_scripts(
+    sections: &[&Section<Span>],
+    source: &str,
+    recipe: &Manifest,
+) -> Result<(), RenderError> {
+    let mut sections = sections.iter();
+    for (stage, config) in &recipe.build.stages {
+        let expected_kind = match stage {
+            Stage::Prep => BuildScriptKind::Prep,
+            Stage::Conf => BuildScriptKind::Conf,
+            Stage::Build => BuildScriptKind::Build,
+            Stage::Install => BuildScriptKind::Install,
+            Stage::Check => BuildScriptKind::Check,
+        };
+        for (name, expected_placement, script) in [
+            ("prepend", BuildScriptPlacement::Prepend, &config.prepend),
+            ("append", BuildScriptPlacement::Append, &config.append),
+        ] {
+            if script.is_empty() {
+                continue;
+            }
+            let field = format!("build.stages.{}.{name}", stage.as_str());
+            let Some(Section::BuildScript {
+                kind,
+                placement,
+                data,
+                ..
+            }) = sections.next()
+            else {
+                return Err(mismatch(&field));
+            };
+            check(
+                *kind == expected_kind && *placement == expected_placement,
+                &field,
+            )?;
+            // Script whitespace can be significant, especially inside heredocs.
+            // Compare source bytes: the AST omits trailing blank lines.
+            let body = source
+                .get(data.start_byte..data.end_byte)
+                .and_then(|section| section.split_once('\n'))
+                .map(|(_, body)| body)
+                .ok_or_else(|| mismatch(&field))?;
+            let separator = if script.ends_with('\n') { "\n" } else { "\n\n" };
+            check(
+                body.strip_prefix(script)
+                    .is_some_and(|tail| tail == separator),
+                &field,
+            )?;
+        }
+    }
+    check(sections.next().is_none(), "unexpected build scripts")
 }
 
 fn files(content: &[FilesContent<Span>], recipe: &Manifest) -> Result<(), RenderError> {

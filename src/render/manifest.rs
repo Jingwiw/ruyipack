@@ -115,6 +115,10 @@ impl Stage {
 pub(crate) struct StageConfig {
     #[serde(default)]
     pub(crate) options: Vec<String>,
+    #[serde(default)]
+    pub(crate) prepend: String,
+    #[serde(default)]
+    pub(crate) append: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -205,6 +209,17 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
     for (stage, config) in &manifest.build.stages {
         for option in &config.options {
             single_line(&format!("build.stages.{}.options", stage.as_str()), option)?;
+        }
+        for (name, script) in [("prepend", &config.prepend), ("append", &config.append)] {
+            if script
+                .chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\t')
+            {
+                return Err(invalid(
+                    &format!("build.stages.{}.{name}", stage.as_str()),
+                    "expected script text using LF line endings without control characters other than tabs",
+                ));
+            }
         }
     }
     for requirement in &manifest.build_requires.rpm {

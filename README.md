@@ -142,6 +142,24 @@ Stage tables are emitted in build order. RPM macros and shell quoting are preser
 entries are not automatically quoted as individual shell arguments. Empty arrays
 add no options. The distribution's default actions and options remain in effect.
 
+Add commands before or after a default stage with `prepend` and `append`:
+
+```toml
+[build.stages.conf]
+prepend = 'autoreconf -fiv'
+options = ["--enable-nls"]
+
+[build.stages.install]
+append = '''
+rm -f %{buildroot}%{_infodir}/dir
+'''
+```
+
+These emit `%stage -p` and `%stage -a`; the default action stays between them.
+Scripts use LF line endings. Indentation, comments, and RPM macros are preserved;
+empty strings add no script. Generation checks static section boundaries and exact
+text, not macro expansion, shell correctness, or build success.
+
 `gen NAME` reads `./NAME.toml` by default; `--manifest` selects another input file.
 The SPEC is written beside the manifest unless `-o, --output FILE` selects another
 path. Relative output paths are resolved from the current directory. The parent
