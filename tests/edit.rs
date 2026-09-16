@@ -54,6 +54,12 @@ fn prepare(directory: &Path, names: &[&str], fields: &[&str]) -> PathBuf {
     drafts
 }
 
+fn version_source(version: &str) -> String {
+    let original = "Version:        1.22.5";
+    assert_eq!(SOURCE.matches(original).count(), 1);
+    SOURCE.replace(original, &format!("Version:        {version}"))
+}
+
 fn change_version(path: &Path, version: &str) {
     let mut document: toml::Table = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     document["package"]["version"] = version.into();
@@ -144,7 +150,7 @@ fn group_selection_keeps_descendants_without_duplicating_overlaps() {
         .args(["ed.spec", "--view", "--field", "package.unknown"])
         .output()
         .unwrap();
-    assert!(!bad.status.success());
+    assert_eq!(bad.status.code(), Some(1), "{bad:?}");
     assert!(bad.stdout.is_empty());
 }
 
@@ -174,12 +180,7 @@ fn version_assignment_changes_only_the_original_value() {
         .output()
         .unwrap();
     success(&output);
-    assert_eq!(
-        output.stdout,
-        SOURCE
-            .replace("Version:        1.22.5", "Version:        1.22.6")
-            .as_bytes()
-    );
+    assert_eq!(output.stdout, version_source("1.22.6").as_bytes());
     let diff = command(directory.path())
         .args(["ed.spec", "--set", "package.version=1.22.6", "--diff"])
         .output()
@@ -211,12 +212,10 @@ fn repeated_set_options_preserve_equals_signs_and_string_types() {
         .output()
         .unwrap();
     success(&output);
-    let expected = SOURCE
-        .replace("Version:        1.22.5", "Version:        2.00")
-        .replace(
-            "URL:            https://www.gnu.org/software/ed/",
-            "URL:            https://example.org/?a=b=c",
-        );
+    let expected = version_source("2.00").replace(
+        "URL:            https://www.gnu.org/software/ed/",
+        "URL:            https://example.org/?a=b=c",
+    );
     assert_eq!(output.stdout, expected.as_bytes());
     unchanged(directory.path());
 }
@@ -237,7 +236,7 @@ fn invalid_assignments_never_publish_a_partial_edit() {
             command.args(["--set", assignment]);
         }
         let output = command.arg("--force").output().unwrap();
-        assert!(!output.status.success(), "{output:?}");
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
         unchanged(directory.path());
     }
 }
@@ -273,12 +272,7 @@ fn selected_draft_merges_only_its_allowed_fields() {
         .output()
         .unwrap();
     success(&output);
-    assert_eq!(
-        output.stdout,
-        SOURCE
-            .replace("Version:        1.22.5", "Version:        1.22.6")
-            .as_bytes()
-    );
+    assert_eq!(output.stdout, version_source("1.22.6").as_bytes());
     fs::write(
         &path,
         "[package]\nversion = '1.22.6'\nsummary = 'Outside selected fields'\n",
@@ -290,34 +284,32 @@ fn selected_draft_merges_only_its_allowed_fields() {
         .arg("--force")
         .output()
         .unwrap();
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("package.summary"));
     unchanged(directory.path());
 }
 
 #[test]
-fn selected_draft_rejects_missing_and_wrongly_typed_fields() {
+fn selected_draft_requires_every_selected_field() {
     let directory = fixture();
     let drafts = prepare(directory.path(), &["ed.spec"], &["package.version"]);
-    for content in ["[package]\n", "[package]\nversion = 2\n"] {
-        fs::write(drafts.join("ed.toml"), content).unwrap();
-        let output = command(directory.path())
-            .arg("--from")
-            .arg(&drafts)
-            .args(["--check", "--format", "json"])
-            .output()
-            .unwrap();
-        assert!(!output.status.success());
-        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(report["valid"], false);
-        assert_eq!(report["files"][0]["valid"], false);
-        assert!(
-            report["files"][0]["error"]
-                .as_str()
-                .unwrap()
-                .contains("package.version")
-        );
-    }
+    fs::write(drafts.join("ed.toml"), "[package]\n").unwrap();
+    let output = command(directory.path())
+        .arg("--from")
+        .arg(&drafts)
+        .args(["--check", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["valid"], false);
+    assert_eq!(report["files"][0]["valid"], false);
+    assert!(
+        report["files"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("package.version")
+    );
     unchanged(directory.path());
 }
 
@@ -363,18 +355,21 @@ fn all_prepared_files_are_checked_before_any_source_is_written() {
         .args(["--check", "--format", "json"])
         .output()
         .unwrap();
-    assert!(!checked.status.success());
+    assert_eq!(checked.status.code(), Some(1), "{checked:?}");
     let report: serde_json::Value = serde_json::from_slice(&checked.stdout).unwrap();
     assert_eq!(report["files"].as_array().unwrap().len(), 2);
     assert_eq!(report["files"][0]["valid"], true);
     assert_eq!(report["files"][1]["valid"], false);
+    let error = report["files"][1]["error"].as_str().unwrap();
+    assert!(error.contains("package.version"), "{error}");
+    assert!(error.contains("expected a string"), "{error}");
     let output = command(directory.path())
         .arg("--from")
         .arg(&drafts)
         .arg("--force")
         .output()
         .unwrap();
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
     unchanged(directory.path());
     assert_eq!(
         fs::read_to_string(directory.path().join("second.spec")).unwrap(),
@@ -465,10 +460,7 @@ fn force_applies_each_valid_prepared_candidate() {
     for (name, version) in [("ed.spec", "1.22.6"), ("second.spec", "1.22.7")] {
         assert_eq!(
             fs::read_to_string(directory.path().join(name)).unwrap(),
-            SOURCE.replace(
-                "Version:        1.22.5",
-                &format!("Version:        {version}")
-            )
+            version_source(version)
         );
     }
 }
@@ -486,7 +478,7 @@ fn stale_prepared_source_is_not_overwritten_even_with_force() {
         .arg("--force")
         .output()
         .unwrap();
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("changed"));
     assert_eq!(
         fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
@@ -511,7 +503,7 @@ fn stale_draft_does_not_hide_other_files_check_results() {
         .args(["--check", "--format", "json"])
         .output()
         .unwrap();
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(output.stderr.is_empty());
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["files"].as_array().unwrap().len(), 2);
@@ -552,7 +544,7 @@ fn explicit_output_cannot_overwrite_its_draft_or_saved_state() {
             .arg(&target)
             .output()
             .unwrap();
-        assert!(!output.status.success(), "{output:?}");
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
         assert_eq!(fs::read(target).unwrap(), before);
         unchanged(directory.path());
     }
@@ -595,7 +587,7 @@ fn explicit_output_writes_a_copy_without_changing_the_source() {
     success(&output);
     assert_eq!(
         fs::read_to_string(directory.path().join("edited.spec")).unwrap(),
-        SOURCE.replace("Version:        1.22.5", "Version:        1.22.6")
+        version_source("1.22.6")
     );
     unchanged(directory.path());
 }
@@ -604,7 +596,7 @@ fn explicit_output_writes_a_copy_without_changing_the_source() {
 fn noninteractive_edit_requires_an_explicit_input_mode() {
     let directory = fixture();
     let output = command(directory.path()).arg("ed.spec").output().unwrap();
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("requires a terminal"));
     unchanged(directory.path());
 }
@@ -636,12 +628,7 @@ fn quoted_editor_command_edits_toml_without_polluting_spec_stdout() {
         .output()
         .unwrap();
     success(&output);
-    assert_eq!(
-        output.stdout,
-        SOURCE
-            .replace("Version:        1.22.5", "Version:        1.22.6")
-            .as_bytes()
-    );
+    assert_eq!(output.stdout, version_source("1.22.6").as_bytes());
     assert!(String::from_utf8_lossy(&output.stderr).contains("EDITOR_OUTPUT"));
     assert!(String::from_utf8_lossy(&output.stderr).contains("Drafts retained:"));
     unchanged(directory.path());
@@ -666,7 +653,7 @@ fn source_changed_while_editor_runs_is_not_overwritten() {
         ])
         .output()
         .unwrap();
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("source changed"));
     assert_eq!(
         fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
@@ -693,7 +680,7 @@ fn editor_failure_retains_its_changed_draft() {
         ])
         .output()
         .unwrap();
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("editor exited"));
     let retained = stderr

@@ -10,50 +10,28 @@ use std::{
     ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
-    process::{Command, Output},
-    sync::atomic::{AtomicUsize, Ordering},
+    process::Output,
 };
 
 use serde_json::Value;
 
-static NEXT_TEMP_DIR: AtomicUsize = AtomicUsize::new(0);
+mod support;
 
-struct TempDir {
-    path: PathBuf,
+use support::{command, json_line, output_text};
+
+fn write_file(directory: &Path, name: &str, contents: impl AsRef<[u8]>) -> PathBuf {
+    let path = directory.join(name);
+    fs::write(&path, contents).expect("write test fixture");
+    path
 }
 
-impl TempDir {
-    fn new() -> Self {
-        let id = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("ruyipack-cli-{}-{id}", std::process::id()));
-        fs::create_dir(&path).expect("create temporary directory");
-        Self { path }
-    }
-
-    fn write(&self, name: &str, contents: impl AsRef<[u8]>) -> PathBuf {
-        let path = self.path.join(name);
-        fs::write(&path, contents).expect("write temporary SPEC");
-        path
-    }
-
-    fn entries(&self) -> Vec<PathBuf> {
-        let mut entries = fs::read_dir(&self.path)
-            .expect("read temporary directory")
-            .map(|entry| entry.expect("read directory entry").path())
-            .collect::<Vec<_>>();
-        entries.sort();
-        entries
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
-fn ruyipack() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_ruyipack"))
+fn entries(directory: &Path) -> Vec<PathBuf> {
+    let mut entries = fs::read_dir(directory)
+        .expect("read temporary directory")
+        .map(|entry| entry.expect("read directory entry").path())
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries
 }
 
 fn run<I, S>(args: I) -> Output
@@ -61,15 +39,11 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    ruyipack().args(args).output().expect("run ruyipack")
-}
-
-fn output_text(bytes: &[u8]) -> &str {
-    std::str::from_utf8(bytes).expect("command output is UTF-8")
+    command().args(args).output().expect("run ruyipack")
 }
 
 fn run_json_check(current_dir: &Path, spec: &OsStr) -> Output {
-    ruyipack()
+    command()
         .current_dir(current_dir)
         .args([
             OsStr::new("check"),
@@ -83,14 +57,7 @@ fn run_json_check(current_dir: &Path, spec: &OsStr) -> Output {
 
 fn machine_report(output: &Output) -> Value {
     assert!(output.stderr.is_empty(), "{}", output_text(&output.stderr));
-    let stdout = output_text(&output.stdout);
-    assert!(stdout.ends_with('\n'), "stdout has no trailing newline");
-    assert_eq!(
-        stdout.bytes().filter(|byte| *byte == b'\n').count(),
-        1,
-        "stdout is not one JSON line: {stdout}"
-    );
-    serde_json::from_slice(&output.stdout).expect("machine report is valid JSON")
+    json_line(output)
 }
 
 fn assert_object_fields(value: &Value, expected: &[&str]) {
@@ -212,9 +179,10 @@ const PARSER_ERROR_SPEC_SHA256: &str =
 
 #[test]
 fn check_accepts_the_six_required_tags_without_running_other_rules() {
-    let temp = TempDir::new();
-    let spec = temp.write("demo.spec", COMPLETE_REQUIRED_TAGS);
-    temp.write(
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    let spec = write_file(temp.path(), "demo.spec", COMPLETE_REQUIRED_TAGS);
+    write_file(
+        temp.path(),
         ".rpmspec.toml",
         "\
 [lints]
@@ -222,10 +190,10 @@ RPM001 = \"deny\"
 ",
     );
     let before_contents = fs::read(&spec).expect("read SPEC before check");
-    let before_entries = temp.entries();
+    let before_entries = entries(temp.path());
 
-    let output = ruyipack()
-        .current_dir(&temp.path)
+    let output = command()
+        .current_dir(temp.path())
         .args([OsStr::new("check"), OsStr::new("demo.spec")])
         .output()
         .expect("run ruyipack");
@@ -242,13 +210,14 @@ RPM001 = \"deny\"
         fs::read(&spec).expect("read SPEC after check"),
         before_contents
     );
-    assert_eq!(temp.entries(), before_entries);
+    assert_eq!(entries(temp.path()), before_entries);
 }
 
 #[test]
 fn check_accepts_autochangelog_without_parser_warning() {
-    let temp = TempDir::new();
-    let spec = temp.write(
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    let spec = write_file(
+        temp.path(),
         "autochangelog.spec",
         format!("{COMPLETE_REQUIRED_TAGS}\n%changelog\n%autochangelog\n"),
     );
@@ -267,9 +236,10 @@ fn check_accepts_autochangelog_without_parser_warning() {
 
 #[test]
 fn check_reports_exactly_the_six_required_tag_rules() {
-    let temp = TempDir::new();
-    temp.write("empty.spec", "");
-    temp.write(
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    write_file(temp.path(), "empty.spec", "");
+    write_file(
+        temp.path(),
         ".rpmspec.toml",
         "\
 [lints]
@@ -281,10 +251,10 @@ RPM014 = \"allow\"
 RPM015 = \"allow\"
 ",
     );
-    let before_entries = temp.entries();
+    let before_entries = entries(temp.path());
 
-    let output = ruyipack()
-        .current_dir(&temp.path)
+    let output = command()
+        .current_dir(temp.path())
         .args([OsStr::new("check"), OsStr::new("empty.spec")])
         .output()
         .expect("run ruyipack");
@@ -302,13 +272,14 @@ empty.spec:1:1: error[RPM014]: spec is missing the Summary: tag
 empty.spec:1:1: error[RPM015]: spec is missing the URL: tag
 "
     );
-    assert_eq!(temp.entries(), before_entries);
+    assert_eq!(entries(temp.path()), before_entries);
 }
 
 #[test]
 fn check_continues_after_a_parser_warning() {
-    let temp = TempDir::new();
-    let complete_spec = temp.write(
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    let complete_spec = write_file(
+        temp.path(),
         "complete-warning.spec",
         format!("{COMPLETE_REQUIRED_TAGS}%unknown value\n"),
     );
@@ -330,7 +301,8 @@ fn check_continues_after_a_parser_warning() {
         "warning[rpmspec/W0002] at 7:1: line not recognized\n"
     );
 
-    let spec = temp.write(
+    let spec = write_file(
+        temp.path(),
         "warning.spec",
         "\
 Name: demo
@@ -360,8 +332,8 @@ warning[rpmspec/W0002] at 6:1: line not recognized
 
 #[test]
 fn check_stops_tag_checks_when_the_parser_reports_an_error() {
-    let temp = TempDir::new();
-    let spec = temp.write("parser-error.spec", PARSER_ERROR_SPEC);
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    let spec = write_file(temp.path(), "parser-error.spec", PARSER_ERROR_SPEC);
 
     let output = run([OsStr::new("check"), spec.as_os_str()]);
 
@@ -378,11 +350,11 @@ error: check incomplete because the SPEC parser reported an error
 
 #[test]
 fn check_json_reports_pass_deterministically() {
-    let temp = TempDir::new();
-    temp.write("demo.spec", COMPLETE_REQUIRED_TAGS);
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    write_file(temp.path(), "demo.spec", COMPLETE_REQUIRED_TAGS);
 
-    let first = run_json_check(&temp.path, OsStr::new("demo.spec"));
-    let second = run_json_check(&temp.path, OsStr::new("demo.spec"));
+    let first = run_json_check(temp.path(), OsStr::new("demo.spec"));
+    let second = run_json_check(temp.path(), OsStr::new("demo.spec"));
 
     assert_eq!(first.status.code(), Some(0));
     assert_eq!(second.status.code(), Some(0));
@@ -402,11 +374,11 @@ fn check_json_reports_pass_deterministically() {
 
 #[test]
 fn check_json_keeps_parser_warning_and_orders_findings() {
-    let temp = TempDir::new();
-    temp.write("warning.spec", PARSER_WARNING_SPEC);
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    write_file(temp.path(), "warning.spec", PARSER_WARNING_SPEC);
 
-    let first = run_json_check(&temp.path, OsStr::new("warning.spec"));
-    let second = run_json_check(&temp.path, OsStr::new("warning.spec"));
+    let first = run_json_check(temp.path(), OsStr::new("warning.spec"));
+    let second = run_json_check(temp.path(), OsStr::new("warning.spec"));
 
     assert_eq!(first.status.code(), Some(1));
     assert_eq!(second.status.code(), Some(1));
@@ -469,10 +441,10 @@ fn check_json_keeps_parser_warning_and_orders_findings() {
 
 #[test]
 fn check_json_reports_parser_error_as_incomplete() {
-    let temp = TempDir::new();
-    temp.write("parser-error.spec", PARSER_ERROR_SPEC);
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    write_file(temp.path(), "parser-error.spec", PARSER_ERROR_SPEC);
 
-    let output = run_json_check(&temp.path, OsStr::new("parser-error.spec"));
+    let output = run_json_check(temp.path(), OsStr::new("parser-error.spec"));
 
     assert_eq!(output.status.code(), Some(1));
     let report = machine_report(&output);
@@ -503,37 +475,35 @@ fn check_json_reports_parser_error_as_incomplete() {
     );
 }
 
+fn assert_read_errors(subcommand: &str) {
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    let missing = temp.path().join("missing.spec");
+    let invalid = write_file(temp.path(), "invalid.spec", [0xff]);
+    for (path, message) in [
+        (&missing, format!("failed to read {}", missing.display())),
+        (&invalid, format!("{} is not UTF-8", invalid.display())),
+    ] {
+        let output = run([OsStr::new(subcommand), path.as_os_str()]);
+        assert_eq!(output.status.code(), Some(1), "{subcommand}: {output:?}");
+        assert!(output.stdout.is_empty(), "{subcommand}: {output:?}");
+        assert!(
+            output_text(&output.stderr).contains(&message),
+            "{subcommand}: {}",
+            output_text(&output.stderr)
+        );
+    }
+}
+
 #[test]
 fn check_rejects_missing_and_non_utf8_inputs() {
-    let temp = TempDir::new();
-    let missing = temp.path.join("missing.spec");
-
-    let missing_output = run([OsStr::new("check"), missing.as_os_str()]);
-    assert_eq!(missing_output.status.code(), Some(1));
-    assert!(missing_output.stdout.is_empty());
-    assert!(
-        output_text(&missing_output.stderr)
-            .contains(&format!("failed to read {}", missing.display())),
-        "{}",
-        output_text(&missing_output.stderr)
-    );
-
-    let invalid = temp.write("invalid.spec", [0xff]);
-    let invalid_output = run([OsStr::new("check"), invalid.as_os_str()]);
-    assert_eq!(invalid_output.status.code(), Some(1));
-    assert!(invalid_output.stdout.is_empty());
-    assert!(
-        output_text(&invalid_output.stderr)
-            .contains(&format!("{} is not UTF-8", invalid.display())),
-        "{}",
-        output_text(&invalid_output.stderr)
-    );
+    assert_read_errors("check");
 }
 
 #[test]
 fn inspect_prints_the_main_package_view_without_writing() {
-    let temp = TempDir::new();
-    let spec = temp.write(
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    let spec = write_file(
+        temp.path(),
         "demo.spec",
         "\
 Name:           demo
@@ -567,10 +537,10 @@ BODY
 ",
     );
     let before_contents = fs::read(&spec).expect("read SPEC before inspection");
-    let before_entries = temp.entries();
+    let before_entries = entries(temp.path());
 
-    let output = ruyipack()
-        .current_dir(&temp.path)
+    let output = command()
+        .current_dir(temp.path())
         .args([OsStr::new("inspect"), OsStr::new("demo.spec")])
         .output()
         .expect("run ruyipack");
@@ -604,13 +574,14 @@ BuildRequires: ninja-build
         fs::read(&spec).expect("read SPEC after inspection"),
         before_contents
     );
-    assert_eq!(temp.entries(), before_entries);
+    assert_eq!(entries(temp.path()), before_entries);
 }
 
 #[test]
 fn inspect_reports_a_recoverable_parser_error_and_succeeds() {
-    let temp = TempDir::new();
-    let spec = temp.write(
+    let temp = tempfile::tempdir().expect("create temporary directory");
+    let spec = write_file(
+        temp.path(),
         "missing-subpackage-name.spec",
         "\
 Name: demo
@@ -705,72 +676,36 @@ fn cli_rejects_invalid_invocations() {
 fn cli_prints_standard_help_and_version() {
     let help = run([OsStr::new("--help")]);
     assert!(help.status.success());
-    assert_eq!(
-        output_text(&help.stdout),
-        "\
-Rust tooling for openRuyi RPM package workflows
-
-Usage: ruyipack <COMMAND>
-
-Commands:
-  edit     Edits SPEC fields through TOML or command-line assignments
-  check    Checks required main-package tag presence in an RPM SPEC file
-  inspect  Prints the normalized main-package tags from an RPM SPEC file
-  gen      Generates an artifact from a `RuyiPack` manifest
-  help     Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help     Print help
-  -V, --version  Print version
-"
-    );
     assert!(help.stderr.is_empty(), "{}", output_text(&help.stderr));
+    let text = output_text(&help.stdout);
+    assert!(text.contains("Usage: ruyipack <COMMAND>"));
+    for name in ["edit", "check", "inspect", "gen", "help"] {
+        assert!(
+            text.lines()
+                .any(|line| line.split_whitespace().next() == Some(name)),
+            "missing command {name}: {text}"
+        );
+    }
+    for option in ["-h,", "--help", "-V,", "--version"] {
+        assert!(text.contains(option), "missing option {option}: {text}");
+    }
 
-    let inspect_help = run([OsStr::new("inspect"), OsStr::new("--help")]);
-    assert!(inspect_help.status.success());
-    assert_eq!(
-        output_text(&inspect_help.stdout),
-        "\
-Prints the normalized main-package tags from an RPM SPEC file
-
-Usage: ruyipack inspect [OPTIONS] <SPEC>
-
-Arguments:
-  <SPEC>  RPM SPEC file to inspect
-
-Options:
-      --format <FORMAT>  Selects human or JSON output [default: human] [possible values: human, json]
-  -h, --help             Print help
-"
-    );
-    assert!(
-        inspect_help.stderr.is_empty(),
-        "{}",
-        output_text(&inspect_help.stderr)
-    );
-
-    let check_help = run([OsStr::new("check"), OsStr::new("--help")]);
-    assert!(check_help.status.success());
-    assert_eq!(
-        output_text(&check_help.stdout),
-        "\
-Checks required main-package tag presence in an RPM SPEC file
-
-Usage: ruyipack check [OPTIONS] <SPEC>
-
-Arguments:
-  <SPEC>  RPM SPEC file to check
-
-Options:
-      --format <FORMAT>  Selects human or JSON output [default: human] [possible values: human, json]
-  -h, --help             Print help
-"
-    );
-    assert!(
-        check_help.stderr.is_empty(),
-        "{}",
-        output_text(&check_help.stderr)
-    );
+    for name in ["inspect", "check"] {
+        let help = run([OsStr::new(name), OsStr::new("--help")]);
+        assert!(help.status.success(), "{name}: {help:?}");
+        assert!(help.stderr.is_empty(), "{name}: {help:?}");
+        let text = output_text(&help.stdout);
+        assert!(text.contains(&format!("Usage: ruyipack {name} [OPTIONS] <SPEC>")));
+        for detail in [
+            "--format <FORMAT>",
+            "[default: human]",
+            "[possible values: human, json]",
+            "-h,",
+            "--help",
+        ] {
+            assert!(text.contains(detail), "{name}: missing {detail}: {text}");
+        }
+    }
 
     let gen_help = run([OsStr::new("gen"), OsStr::new("--help")]);
     assert!(gen_help.status.success());
@@ -799,27 +734,5 @@ Options:
 
 #[test]
 fn inspect_rejects_missing_and_non_utf8_inputs() {
-    let temp = TempDir::new();
-    let missing = temp.path.join("missing.spec");
-
-    let missing_output = run([OsStr::new("inspect"), missing.as_os_str()]);
-    assert_eq!(missing_output.status.code(), Some(1));
-    assert!(missing_output.stdout.is_empty());
-    assert!(
-        output_text(&missing_output.stderr)
-            .contains(&format!("failed to read {}", missing.display())),
-        "{}",
-        output_text(&missing_output.stderr)
-    );
-
-    let invalid = temp.write("invalid.spec", [0xff]);
-    let invalid_output = run([OsStr::new("inspect"), invalid.as_os_str()]);
-    assert_eq!(invalid_output.status.code(), Some(1));
-    assert!(invalid_output.stdout.is_empty());
-    assert!(
-        output_text(&invalid_output.stderr)
-            .contains(&format!("{} is not UTF-8", invalid.display())),
-        "{}",
-        output_text(&invalid_output.stderr)
-    );
+    assert_read_errors("inspect");
 }

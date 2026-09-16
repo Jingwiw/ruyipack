@@ -14,8 +14,10 @@ use std::{
     process::{Command, Output},
 };
 
+mod support;
+
 fn command(path: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_ruyipack"));
+    let mut command = support::command();
     command.arg("inspect").arg(path).args(["--format", "json"]);
     command
 }
@@ -23,12 +25,7 @@ fn command(path: &Path) -> Command {
 fn report(output: &Output) -> Value {
     assert!(output.status.success(), "{output:?}");
     assert!(output.stderr.is_empty(), "{output:?}");
-    assert!(output.stdout.ends_with(b"\n"));
-    assert_eq!(
-        output.stdout.iter().filter(|byte| **byte == b'\n').count(),
-        1
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
+    support::json_line(output)
 }
 
 #[test]
@@ -71,12 +68,13 @@ fn ed_inspection_preserves_syntax_locations_and_input_identity() {
         "version"
     );
 
+    // Both output routes must carry the same preamble facts.
     let view = rpm_spec::ast::SpecFile {
         items: serde_json::from_value(result["preamble"].clone()).unwrap(),
         data: rpm_spec::ast::Span::default(),
     };
     let config = rpm_spec::printer::PrinterConfig::default().with_preamble_value_column(None);
-    let human = Command::new(env!("CARGO_BIN_EXE_ruyipack"))
+    let human = support::command()
         .arg("inspect")
         .arg(&path)
         .output()
@@ -141,7 +139,7 @@ fn inspection_and_check_share_complete_parser_diagnostics() {
     ] {
         fs::write(&path, source).unwrap();
         let inspected = report(&command(&path).output().unwrap());
-        let checked = Command::new(env!("CARGO_BIN_EXE_ruyipack"))
+        let checked = support::command()
             .arg("check")
             .arg(&path)
             .args(["--format", "json"])
