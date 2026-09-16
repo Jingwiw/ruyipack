@@ -89,3 +89,22 @@ preserves these expressions and URL filename fragments such as `#/name.tar.gz`.
 Declare additional remote inputs as `[sources.1]`, `[sources.2]`, and so on, each
 with `url` and `sha256`. Source numbers are preserved and printed in numeric order.
 `sources.0` supplies the archive for the default unpacking step.
+
+Preview the source-preserving editable fields of a supported SPEC:
+
+```sh
+ruyipack edit ed.spec --view
+ruyipack edit ed.spec --set package.version=1.22
+ruyipack edit ed.spec --set package.version=1.22 --set spec.release=2 --diff
+```
+
+`--view` prints the supported author fields as TOML. `--set FIELD=VALUE` replaces
+an existing string field; repeat it to change several fields. The default result
+is a unified diff, also selected explicitly with `--diff`. These commands never
+write the SPEC. `--view` cannot be combined with `--set` or `--diff`.
+
+Before showing a diff, RuyiPack renders the candidate with source-local changes,
+reparses it, checks that the requested editable fields survived, and runs the
+same selected static checks as `check`. Unsupported or ambiguous source forms
+are rejected rather than rewritten approximately. RPM expressions stay unexpanded;
+changing a version or URL does not fetch sources or validate a package build.

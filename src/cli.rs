@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::{check_command, file_output, inspect};
+use crate::{check_command, edit, file_output, inspect};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -21,6 +21,8 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
+    /// Previews editable SPEC fields and checked changes without writing.
+    Edit(edit::Options),
     /// Checks required main-package tag presence in an RPM SPEC file.
     Check {
         /// RPM SPEC file to check.

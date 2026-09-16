@@ -175,6 +175,15 @@ fn select_action(path: &Path) -> Result<ConflictAction, OutputError> {
         .ok_or_else(|| OutputError::Cancelled(path.to_path_buf()))
 }
 
+/// Prints a read-only comparison against the captured SPEC source.
+pub(crate) fn show_edit_diff(
+    path: &Path,
+    original: &str,
+    contents: &str,
+) -> Result<(), OutputError> {
+    show_diff(path, Some(original.as_bytes()), contents)
+}
+
 fn show_diff(path: &Path, existing: Option<&[u8]>, contents: &str) -> Result<(), OutputError> {
     let name = path
         .to_str()
