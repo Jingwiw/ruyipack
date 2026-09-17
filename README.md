@@ -129,6 +129,41 @@ not across the batch; a later I/O failure reports files already written. Inspect
 those files before retrying. Drafts do not update SPEC files in the background;
 write-back happens only after the command validates them.
 
+## Initialize
+
+Create a manifest to fill in before generating a SPEC:
+
+```sh
+ruyipack init example
+ruyipack init example --comments full --stdout
+ruyipack init example --dir packaging --specs-dir /path/to/openRuyi/SPECS
+```
+
+`init NAME` creates `NAME.toml` in the current directory. `--dir` selects an
+existing output directory; it does not create directories. The template contains
+current authoring fields and optional explicit build stages. No build system is
+selected. `--comments full` adds guidance without changing the field values.
+
+The current year and configured Git author are filled in once. Review these
+values, then fill the remaining package information, source digest, build commands,
+dependencies, and installed files. If Git identity is unavailable or unsuitable,
+the contributor list stays empty and a warning asks you to fill it. Generation
+uses the saved values, not the current Git identity or date.
+
+Before generating the template, `init` checks for `NAME` in `--specs-dir`, or in
+the nearest `SPECS` directory found above the output directory. This reads working
+directory entries, including untracked packages, not a Git index or published RPM
+repository. Any existing entry blocks initialization, including with `--force`
+or `--stdout`. Local absence does not prove absence upstream; no network request
+is made. Without a discovered `SPECS` directory, initialization continues with a
+warning that name availability was not checked. An invalid explicit directory is
+an error.
+
+Existing TOML files use the same conflict handling as `gen`: `--stdout`, `--diff`,
+`--force`, `--skip-existing`, and the terminal menu. Fill the template and run
+`ruyipack gen NAME` from its directory; incomplete input fails without creating a
+SPEC.
+
 ## Generate
 
 Generate a SPEC from an Autotools manifest:

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::{check_command, edit, file_output, inspect};
+use crate::{check_command, edit, file_output, init, inspect};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -21,6 +21,8 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
+    /// Creates a package manifest template in an existing directory.
+    Init(init::Options),
     /// Edits SPEC fields through TOML or command-line assignments.
     Edit(edit::Options),
     /// Checks selected static package metadata and build requirements.

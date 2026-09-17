@@ -1,0 +1,113 @@
+{# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+SPDX-License-Identifier: MulanPSL-2.0
+#}
+# SPEC authorship --------------------------------------------------------------
+[spec]
+# Year or year range for the packaging work, for example "2026" or "2024-2026".
+copyright-years = {{ year | toml }}
+# People maintaining this SPEC, in "Name <email>" form; edit the Git default as needed.
+contributors = [{% if author %}{{ author | toml }}{% endif %}]
+{% if full %}
+# This identifies the packaging work, not the authors or license of the upstream software.
+# The SPEC file license and distribution copyright holders are supplied separately.
+{% endif %}
+
+# Upstream package -------------------------------------------------------------
+[package]
+name = {{ name | toml }}
+# Upstream version. Use RPM version characters: letters, digits, . _ + ~ ^.
+version = ""
+# Write a concise English summary; do not end it with a period.
+# https://openruyi.cn/docs/guide/packaging-guidelines/#summary
+summary = ""
+# SPDX expression for the upstream software, for example "MIT" or "MIT AND BSD-2-Clause".
+license = ""
+# HTTPS project homepage; source archive URLs belong in sources below.
+url = ""
+# Describe what the software does. Write plain text, without SPEC section headers.
+description = '''
+'''
+{% if full %}
+# Check licenses in the source tree; the package name or hosting site is not evidence.
+# Join applicable licenses with uppercase AND/OR; use WITH for an SPDX exception.
+# https://openruyi.cn/docs/guide/packaging-guidelines/
+{% endif %}
+
+[package.vcs]
+# Choose exactly one: a public Git clone URL, homepage is that repository, or no public repository.
+# git = "https://example.org/owner/project.git"
+# same-as-url = true
+# no-public-repository = true
+{% if full %}
+# A source archive URL or project web page is not necessarily a Git clone URL.
+# Do not select no-public-repository just because the repository address is not yet known.
+{% endif %}
+
+# Source archives --------------------------------------------------------------
+[sources.0]
+# HTTPS archive URL; %{name}, %{version}, and %{url} refer to the package fields above.
+url = ""
+# SHA-256 of the downloaded archive: 64 hexadecimal digits.
+sha256 = ""
+# Add sources.1, sources.2, ... for additional remote archives, each with its own URL and digest.
+{% if full %}
+# Verify the downloaded file before recording its digest. Changing a URL does not update the digest.
+# https://openruyi.cn/docs/guide/packaging-guidelines/SourceURL/
+{% endif %}
+
+# Build dependencies -----------------------------------------------------------
+[build-requires]
+# Direct build requirements, one RPM expression per string; examples: "make", "pkgconfig(zlib)".
+rpm = []
+{% if full %}
+# Versioned requirements use RPM expressions, for example "pkgconfig(zlib) >= 1.3".
+# List the tools and libraries used by the scripts below. This list does not install them locally.
+{% endif %}
+
+# Build stages -----------------------------------------------------------------
+# Write complete scripts for the stages you need. No build system or default action is selected.
+# Bodies use shell/RPM syntax, without a %stage header. Triple single quotes keep backslashes literal.
+{% if full %}
+# prep unpacks sources; conf configures; build compiles; install populates %{buildroot}; check tests.
+# Use %{optflags} and %{build_ldflags} for distribution compiler/linker flags in custom commands.
+# Each stage runs in its own shell. Keep heredoc terminators at the required indentation.
+# An empty replace explicitly supplies an empty main section. A commented stage supplies no section.
+{% endif %}
+# [build.stages.prep]
+# replace = '''
+# '''
+
+# [build.stages.conf]
+# replace = '''
+# '''
+
+# [build.stages.build]
+# replace = '''
+# '''
+
+# [build.stages.install]
+# replace = '''
+# '''
+
+# [build.stages.check]
+# replace = '''
+# '''
+# Optional for each stage: prepend/append run before/after the main script.
+# prepend = '''
+# '''
+# append = '''
+# '''
+
+# Packaged files ---------------------------------------------------------------
+[package.files]
+# Paths relative to the build directory, copied as license/documentation files.
+# license = ["COPYING"]
+# doc = ["README"]
+# Installed paths, without %{buildroot}; for example "%{_bindir}/%{name}".
+entries = []
+{% if full %}
+# Inspect the installation result and list the files owned by this package; do not guess from the source tree.
+# A nonempty license/doc list also contributes packaged files, but does not replace the installed payload.
+{% endif %}
