@@ -48,7 +48,7 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
         }
     }
     for (number, source) in &recipe.sources {
-        writeln!(output, "{}{}", profile.remote_asset_prefix, source.sha256)
+        writeln!(output, "{}", profile.remote_asset(source.sha256.as_deref()))
             .expect("writing to a String cannot fail");
         write_tag(
             &mut output,

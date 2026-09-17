@@ -104,8 +104,8 @@ pub(crate) fn run(
                 check(item.value == expected, &field)?;
                 if let Tag::Source(Some(number)) = item.tag {
                     let expected = format!(
-                        "{}{}\n",
-                        profile.remote_asset_prefix, recipe.sources[&number].sha256
+                        "{}\n",
+                        profile.remote_asset(recipe.sources[&number].sha256.as_deref())
                     );
                     // A correct digest on a different Source line is still the wrong source identity.
                     let previous = index.checked_sub(1).and_then(|i| parsed.spec.items.get(i));
@@ -150,10 +150,9 @@ pub(crate) fn run(
         expected_comments.push(hash_comment(&profile.no_public_vcs_comment)?);
     }
     for source in recipe.sources.values() {
-        expected_comments.push(hash_comment(&format!(
-            "{}{}",
-            profile.remote_asset_prefix, source.sha256
-        ))?);
+        expected_comments.push(hash_comment(
+            &profile.remote_asset(source.sha256.as_deref()),
+        )?);
     }
     check(
         comments.iter().copied().eq(expected_comments.iter()),

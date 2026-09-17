@@ -97,7 +97,11 @@ fn resolve_vcs(input: &VcsInput) -> Result<Vcs, RenderError> {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Source {
     pub(crate) url: String,
-    pub(crate) sha256: String,
+    // Absent means a bare #!RemoteAsset with no digest, which openRuyi accepts.
+    // An empty string is still rejected, so a blank scaffold field is not a
+    // silent opt-in to the bare form.
+    #[serde(default)]
+    pub(crate) sha256: Option<String>,
 }
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -236,10 +240,12 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
             &source.url,
             package,
         ));
-        record(
-            crate::source::validate_sha256(&source.sha256)
-                .map_err(|reason| invalid(&format!("sources.{number}.sha256"), reason)),
-        );
+        if let Some(sha256) = &source.sha256 {
+            record(
+                crate::source::validate_sha256(sha256)
+                    .map_err(|reason| invalid(&format!("sources.{number}.sha256"), reason)),
+            );
+        }
     }
     for (stage, config) in &input.build.stages {
         if input.build.system.is_none() && !config.options.is_empty() {

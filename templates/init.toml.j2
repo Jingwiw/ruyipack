@@ -50,10 +50,12 @@ description = '''
 # HTTPS archive URL; %{name}, %{version}, and %{url} refer to the package fields above.
 url = ""
 # SHA-256 of the downloaded archive: 64 hexadecimal digits.
+# Delete this line to record no digest (renders a bare #!RemoteAsset); an empty value is rejected.
 sha256 = ""
-# Add sources.1, sources.2, ... for additional remote archives, each with its own URL and digest.
+# Add sources.1, sources.2, ... for additional remote archives.
 {% if full %}
 # Verify the downloaded file before recording its digest. Changing a URL does not update the digest.
+# A source with no digest is valid but weaker provenance, so generation warns about it.
 # https://openruyi.cn/docs/guide/packaging-guidelines/SourceURL/
 {% endif %}
 

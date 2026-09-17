@@ -7,7 +7,8 @@
 //! Manifest selection and checked SPEC generation.
 
 use std::{
-    fs, io,
+    fs,
+    io::{self, Write},
     path::{Component, Path, PathBuf},
 };
 
@@ -61,6 +62,12 @@ pub(crate) fn run(
             requested: requested_name.to_owned(),
             path: manifest_path.to_path_buf(),
         });
+    }
+
+    // Non-fatal: a source without a digest is a valid openRuyi form. Report it
+    // and keep the success exit code.
+    for warning in &rendered.warnings {
+        writeln!(io::stderr().lock(), "warning: {warning}").map_err(GenerateError::Stderr)?;
     }
 
     let default_target = manifest_path.with_file_name(format!("{}.spec", rendered.name));

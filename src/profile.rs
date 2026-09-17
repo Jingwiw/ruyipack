@@ -17,7 +17,20 @@ pub(crate) struct Profile {
     pub(crate) changelog: String,
     pub(crate) no_public_vcs_comment: String,
     pub(crate) remote_asset_prefix: String,
+    pub(crate) remote_asset_bare: String,
     pub(crate) preamble_value_column: usize,
+}
+
+impl Profile {
+    /// The RemoteAsset marker line for one source: with the digest when known,
+    /// or the bare marker openRuyi accepts when a package ships no sha256.
+    /// Generation and verification share this so both agree byte for byte.
+    pub(crate) fn remote_asset(&self, digest: Option<&str>) -> String {
+        match digest {
+            Some(hash) => format!("{}{hash}", self.remote_asset_prefix),
+            None => self.remote_asset_bare.clone(),
+        }
+    }
 }
 pub(crate) fn load() -> Result<Profile, toml::de::Error> {
     toml::from_str(include_str!("../profiles/openruyi-v1/profile.toml"))

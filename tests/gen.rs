@@ -721,3 +721,41 @@ fn generated_vcs_and_scripts_offer_selected_editing_when_full_views_are_unsuppor
         );
     }
 }
+
+#[test]
+fn source_without_a_digest_renders_a_bare_remote_asset_and_warns() {
+    // openRuyi accepts a bare #!RemoteAsset for a source with no recorded digest
+    // (about 40% of cmake/meson packages use it). Omitting the sha256 key opts in.
+    let manifest = MANIFEST.replace(
+        "sha256 = \"56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc\"\n",
+        "",
+    );
+    let directory = workspace(&manifest);
+    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let spec = String::from_utf8_lossy(&output.stdout);
+    // Bare marker on its own line, not the sha256 form.
+    assert!(spec.contains("#!RemoteAsset\nSource0:"), "{spec}");
+    assert!(!spec.contains("#!RemoteAsset:  sha256:"), "{spec}");
+    // Weaker provenance is surfaced on stderr, not silently emitted.
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("no sha256"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn an_empty_sha256_is_rejected_rather_than_treated_as_bare() {
+    // A blank scaffold field must not silently opt into the bare form; only an
+    // absent key does. This keeps the missing-field report honest.
+    let manifest = MANIFEST.replace(
+        "sha256 = \"56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc\"",
+        "sha256 = \"\"",
+    );
+    rejected(&manifest, "sources.0.sha256");
+}
