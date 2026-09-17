@@ -4,7 +4,23 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Declared build-system requirements from the openRuyi profile.
+//! Build-system contracts: declared requirements and default stage actions.
+//!
+//! Every openRuyi build system (autotools, cmake, meson, and the not-yet-added
+//! pyproject/rustcrates/golangmodules) shares the same stage shape
+//! (prep/conf/build/install/check) and differs only in data: the default action
+//! per stage, the required tools, and small per-stage notes. So a build system
+//! is a data file, not code.
+//!
+//! To add one:
+//!   1. Write `profiles/openruyi-v1/buildsystems/<name>.toml` with `name`,
+//!      `build-requires`, and one `[[stages]]` per stage. Record where openRuyi
+//!      defines those actions (file, commit, hash) in the file header.
+//!   2. Add one `include_str!` entry to `CONTRACTS` below.
+//!
+//! Nothing else changes: the `--build-system` value parser, the init template,
+//! and the RPK004 requirement check all read these contracts. There is no
+//! per-system Rust branch or template to extend.
 
 use crate::{
     check_report::{Finding, SelectedRule, Severity},
