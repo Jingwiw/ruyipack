@@ -759,3 +759,18 @@ fn an_empty_sha256_is_rejected_rather_than_treated_as_bare() {
     );
     rejected(&manifest, "sources.0.sha256");
 }
+
+#[test]
+fn single_source_always_renders_source0_a_known_deviation() {
+    // KNOWN ISSUE: openRuyi accepts both a bare `Source:` and `Source0:` for a
+    // single source (about 1038 SPECs use the bare form). ruyipack always emits
+    // `Source0:`, so it cannot byte-for-byte reproduce packages written with a
+    // bare `Source:`. Which spelling is canonical is an open question for
+    // openRuyi; until it is settled ruyipack normalizes to Source0:.
+    let directory = workspace(MANIFEST);
+    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+    success(&output);
+    let spec = String::from_utf8_lossy(&output.stdout);
+    assert!(spec.contains("\nSource0:"), "{spec}");
+    assert!(!spec.contains("\nSource:"), "{spec}");
+}
