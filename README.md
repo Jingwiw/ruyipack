@@ -31,6 +31,8 @@ To check a source checkout and test the installed executable:
 ./scripts/smoke-test "$HOME/.cargo/bin/ruyipack"
 ```
 
+`scripts/check` runs formatting, locked tests, Clippy, `reuse lint`, and
+`cargo deny --locked check`; it requires the `reuse` and `cargo-deny` tools on `PATH`.
 The smoke test uses temporary files and does not modify packages in the checkout.
 The commands below perform static analysis without executing RPM macros or builds.
 

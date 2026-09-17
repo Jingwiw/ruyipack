@@ -5,8 +5,23 @@
 #
 # SPDX-License-Identifier: MulanPSL-2.0
 
+# Repository gate: Rust toolchain checks, file licensing, and dependency policy.
 set -eu
 cd "$(dirname "$0")/.."
+
+# These tools are not part of the Rust toolchain, so report them by name instead of
+# failing later with an unexplained "command not found".
+command -v reuse >/dev/null 2>&1 || {
+    echo "reuse is required for this gate: https://reuse.software/" >&2
+    exit 2
+}
+command -v cargo-deny >/dev/null 2>&1 || {
+    echo "cargo-deny is required for this gate: cargo install cargo-deny" >&2
+    exit 2
+}
+
 cargo fmt --all -- --check
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
+reuse lint
+cargo deny --locked check
