@@ -152,13 +152,8 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
         ));
     }
     for contributor in &manifest.spec.contributors {
-        single_line("spec.contributors", contributor)?;
-        if contributor.contains('%') {
-            return Err(invalid(
-                "spec.contributors",
-                "RPM macros are not allowed in the header",
-            ));
-        }
+        crate::spec_metadata::validate_contributor(contributor)
+            .map_err(|reason| invalid("spec.contributors", reason))?;
     }
     crate::check::metadata::Field::Name
         .validate(&package.name)
@@ -286,16 +281,8 @@ where
 }
 
 fn single_line(field: &str, value: &str) -> Result<(), RenderError> {
-    if value.is_empty()
-        || value.trim() != value
-        || value.chars().any(char::is_control)
-        || value.ends_with('\\')
-    {
-        return Err(RenderError::Invalid(format!(
-            "{field}: expected non-empty single-line text without edge whitespace or a trailing backslash"
-        )));
-    }
-    Ok(())
+    crate::spec_metadata::validate_single_line(value)
+        .map_err(|reason| RenderError::Invalid(format!("{field}: {reason}")))
 }
 
 /// Generation has an HTTPS-only policy; editing existing HTTP sources is supported.

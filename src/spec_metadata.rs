@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Shared checks for SPEC header metadata.
+//! Checks for single-line SPEC values and file header metadata.
 
 /// Checks a copyright year or inclusive year range.
 pub(crate) fn validate_years(value: &str) -> Result<(), &'static str> {
@@ -20,6 +20,29 @@ pub(crate) fn validate_years(value: &str) -> Result<(), &'static str> {
     } else {
         Err("spec.copyright-years: expected YYYY or YYYY-YYYY")
     }
+}
+
+/// Checks authored text that must occupy one SPEC line.
+pub(crate) fn validate_single_line(value: &str) -> Result<(), &'static str> {
+    if value.is_empty()
+        || value.trim() != value
+        || value.chars().any(char::is_control)
+        || value.ends_with('\\')
+    {
+        return Err(
+            "expected non-empty single-line text without edge whitespace or a trailing backslash",
+        );
+    }
+    Ok(())
+}
+
+/// Checks contributor text before inserting it into an RPM comment.
+pub(crate) fn validate_contributor(value: &str) -> Result<(), &'static str> {
+    validate_single_line(value)?;
+    if value.contains('%') {
+        return Err("RPM macros are not allowed in the header");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
