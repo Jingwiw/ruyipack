@@ -98,6 +98,7 @@ pub(crate) fn run(options: &Options) -> Result<(), InitError> {
         &directory.join(format!("{}.toml", options.name)),
         &contents,
         &options.output,
+        file_output::ConflictHint::WithoutOutputPath,
     )
     .map_err(InitError::Output)
 }

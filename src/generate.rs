@@ -88,7 +88,13 @@ pub(crate) fn run(
             }
         }
     }
-    file_output::run(target, &rendered.contents, &output.action).map_err(GenerateError::Output)
+    file_output::run(
+        target,
+        &rendered.contents,
+        &output.action,
+        file_output::ConflictHint::WithOutputPath,
+    )
+    .map_err(GenerateError::Output)
 }
 
 /// Rejects an existing target that resolves to the manifest itself.

@@ -51,6 +51,25 @@ pub(crate) struct OutputActionOptions {
     skip_existing: bool,
 }
 
+/// Which relocation options the calling command actually accepts.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ConflictHint {
+    /// The command has `--output FILE`.
+    WithOutputPath,
+    /// The command derives the file name from NAME and has no `--output`.
+    WithoutOutputPath,
+}
+
+impl ConflictHint {
+    /// Extra help line, absent when the command has no such option.
+    fn help_line(self) -> &'static str {
+        match self {
+            Self::WithOutputPath => "\n      --output FILE        write to another file",
+            Self::WithoutOutputPath => "",
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum ConflictAction {
     Overwrite,
@@ -64,6 +83,7 @@ pub(crate) fn run(
     path: &Path,
     contents: &str,
     options: &OutputActionOptions,
+    hint: ConflictHint,
 ) -> Result<(), OutputError> {
     if options.stdout {
         return io::stdout()
@@ -99,7 +119,7 @@ pub(crate) fn run(
                 loop {
                     let selected = match action {
                         Some(action) => action,
-                        None => select_action(path)?,
+                        None => select_action(path, hint)?,
                     };
                     // Every selection still refers to the bytes seen before the first menu.
                     if action.is_none()
@@ -507,16 +527,15 @@ fn read_target(path: &Path) -> Result<Vec<u8>, OutputError> {
 }
 
 /// Keeps prompts off redirected input and machine-readable stdout.
-fn select_action(path: &Path) -> Result<ConflictAction, OutputError> {
+fn select_action(path: &Path, hint: ConflictHint) -> Result<ConflictAction, OutputError> {
+    let conflict = || OutputError::Conflict {
+        path: path.to_path_buf(),
+        hint,
+    };
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
-        return Err(OutputError::Conflict(path.to_path_buf()));
+        return Err(conflict());
     }
-    writeln!(
-        io::stderr().lock(),
-        "warning: {}",
-        OutputError::Conflict(path.to_path_buf())
-    )
-    .map_err(OutputError::Stderr)?;
+    writeln!(io::stderr().lock(), "warning: {}", conflict()).map_err(OutputError::Stderr)?;
     let choices = [
         (ConflictAction::Skip, "Keep the current file"),
         (ConflictAction::Diff, "Show the diff"),
@@ -640,8 +659,8 @@ pub(crate) enum OutputError {
     Stdout(#[source] io::Error),
     #[error("failed to write diagnostics to stderr: {0}")]
     Stderr(#[source] io::Error),
-    #[error("{} already exists with different content\nhelp: --force              overwrite the file\n      --diff               show the differences\n      --output FILE        write to another file\n      --skip-existing      keep the current file\n      --stdout             preview the complete candidate", .0.display())]
-    Conflict(PathBuf),
+    #[error("{} already exists with different content\nhelp: --force              overwrite the file\n      --diff               show the differences{}\n      --skip-existing      keep the current file\n      --stdout             preview the complete candidate", .path.display(), .hint.help_line())]
+    Conflict { path: PathBuf, hint: ConflictHint },
     #[error("no action selected; kept {}", .0.display())]
     Cancelled(PathBuf),
     #[error("{} changed while awaiting confirmation; run the command again", .0.display())]

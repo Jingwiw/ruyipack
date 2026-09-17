@@ -107,7 +107,10 @@ fn output_selects_a_cwd_relative_file_and_uses_the_same_overwrite_policy() {
     fs::write(&target, "hand edited\n").unwrap();
     let conflict = gen_command(directory.path()).args(args).output().unwrap();
     assert_eq!(conflict.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&conflict.stderr).contains("review.spec.new"));
+    let help = String::from_utf8_lossy(&conflict.stderr);
+    assert!(help.contains("review.spec.new"));
+    // gen does accept --output, so its conflict help must keep advertising it.
+    assert!(help.contains("--output FILE"), "{help}");
     assert_eq!(fs::read_to_string(&target).unwrap(), "hand edited\n");
 
     let replaced = gen_command(directory.path())

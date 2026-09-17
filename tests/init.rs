@@ -163,7 +163,16 @@ fn init_reuses_output_conflicts_without_exposing_a_second_path_option() {
     let target = root.join("output/demo.toml");
     let expected = fs::read(&target).unwrap();
     fs::write(&target, "# manual content\n").unwrap();
-    assert_eq!(run(root, &args).status.code(), Some(1));
+    let conflict = run(root, &args);
+    assert_eq!(conflict.status.code(), Some(1));
+    // The conflict help must offer only the options init actually accepts.
+    let help = output_text(&conflict.stderr);
+    assert!(
+        help.contains("already exists with different content"),
+        "{help}"
+    );
+    assert!(help.contains("--force"), "{help}");
+    assert!(!help.contains("--output"), "{help}");
     for action in ["--stdout", "--diff", "--skip-existing"] {
         let output = run(root, &["init", "demo", "--dir", "output", action]);
         success(&output);
