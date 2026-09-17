@@ -40,6 +40,40 @@ if "$binary" gen ed </dev/null; then
     exit 1
 fi
 cmp ed.spec edited.spec
+# init derives NAME.toml and must not offer options it does not have.
+mkdir -p SPECS/demo
+if "$binary" init demo 2>init.err; then
+    echo "A package with an existing SPECS entry was initialized." >&2
+    exit 1
+fi
+grep -q "SPECS/demo already exists" init.err
+if grep -q -- "--output" init.err; then
+    echo "init advertised an option it does not accept." >&2
+    exit 1
+fi
+if [ -e demo.toml ]; then
+    echo "init wrote a manifest for an existing package." >&2
+    exit 1
+fi
+# Identical content is not a conflict; a changed scaffold is.
+"$binary" init scratch > /dev/null
+grep -q 'name = "scratch"' scratch.toml
+cp scratch.toml scratch.original
+if ! "$binary" init scratch </dev/null 2>/dev/null; then
+    echo "Recreating an identical scaffold failed." >&2
+    exit 1
+fi
+cmp scratch.toml scratch.original
+printf '\n# local note\n' >> scratch.toml
+if "$binary" init scratch </dev/null 2>scratch.err; then
+    echo "Conflicting scaffold output was accepted without an action." >&2
+    exit 1
+fi
+grep -q "already exists with different content" scratch.err
+if grep -q -- "--output" scratch.err; then
+    echo "init advertised an option it does not accept." >&2
+    exit 1
+fi
 "$binary" edit ed.spec --field package.version --prepare drafts
 printf '\n# Concurrent modification\n' >> ed.spec
 cp ed.spec concurrent.spec
