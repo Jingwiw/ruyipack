@@ -281,3 +281,77 @@ fn author_uses_git_precedence_and_never_invents_a_missing_identity() {
         assert!(output_text(&output.stderr).contains("fill spec.contributors"));
     }
 }
+
+#[test]
+fn autotools_scaffolds_share_the_contract_and_feed_existing_generation() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let args = ["init", "ed", "--build-system", "autotools", "--stdout"];
+    let standard = run(root, &args);
+    let full = run(
+        root,
+        &[
+            "init",
+            "ed",
+            "--build-system",
+            "autotools",
+            "--comments",
+            "full",
+            "--stdout",
+        ],
+    );
+    let mut scaffold = document(&standard);
+    assert_eq!(scaffold, document(&full));
+    assert!(full.stdout.len() > standard.stdout.len());
+    let contract: toml::Value = toml::from_str(include_str!(
+        "../profiles/openruyi-v1/buildsystems/autotools.toml"
+    ))
+    .unwrap();
+    assert_eq!(scaffold["build"]["system"], contract["name"]);
+    assert_eq!(
+        scaffold["build-requires"]["rpm"],
+        contract["build-requires"]
+    );
+    assert!(scaffold["build"].get("stages").is_none());
+    let fixture: toml::Value = toml::from_str(include_str!("../examples/ed/ed.toml")).unwrap();
+    for field in ["spec", "package", "sources"] {
+        scaffold[field] = fixture[field].clone();
+    }
+    // Keep the actual template's build configuration and add only ed's archive tool.
+    scaffold["build-requires"]["rpm"]
+        .as_array_mut()
+        .unwrap()
+        .push("lzip".into());
+    fs::write(root.join("ed.toml"), toml::to_string(&scaffold).unwrap()).unwrap();
+    let generated = run(root, &["gen", "ed", "--stdout"]);
+    success(&generated);
+    assert_eq!(
+        output_text(&generated.stdout),
+        include_str!("fixtures/ed.spec")
+    );
+
+    // Optional guidance must describe fields that the generator already consumes.
+    let source = toml::to_string(&scaffold).unwrap()
+        + "\n[build.stages.conf]\noptions = [\"--enable-example\"]\nprepend = '''autoreconf -fiv\n'''\n";
+    fs::write(root.join("ed.toml"), source).unwrap();
+    let customized = run(root, &["gen", "ed", "--stdout"]);
+    success(&customized);
+    let spec = output_text(&customized.stdout);
+    assert!(spec.contains("BuildOption(conf):  --enable-example"));
+    assert!(spec.contains("%conf -p\nautoreconf -fiv"));
+
+    scaffold["build-requires"]["rpm"]
+        .as_array_mut()
+        .unwrap()
+        .remove(0);
+    fs::write(root.join("ed.toml"), toml::to_string(&scaffold).unwrap()).unwrap();
+    let missing = run(root, &["gen", "ed"]);
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(output_text(&missing.stderr).contains("RPK004"));
+    assert!(!root.join("ed.spec").exists());
+    for system in ["unknown", "", "../autotools"] {
+        let invalid = run(root, &["init", "other", "--build-system", system]);
+        assert_eq!(invalid.status.code(), Some(2));
+        assert!(!root.join("other.toml").exists());
+    }
+}

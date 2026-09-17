@@ -137,6 +137,7 @@ Create a manifest to fill in before generating a SPEC:
 
 ```sh
 ruyipack init example
+ruyipack init example --build-system autotools
 ruyipack init example --comments full --stdout
 ruyipack init example --dir packaging --specs-dir /path/to/openRuyi/SPECS
 ```
@@ -144,7 +145,10 @@ ruyipack init example --dir packaging --specs-dir /path/to/openRuyi/SPECS
 `init NAME` creates `NAME.toml` in the current directory. `--dir` selects an
 existing output directory; it does not create directories. The template contains
 current authoring fields and optional explicit build stages. No build system is
-selected. `--comments full` adds guidance without changing the field values.
+selected by default. `--build-system autotools` selects Autotools, prefills its
+required tools from the shared contract, and shows its default actions and optional
+stage overrides. Add archive tools and package-specific dependencies as needed.
+`--comments full` adds guidance without changing the field values.
 
 The current year and configured Git author are filled in once. Review these
 values, then fill the remaining package information, source digest, build commands,

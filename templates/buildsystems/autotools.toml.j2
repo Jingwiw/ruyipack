@@ -1,0 +1,50 @@
+{# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+SPDX-License-Identifier: MulanPSL-2.0
+#}
+[build]
+system = {{ system | toml }}
+# Keep stages commented to use the build system's defaults.
+# options pass arguments to the default action; replace supplies a complete alternative script.
+# Choose options OR replace for a stage. An empty replace disables its default action.
+# prepend/append emit %stage -p/-a and run before/after its main action.
+# Bodies use shell/RPM syntax without section headers; triple single quotes preserve backslashes.
+{% if full %}
+# Default actions come from the target RPM environment, not scripts copied into this manifest.
+# Custom compiler/linker commands should retain %{optflags} and %{build_ldflags}.
+# https://openruyi.cn/docs/guide/packaging-guidelines/BuildSystems/autotools/
+{% endif %}
+
+# Prep options are passed to RPM's default preparation action; e.g. ["-p0"] changes patch stripping.
+# [build.stages.prep]
+# options = []
+
+# Configure: %configure --disable-silent-rules --disable-rpath --docdir=%{_docdir}/%{name}.
+# [build.stages.conf]
+# options = []
+# prepend = '''
+# autoreconf -fiv
+# '''
+{% if full %}
+# The guide recommends autoreconf -fiv before configuration; confirm it applies to this source.
+# The optional prepend example above regenerates configure; it is not part of the default action.
+{% endif %}
+
+# Build: %make_build.
+# [build.stages.build]
+# options = []
+
+# Install: %make_install into %{buildroot}.
+# [build.stages.install]
+# options = []
+
+# Check: %make_build %_test_target; the distribution default target is check.
+# [build.stages.check]
+# options = []
+
+# Optional for each stage, in that stage's table:
+# append = '''
+# '''
+# replace = '''
+# '''

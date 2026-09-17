@@ -27,6 +27,9 @@ pub(crate) struct Options {
     /// Local SPEC directory to check for an existing NAME entry.
     #[arg(long, value_name = "DIR")]
     specs_dir: Option<PathBuf>,
+    /// Build system whose defaults and requirements seed the template.
+    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new([crate::check::build::autotools().name.as_str()]))]
+    build_system: Option<String>,
     /// Amount of guidance in the template.
     #[arg(long, value_enum, default_value = "standard")]
     comments: Comments,
@@ -93,7 +96,13 @@ pub(crate) fn run(options: &Options) -> Result<(), InitError> {
             "Git author is unavailable or unsuitable for a SPEC header; fill spec.contributors",
         )?;
     }
-    let contents = render(&options.name, &year, author.as_deref(), options.comments)?;
+    let contents = render(
+        &options.name,
+        &year,
+        author.as_deref(),
+        options.comments,
+        options.build_system.as_deref(),
+    )?;
     file_output::run(
         &directory.join(format!("{}.toml", options.name)),
         &contents,
@@ -162,6 +171,7 @@ fn render(
     year: &str,
     author: Option<&str>,
     comments: Comments,
+    system: Option<&str>,
 ) -> Result<String, minijinja::Error> {
     let mut env = Environment::new();
     env.set_undefined_behavior(UndefinedBehavior::Strict);
@@ -171,8 +181,20 @@ fn render(
         toml::Value::String(value).to_string()
     });
     env.add_template("init", include_str!("../templates/init.toml.j2"))?;
+    env.add_template(
+        "plain",
+        include_str!("../templates/buildsystems/plain.toml.j2"),
+    )?;
+    env.add_template(
+        "autotools",
+        include_str!("../templates/buildsystems/autotools.toml.j2"),
+    )?;
+    let requirements = system
+        .map(|_| crate::check::build::autotools().build_requires.as_slice())
+        .unwrap_or_default();
     env.get_template("init")?
-        .render(context!(name, year, author, full => matches!(comments, Comments::Full)))
+        .render(context!(name, year, author, system, requirements,
+        full => matches!(comments, Comments::Full)))
 }
 
 fn warning(message: &str) -> Result<(), InitError> {

@@ -22,7 +22,7 @@ pub(super) const RULE: SelectedRule = SelectedRule {
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub(crate) struct Contract {
     pub(crate) name: String,
-    build_requires: Vec<String>,
+    pub(crate) build_requires: Vec<String>,
 }
 
 pub(crate) fn autotools() -> &'static Contract {

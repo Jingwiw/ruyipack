@@ -1,0 +1,37 @@
+{# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+SPDX-License-Identifier: MulanPSL-2.0
+#}
+# Write complete scripts for the stages you need. No build system or default action is selected.
+# Bodies use shell/RPM syntax, without a %stage header. Triple single quotes keep backslashes literal.
+{% if full %}
+# prep unpacks sources; conf configures; build compiles; install populates %{buildroot}; check tests.
+# Use %{optflags} and %{build_ldflags} for distribution compiler/linker flags in custom commands.
+# Each stage runs in its own shell. Keep heredoc terminators at the required indentation.
+# An empty replace explicitly supplies an empty main section. A commented stage supplies no section.
+{% endif %}
+# [build.stages.prep]
+# replace = '''
+# '''
+
+# [build.stages.conf]
+# replace = '''
+# '''
+
+# [build.stages.build]
+# replace = '''
+# '''
+
+# [build.stages.install]
+# replace = '''
+# '''
+
+# [build.stages.check]
+# replace = '''
+# '''
+# Optional for each stage: prepend/append run before/after the main script.
+# prepend = '''
+# '''
+# append = '''
+# '''

@@ -60,45 +60,23 @@ sha256 = ""
 # Build dependencies -----------------------------------------------------------
 [build-requires]
 # Direct build requirements, one RPM expression per string; examples: "make", "pkgconfig(zlib)".
-rpm = []
+rpm = [{% for dependency in requirements %}{{ dependency | toml }}{% if not loop.last %}, {% endif %}{% endfor %}]
+{% if system %}
+# Build-system requirements are prefilled; add archive tools and package-specific dependencies.
+# https://openruyi.cn/docs/guide/packaging-guidelines/BuildSystems/autotools/#dependencies
+{% endif %}
 {% if full %}
 # Versioned requirements use RPM expressions, for example "pkgconfig(zlib) >= 1.3".
 # List the tools and libraries used by the scripts below. This list does not install them locally.
 {% endif %}
 
 # Build stages -----------------------------------------------------------------
-# Write complete scripts for the stages you need. No build system or default action is selected.
-# Bodies use shell/RPM syntax, without a %stage header. Triple single quotes keep backslashes literal.
-{% if full %}
-# prep unpacks sources; conf configures; build compiles; install populates %{buildroot}; check tests.
-# Use %{optflags} and %{build_ldflags} for distribution compiler/linker flags in custom commands.
-# Each stage runs in its own shell. Keep heredoc terminators at the required indentation.
-# An empty replace explicitly supplies an empty main section. A commented stage supplies no section.
+{% if system %}
+{% include "autotools" %}
+{% else %}
+{% include "plain" %}
 {% endif %}
-# [build.stages.prep]
-# replace = '''
-# '''
 
-# [build.stages.conf]
-# replace = '''
-# '''
-
-# [build.stages.build]
-# replace = '''
-# '''
-
-# [build.stages.install]
-# replace = '''
-# '''
-
-# [build.stages.check]
-# replace = '''
-# '''
-# Optional for each stage: prepend/append run before/after the main script.
-# prepend = '''
-# '''
-# append = '''
-# '''
 
 # Packaged files ---------------------------------------------------------------
 [package.files]
