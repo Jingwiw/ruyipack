@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+# Stage actions are copied from openRuyi's own cmake package file
+# SPECS/cmake/macros.buildsystem.cmake at commit
+# bc722d18574a5805aca1ab1a03bf1ce323489506, SHA-256
+# 49ec12458057fffe481406fa4ddf6ee1c9373c3a682f2dac412d266602413c37.
+# openRuyi mandates no build tools for CMake; cmake and ninja are supplied by the
+# OBS project Prefer list, so build-requires is empty and RPK004 enforces nothing.
+# Maintainers still declare the libraries and tools their package uses.
+name = "cmake"
+build-requires = []
+
+[[stages]]
+name = "conf"
+action = "%cmake"
+
+[[stages]]
+name = "build"
+action = "%cmake_build"
+
+[[stages]]
+name = "install"
+action = "%cmake_install"
+
+[[stages]]
+name = "check"
+action = "%ctest"

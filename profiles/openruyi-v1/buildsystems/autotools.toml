@@ -4,13 +4,32 @@
 #
 # SPDX-License-Identifier: MulanPSL-2.0
 
-# BuildRequires policy follows the openRuyi Autotools guide at revision
+# build-requires follows the openRuyi Autotools guide at revision
 # 9862c6a93a0068a30d5b29cad74d14a281ca2e66.
-# BuildSystem stage macros are referenced from openRuyi revision
-# 1e97c41664d3d1543b6b8a458a1540343c5dc266 at
+# Stage actions are copied from openRuyi's own macros.buildsystem at revision
+# 1e97c41664d3d1543b6b8a458a1540343c5dc266,
 # SPECS/rpm-config-openruyi/macros.buildsystem, SHA-256
 # fa5d1c07c0f97610a1ae164c83d0c46052b3435716f28f0123de411639700a24.
+# This file is the single source for both; the init template and RPK004 read it.
 # TODO: Clarify required tools for replaced stages and toolchain bootstrapping
 # with openRuyi before adding exceptions to the documented dependency list.
 name = "autotools"
 build-requires = ["autoconf", "automake", "libtool", "make"]
+
+[[stages]]
+name = "conf"
+action = "%configure --disable-silent-rules --disable-rpath --docdir=%{_docdir}/%{name}"
+full_note = "The guide recommends autoreconf -fiv before configuration; confirm it applies to this source. Put it in prepend; it is not part of the default action."
+
+[[stages]]
+name = "build"
+action = "%make_build"
+
+[[stages]]
+name = "install"
+action = "%make_install"
+
+[[stages]]
+name = "check"
+action = "%make_build %_test_target"
+inline_note = "the distribution default target is check"

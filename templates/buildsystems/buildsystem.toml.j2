@@ -2,7 +2,12 @@
 SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
 SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
 SPDX-License-Identifier: MulanPSL-2.0
+
+This template renders identically for every build system. The per-stage default
+actions and notes come from the selected profile contract under
+profiles/openruyi-v1/buildsystems/, which records their openRuyi provenance.
 #}
+{% set titles = {"conf": "Configure", "build": "Build", "install": "Install", "check": "Check"} %}
 [build]
 system = {{ system | toml }}
 # Keep stages commented to use the build system's defaults.
@@ -13,37 +18,25 @@ system = {{ system | toml }}
 {% if full %}
 # Default actions come from the target RPM environment, not scripts copied into this manifest.
 # Custom compiler/linker commands should retain %{optflags} and %{build_ldflags}.
-# https://openruyi.cn/docs/guide/packaging-guidelines/BuildSystems/autotools/
+# https://openruyi.cn/docs/guide/packaging-guidelines/
 {% endif %}
 
 # Prep options are passed to RPM's default preparation action; e.g. ["-p0"] changes patch stripping.
 # [build.stages.prep]
 # options = []
+{% for stage in stages %}
 
-# Configure: %configure --disable-silent-rules --disable-rpath --docdir=%{_docdir}/%{name}.
-# [build.stages.conf]
+# {{ titles[stage.name] }}: {{ stage.action }}{% if stage.inline_note %}; {{ stage.inline_note }}{% endif %}.
+# [build.stages.{{ stage.name }}]
 # options = []
-# prepend = '''
-# autoreconf -fiv
-# '''
-{% if full %}
-# The guide recommends autoreconf -fiv before configuration; confirm it applies to this source.
-# The optional prepend example above regenerates configure; it is not part of the default action.
+{% if full and stage.full_note %}
+# {{ stage.full_note }}
 {% endif %}
-
-# Build: %make_build.
-# [build.stages.build]
-# options = []
-
-# Install: %make_install into %{buildroot}.
-# [build.stages.install]
-# options = []
-
-# Check: %make_build %_test_target; the distribution default target is check.
-# [build.stages.check]
-# options = []
+{% endfor %}
 
 # Optional for each stage, in that stage's table:
+# prepend = '''
+# '''
 # append = '''
 # '''
 # replace = '''

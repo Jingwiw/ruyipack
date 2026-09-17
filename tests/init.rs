@@ -303,6 +303,10 @@ fn autotools_scaffolds_share_the_contract_and_feed_existing_generation() {
     let mut scaffold = document(&standard);
     assert_eq!(scaffold, document(&full));
     assert!(full.stdout.len() > standard.stdout.len());
+    // autoreconf is autotools-specific and not every package needs it, so the
+    // contract carries it as a full-only note rather than a standard example.
+    assert!(output_text(&full.stdout).contains("autoreconf -fiv"));
+    assert!(!output_text(&standard.stdout).contains("autoreconf"));
     let contract: toml::Value = toml::from_str(include_str!(
         "../profiles/openruyi-v1/buildsystems/autotools.toml"
     ))
@@ -353,6 +357,76 @@ fn autotools_scaffolds_share_the_contract_and_feed_existing_generation() {
         let invalid = run(root, &["init", "other", "--build-system", system]);
         assert_eq!(invalid.status.code(), Some(2));
         assert!(!root.join("other.toml").exists());
+    }
+}
+
+#[test]
+fn cmake_and_meson_scaffolds_render_without_fabricated_requirements() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    // Each system pairs its contract file with the stage actions openRuyi ships.
+    let cases = [
+        (
+            "cmake",
+            include_str!("../profiles/openruyi-v1/buildsystems/cmake.toml"),
+            ["%cmake", "%cmake_build", "%cmake_install", "%ctest"],
+        ),
+        (
+            "meson",
+            include_str!("../profiles/openruyi-v1/buildsystems/meson.toml"),
+            ["%meson", "%meson_build", "%meson_install", "%meson_test"],
+        ),
+    ];
+    for (system, contract_toml, actions) in cases {
+        let scaffold = run(
+            root,
+            &["init", system, "--build-system", system, "--stdout"],
+        );
+        let document = document(&scaffold);
+        let contract: toml::Value = toml::from_str(contract_toml).unwrap();
+        assert_eq!(document["build"]["system"], contract["name"]);
+        // openRuyi mandates no build tools for these systems, so nothing is prefilled.
+        assert_eq!(
+            document["build-requires"]["rpm"],
+            contract["build-requires"]
+        );
+        assert!(
+            document["build-requires"]["rpm"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let text = output_text(&scaffold.stdout);
+        for action in actions {
+            assert!(text.contains(action), "{system}: missing {action}");
+        }
+
+        // A filled manifest with no build requirements must generate cleanly and
+        // must not raise RPK004: the contract declares nothing to enforce.
+        let manifest = format!(
+            "[spec]\ncopyright-years = \"2026\"\ncontributors = [\"P <p@example.org>\"]\n\
+             [package]\nname = \"{system}\"\nversion = \"1.0\"\nsummary = \"A {system} sample\"\n\
+             license = \"MIT\"\nurl = \"https://example.org/{system}\"\n\
+             description = \"A sample used to check {system} rendering.\"\n\
+             [package.vcs]\nno-public-repository = true\n\
+             [sources.0]\nurl = \"https://example.org/{system}-1.0.tar.gz\"\n\
+             sha256 = \"{zeros}\"\n[build]\nsystem = \"{system}\"\n\
+             [build-requires]\nrpm = []\n[package.files]\nentries = [\"%{{_bindir}}/{system}\"]\n",
+            system = system,
+            zeros = "0".repeat(64),
+        );
+        fs::write(root.join(format!("{system}.toml")), manifest).unwrap();
+        let generated = run(root, &["gen", system, "--stdout"]);
+        success(&generated);
+        let spec = output_text(&generated.stdout);
+        assert!(
+            spec.contains(&format!("BuildSystem:    {system}")),
+            "{system}"
+        );
+        assert!(
+            !spec.contains("BuildRequires:"),
+            "{system}: no requirements expected"
+        );
     }
 }
 

@@ -62,8 +62,8 @@ sha256 = ""
 # Direct build requirements, one RPM expression per string; examples: "make", "pkgconfig(zlib)".
 rpm = [{% for dependency in requirements %}{{ dependency | toml }}{% if not loop.last %}, {% endif %}{% endfor %}]
 {% if system %}
-# Build-system requirements are prefilled; add archive tools and package-specific dependencies.
-# https://openruyi.cn/docs/guide/packaging-guidelines/BuildSystems/autotools/#dependencies
+# Build-system requirements, if any, are prefilled; add package-specific dependencies.
+# https://openruyi.cn/docs/guide/packaging-guidelines/
 {% endif %}
 {% if full %}
 # Versioned requirements use RPM expressions, for example "pkgconfig(zlib) >= 1.3".
@@ -72,7 +72,7 @@ rpm = [{% for dependency in requirements %}{{ dependency | toml }}{% if not loop
 
 # Build stages -----------------------------------------------------------------
 {% if system %}
-{% include "autotools" %}
+{% include "buildsystem" %}
 {% else %}
 {% include "plain" %}
 {% endif %}

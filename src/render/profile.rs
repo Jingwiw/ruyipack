@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Embedded openRuyi rendering policy and Autotools requirements.
+//! Embedded openRuyi rendering policy and build-system selection.
 
 use super::{RenderError, manifest::Manifest};
 use crate::profile::Profile;
@@ -14,8 +14,7 @@ pub(crate) fn load(manifest: &Manifest) -> Result<Profile, RenderError> {
     let Some(system) = manifest.build.system.as_deref() else {
         return Ok(profile);
     };
-    let contract = crate::check::build::autotools();
-    if system != contract.name {
+    if crate::check::build::contract(system).is_none() {
         return Err(RenderError::Invalid(format!(
             "build.system: unsupported build system {system:?}"
         )));

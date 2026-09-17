@@ -28,7 +28,7 @@ pub(crate) struct Options {
     #[arg(long, value_name = "DIR")]
     specs_dir: Option<PathBuf>,
     /// Build system whose defaults and requirements seed the template.
-    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new([crate::check::build::autotools().name.as_str()]))]
+    #[arg(long, value_parser = build_system_names())]
     build_system: Option<String>,
     /// Amount of guidance in the template.
     #[arg(long, value_enum, default_value = "standard")]
@@ -41,6 +41,11 @@ pub(crate) struct Options {
 enum Comments {
     Standard,
     Full,
+}
+
+/// Accepts exactly the build systems with a contract and template.
+fn build_system_names() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(crate::check::build::systems())
 }
 
 pub(crate) fn run(options: &Options) -> Result<(), InitError> {
@@ -181,20 +186,32 @@ fn render(
         toml::Value::String(value).to_string()
     });
     env.add_template("init", include_str!("../templates/init.toml.j2"))?;
+    // Two build layouts only: "plain" for no declared system, and one
+    // data-driven template shared by every real build system.
     env.add_template(
         "plain",
         include_str!("../templates/buildsystems/plain.toml.j2"),
     )?;
     env.add_template(
-        "autotools",
-        include_str!("../templates/buildsystems/autotools.toml.j2"),
+        "buildsystem",
+        include_str!("../templates/buildsystems/buildsystem.toml.j2"),
     )?;
-    let requirements = system
-        .map(|_| crate::check::build::autotools().build_requires.as_slice())
+    let contract = system.and_then(crate::check::build::contract);
+    let requirements = contract
+        .map(|contract| contract.build_requires.as_slice())
         .unwrap_or_default();
-    env.get_template("init")?
-        .render(context!(name, year, author, system, requirements,
-        full => matches!(comments, Comments::Full)))
+    let stages = contract
+        .map(|contract| contract.stages.as_slice())
+        .unwrap_or_default();
+    env.get_template("init")?.render(context!(
+        name,
+        year,
+        author,
+        system,
+        requirements,
+        stages,
+        full => matches!(comments, Comments::Full),
+    ))
 }
 
 fn warning(message: &str) -> Result<(), InitError> {
