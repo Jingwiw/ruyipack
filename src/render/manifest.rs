@@ -10,25 +10,42 @@ use super::RenderError;
 use serde::{Deserialize, Deserializer, de::Error as _};
 use std::collections::BTreeMap;
 
+/// Deserialized authoring input. Content checks are deferred to `parse` so an
+/// empty scaffold reports every unfilled field at once instead of aborting on
+/// the first table that fails a semantic check.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub(crate) struct Manifest {
-    pub(crate) spec: SpecMetadata,
-    pub(crate) package: Package,
+struct ManifestInput {
+    spec: SpecMetadata,
+    package: PackageInput,
     #[serde(deserialize_with = "read_sources")]
-    pub(crate) sources: BTreeMap<u32, Source>,
+    sources: BTreeMap<u32, Source>,
     #[serde(default)]
-    pub(crate) build: Build,
-    pub(crate) build_requires: BuildRequires,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub(crate) struct SpecMetadata {
-    pub(crate) copyright_years: String,
-    pub(crate) contributors: Vec<String>,
+    build: Build,
+    build_requires: BuildRequires,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct PackageInput {
+    name: String,
+    version: String,
+    summary: String,
+    license: String,
+    url: String,
+    description: String,
+    vcs: VcsInput,
+    files: Files,
+}
+
+/// Validated manifest. It only exists once `parse` accepts every field, so
+/// downstream rendering and verification never see an unresolved value.
+pub(crate) struct Manifest {
+    pub(crate) spec: SpecMetadata,
+    pub(crate) package: Package,
+    pub(crate) sources: BTreeMap<u32, Source>,
+    pub(crate) build: Build,
+    pub(crate) build_requires: BuildRequires,
+}
 pub(crate) struct Package {
     pub(crate) name: String,
     pub(crate) version: String,
@@ -40,7 +57,11 @@ pub(crate) struct Package {
     pub(crate) files: Files,
 }
 #[derive(Deserialize)]
-#[serde(try_from = "VcsInput")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub(crate) struct SpecMetadata {
+    pub(crate) copyright_years: String,
+    pub(crate) contributors: Vec<String>,
+}
 pub(crate) enum Vcs {
     Git(String),
     SameAsUrl,
@@ -57,22 +78,19 @@ struct VcsInput {
     no_public_repository: bool,
 }
 
-impl TryFrom<VcsInput> for Vcs {
-    type Error = RenderError;
-
-    fn try_from(input: VcsInput) -> Result<Self, Self::Error> {
-        match (input.git, input.same_as_url, input.no_public_repository) {
-            (Some(url), false, false) => {
-                https_url("package.vcs.git", &url)?;
-                Ok(Self::Git(url))
-            }
-            (None, true, false) => Ok(Self::SameAsUrl),
-            (None, false, true) => Ok(Self::NoPublicRepository),
-            _ => Err(RenderError::Invalid(
-                "package.vcs: choose exactly one of git, same-as-url = true, or no-public-repository = true"
-                    .into(),
-            )),
+/// Resolves the repository declaration; the caller aggregates any error.
+fn resolve_vcs(input: &VcsInput) -> Result<Vcs, RenderError> {
+    match (input.git.as_deref(), input.same_as_url, input.no_public_repository) {
+        (Some(url), false, false) => {
+            https_url("package.vcs.git", url)?;
+            Ok(Vcs::Git(url.to_owned()))
         }
+        (None, true, false) => Ok(Vcs::SameAsUrl),
+        (None, false, true) => Ok(Vcs::NoPublicRepository),
+        _ => Err(RenderError::Invalid(
+            "package.vcs: choose exactly one of git, same-as-url = true, or no-public-repository = true"
+                .into(),
+        )),
     }
 }
 #[derive(Deserialize)]
@@ -139,31 +157,52 @@ pub(crate) struct Files {
 }
 
 /// Reads the supported authoring fields without evaluating RPM macros.
+///
+/// Structural problems (missing fields, wrong types, unknown keys, malformed
+/// source numbers) still abort during deserialization. Every content check
+/// then runs on the whole manifest and the failures are reported together, so
+/// filling one field does not just uncover the next.
 pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
-    let manifest: Manifest = toml::from_str(source)?;
-    let package = &manifest.package;
+    let input: ManifestInput = toml::from_str(source)?;
+    let package = &input.package;
     let invalid = |field: &str, reason: &str| RenderError::Invalid(format!("{field}: {reason}"));
-    crate::spec_metadata::validate_years(&manifest.spec.copyright_years)
-        .map_err(|error| RenderError::Invalid(error.into()))?;
-    if manifest.spec.contributors.is_empty() {
-        return Err(invalid(
+
+    let mut errors = Vec::new();
+    let mut record = |result: Result<(), RenderError>| {
+        if let Err(error) = result {
+            errors.push(error.to_string());
+        }
+    };
+
+    record(
+        crate::spec_metadata::validate_years(&input.spec.copyright_years)
+            .map_err(|error| RenderError::Invalid(error.into())),
+    );
+    if input.spec.contributors.is_empty() {
+        record(Err(invalid(
             "spec.contributors",
             "at least one contributor is required",
-        ));
+        )));
     }
-    for contributor in &manifest.spec.contributors {
-        crate::spec_metadata::validate_contributor(contributor)
-            .map_err(|reason| invalid("spec.contributors", reason))?;
+    for contributor in &input.spec.contributors {
+        record(
+            crate::spec_metadata::validate_contributor(contributor)
+                .map_err(|reason| invalid("spec.contributors", reason)),
+        );
     }
-    crate::check::metadata::Field::Name
-        .validate(&package.name)
-        .map_err(RenderError::Invalid)?;
-    crate::check::metadata::Field::Version
-        .validate(&package.version)
-        .map_err(RenderError::Invalid)?;
-    single_line("package.summary", &package.summary)?;
-    single_line("package.license", &package.license)?;
-    https_url("package.url", &package.url)?;
+    record(
+        crate::check::metadata::Field::Name
+            .validate(&package.name)
+            .map_err(RenderError::Invalid),
+    );
+    record(
+        crate::check::metadata::Field::Version
+            .validate(&package.version)
+            .map_err(RenderError::Invalid),
+    );
+    record(single_line("package.summary", &package.summary));
+    record(single_line("package.license", &package.license));
+    record(https_url("package.url", &package.url));
     if package.description.trim().is_empty()
         || package
             .description
@@ -174,34 +213,52 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
             .lines()
             .any(|line| line.trim_start().starts_with('%'))
     {
-        return Err(invalid(
+        record(Err(invalid(
             "package.description",
             "expected non-empty LF text without lines starting with %",
+        )));
+    }
+    // Deferred from deserialization so an empty [package.vcs] table joins the
+    // report instead of aborting the parse before other fields are seen.
+    let vcs = match resolve_vcs(&package.vcs) {
+        Ok(vcs) => Some(vcs),
+        Err(error) => {
+            record(Err(error));
+            None
+        }
+    };
+    if !input.sources.contains_key(&0) {
+        record(Err(invalid("sources", "sources.0 is required")));
+    }
+    for (number, source) in &input.sources {
+        record(source_url(
+            &format!("sources.{number}.url"),
+            &source.url,
+            package,
         ));
+        record(
+            crate::source::validate_sha256(&source.sha256)
+                .map_err(|reason| invalid(&format!("sources.{number}.sha256"), reason)),
+        );
     }
-    if !manifest.sources.contains_key(&0) {
-        return Err(invalid("sources", "sources.0 is required"));
-    }
-    for (number, source) in &manifest.sources {
-        source_url(&format!("sources.{number}.url"), &source.url, package)?;
-        crate::source::validate_sha256(&source.sha256)
-            .map_err(|reason| invalid(&format!("sources.{number}.sha256"), reason))?;
-    }
-    for (stage, config) in &manifest.build.stages {
-        if manifest.build.system.is_none() && !config.options.is_empty() {
-            return Err(invalid(
+    for (stage, config) in &input.build.stages {
+        if input.build.system.is_none() && !config.options.is_empty() {
+            record(Err(invalid(
                 &format!("build.stages.{}.options", stage.as_str()),
                 "requires build.system; put arguments in the explicit stage script",
-            ));
+            )));
         }
         if config.replace.is_some() && !config.options.is_empty() {
-            return Err(invalid(
+            record(Err(invalid(
                 &format!("build.stages.{}", stage.as_str()),
                 "options cannot be combined with replace; put arguments in the replacement script",
-            ));
+            )));
         }
         for option in &config.options {
-            single_line(&format!("build.stages.{}.options", stage.as_str()), option)?;
+            record(single_line(
+                &format!("build.stages.{}.options", stage.as_str()),
+                option,
+            ));
         }
         for (name, script) in [
             ("prepend", Some(config.prepend.as_str())),
@@ -215,22 +272,22 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
                 .chars()
                 .any(|c| c.is_control() && c != '\n' && c != '\t')
             {
-                return Err(invalid(
+                record(Err(invalid(
                     &format!("build.stages.{}.{name}", stage.as_str()),
                     "expected script text using LF line endings without control characters other than tabs",
-                ));
+                )));
             }
         }
     }
-    for requirement in &manifest.build_requires.rpm {
-        single_line("build-requires.rpm", requirement)?;
+    for requirement in &input.build_requires.rpm {
+        record(single_line("build-requires.rpm", requirement));
     }
     let files = &package.files;
     if files.license.is_empty() && files.doc.is_empty() && files.entries.is_empty() {
-        return Err(invalid(
+        record(Err(invalid(
             "package.files",
             "at least one file entry is required",
-        ));
+        )));
     }
     for (field, values) in [
         ("package.files.license", &files.license),
@@ -238,24 +295,45 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
         ("package.files.entries", &files.entries),
     ] {
         for value in values {
-            single_line(field, value)?;
+            record(single_line(field, value));
             if value.chars().any(char::is_whitespace) {
-                return Err(invalid(
+                record(Err(invalid(
                     field,
                     "expected one path per entry, without whitespace",
-                ));
+                )));
             }
         }
     }
     for entry in &files.entries {
         if !entry.starts_with('/') && !entry.starts_with("%{") {
-            return Err(invalid(
+            record(Err(invalid(
                 "package.files.entries",
                 "paths must start with / or %{",
-            ));
+            )));
         }
     }
-    Ok(manifest)
+
+    if !errors.is_empty() {
+        return Err(RenderError::Invalid(errors.join("\n")));
+    }
+    // Every field passed, so the deferred repository choice resolved.
+    let vcs = vcs.expect("vcs is set when no errors were recorded");
+    Ok(Manifest {
+        package: Package {
+            name: input.package.name,
+            version: input.package.version,
+            summary: input.package.summary,
+            license: input.package.license,
+            url: input.package.url,
+            description: input.package.description,
+            vcs,
+            files: input.package.files,
+        },
+        spec: input.spec,
+        sources: input.sources,
+        build: input.build,
+        build_requires: input.build_requires,
+    })
 }
 
 /// Reads numeric source keys without silently merging alternate spellings.
@@ -286,7 +364,7 @@ fn single_line(field: &str, value: &str) -> Result<(), RenderError> {
 }
 
 /// Generation has an HTTPS-only policy; editing existing HTTP sources is supported.
-fn source_url(field: &str, value: &str, package: &Package) -> Result<(), RenderError> {
+fn source_url(field: &str, value: &str, package: &PackageInput) -> Result<(), RenderError> {
     single_line(field, value)?;
     let scheme = crate::source::validate_expression(
         value,

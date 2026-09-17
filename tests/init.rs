@@ -355,3 +355,34 @@ fn autotools_scaffolds_share_the_contract_and_feed_existing_generation() {
         assert!(!root.join("other.toml").exists());
     }
 }
+
+#[test]
+fn gen_reports_every_unfilled_scaffold_field_at_once() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    success(&run(root, &["init", "demo"]));
+    let generated = run(root, &["gen", "demo"]);
+    assert_eq!(generated.status.code(), Some(1));
+    assert!(generated.stdout.is_empty());
+    // A blank scaffold must surface every field that still needs a value in one
+    // report, not stop at the first table. package.vcs used to abort here during
+    // deserialization and hide the rest.
+    let report = output_text(&generated.stderr);
+    for field in [
+        "package.version",
+        "package.summary",
+        "package.license",
+        "package.url",
+        "package.description",
+        "package.vcs",
+        "sources.0.url",
+        "sources.0.sha256",
+        "package.files",
+    ] {
+        assert!(
+            report.contains(field),
+            "missing {field} in report: {report}"
+        );
+    }
+    assert!(!root.join("demo.spec").exists());
+}
