@@ -73,7 +73,7 @@ pub(crate) fn run(
         return Err(GenerateError::CheckFailed);
     }
 
-    if !output.stdout && !output.diff {
+    if !output.action.stdout && !output.action.diff {
         if manifest_path == target {
             return Err(GenerateError::InputIsTarget(target.to_path_buf()));
         }
@@ -88,7 +88,7 @@ pub(crate) fn run(
             }
         }
     }
-    file_output::run(target, &rendered.contents, output).map_err(GenerateError::Output)
+    file_output::run(target, &rendered.contents, &output.action).map_err(GenerateError::Output)
 }
 
 /// Rejects an existing target that resolves to the manifest itself.

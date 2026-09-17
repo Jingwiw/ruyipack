@@ -29,6 +29,12 @@ pub(crate) struct OutputOptions {
         conflicts_with = "stdout"
     )]
     pub(crate) path: Option<PathBuf>,
+    #[command(flatten)]
+    pub(crate) action: OutputActionOptions,
+}
+
+#[derive(Args)]
+pub(crate) struct OutputActionOptions {
     /// Prints the complete candidate without reading or writing the target.
     #[arg(long, conflicts_with_all = ["diff", "force", "skip_existing"])]
     pub(crate) stdout: bool,
@@ -54,7 +60,11 @@ enum ConflictAction {
 }
 
 /// Outputs validated text without silently replacing different content.
-pub(crate) fn run(path: &Path, contents: &str, options: &OutputOptions) -> Result<(), OutputError> {
+pub(crate) fn run(
+    path: &Path,
+    contents: &str,
+    options: &OutputActionOptions,
+) -> Result<(), OutputError> {
     if options.stdout {
         return io::stdout()
             .lock()
