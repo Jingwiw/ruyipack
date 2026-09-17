@@ -34,6 +34,16 @@ struct PackageInput {
     url: String,
     description: String,
     vcs: VcsInput,
+    // Runtime dependency and capability expressions for the main package.
+    // Subpackages are a separate, later concern; these are the main package's.
+    #[serde(default)]
+    requires: Vec<String>,
+    #[serde(default)]
+    provides: Vec<String>,
+    // openRuyi only ever uses BuildArch: noarch, so this is a flag, not a free
+    // architecture list. Other BuildArch values are a documented TODO.
+    #[serde(default)]
+    noarch: bool,
     files: Files,
 }
 
@@ -54,6 +64,9 @@ pub(crate) struct Package {
     pub(crate) url: String,
     pub(crate) description: String,
     pub(crate) vcs: Vcs,
+    pub(crate) requires: Vec<String>,
+    pub(crate) provides: Vec<String>,
+    pub(crate) noarch: bool,
     pub(crate) files: Files,
 }
 #[derive(Deserialize)]
@@ -288,6 +301,12 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
     for requirement in &input.build_requires.rpm {
         record(single_line("build-requires.rpm", requirement));
     }
+    for require in &package.requires {
+        record(single_line("package.requires", require));
+    }
+    for provide in &package.provides {
+        record(single_line("package.provides", provide));
+    }
     let files = &package.files;
     if files.license.is_empty() && files.doc.is_empty() && files.entries.is_empty() {
         record(Err(invalid(
@@ -333,6 +352,9 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
             url: input.package.url,
             description: input.package.description,
             vcs,
+            requires: input.package.requires,
+            provides: input.package.provides,
+            noarch: input.package.noarch,
             files: input.package.files,
         },
         spec: input.spec,

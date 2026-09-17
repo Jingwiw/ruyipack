@@ -34,6 +34,18 @@ description = '''
 # Join applicable licenses with uppercase AND/OR; use WITH for an SPDX exception.
 # https://openruyi.cn/docs/guide/packaging-guidelines/
 {% endif %}
+# Runtime dependencies of the installed package (not build tools); one RPM
+# expression per string. Uncomment when the package needs them.
+# requires = ["coreutils", "%{name}-libs = %{version}-%{release}"]
+# Extra capabilities this package provides, beyond its own name.
+# provides = ["%{name}-devel = %{version}-%{release}"]
+# Set only for architecture-independent packages; renders BuildArch: noarch.
+# noarch = true
+{% if full %}
+# requires is what the installed package needs at runtime; build-requires is what
+# the build needs. They are separate lists. openRuyi only uses noarch, not other
+# BuildArch values. Subpackages are not modeled yet; these apply to the main package.
+{% endif %}
 
 [package.vcs]
 # Choose exactly one: a public Git clone URL, homepage is that repository, or no public repository.

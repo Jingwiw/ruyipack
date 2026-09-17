@@ -52,6 +52,13 @@ pub(crate) fn run(
     ] {
         tags.push((tag, None, TagValue::Text(text(value)?)));
     }
+    if recipe.package.noarch {
+        tags.push((
+            Tag::BuildArch,
+            None,
+            TagValue::ArchList(vec![text("noarch")?]),
+        ));
+    }
     if let Some(system) = &recipe.build.system {
         tags.push((
             Tag::Other("BuildSystem".into()),
@@ -85,6 +92,17 @@ pub(crate) fn run(
             parse_dep_expr(&state, requirement).map_err(|()| mismatch("build-requires.rpm"))?;
         check(state.diagnostics.borrow().is_empty(), "build-requires.rpm")?;
         tags.push((Tag::BuildRequires, None, TagValue::Dep(value)));
+    }
+    for (field, tag, values) in [
+        ("package.requires", Tag::Requires, &recipe.package.requires),
+        ("package.provides", Tag::Provides, &recipe.package.provides),
+    ] {
+        for expression in values {
+            let state = ParserState::new();
+            let value = parse_dep_expr(&state, expression).map_err(|()| mismatch(field))?;
+            check(state.diagnostics.borrow().is_empty(), field)?;
+            tags.push((tag.clone(), None, TagValue::Dep(value)));
+        }
     }
 
     let mut comments = Vec::new();

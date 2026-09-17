@@ -57,6 +57,9 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
             column,
         );
     }
+    if recipe.package.noarch {
+        write_tag(&mut output, "BuildArch:", "noarch", column);
+    }
     if let Some(system) = &recipe.build.system {
         write_tag(&mut output, "BuildSystem:", system, column);
     }
@@ -82,6 +85,20 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
         write_tag(&mut output, "BuildRequires:", requirement, column);
     }
     if !recipe.build_requires.rpm.is_empty() {
+        output.push('\n');
+    }
+
+    for require in &recipe.package.requires {
+        write_tag(&mut output, "Requires:", require, column);
+    }
+    if !recipe.package.requires.is_empty() {
+        output.push('\n');
+    }
+
+    for provide in &recipe.package.provides {
+        write_tag(&mut output, "Provides:", provide, column);
+    }
+    if !recipe.package.provides.is_empty() {
         output.push('\n');
     }
 

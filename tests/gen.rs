@@ -774,3 +774,54 @@ fn single_source_always_renders_source0_a_known_deviation() {
     assert!(spec.contains("\nSource0:"), "{spec}");
     assert!(!spec.contains("\nSource:"), "{spec}");
 }
+
+#[test]
+fn main_package_requires_provides_and_noarch_render_and_round_trip() {
+    // Inject the three new main-package fields into the ed manifest. ed itself is
+    // not noarch; this checks the rendering and round-trip, not an ed reproduction.
+    let manifest = MANIFEST.replace(
+        "[package.vcs]",
+        "requires = [\"coreutils\", \"%{name}-libs = %{version}-%{release}\"]\n\
+         provides = [\"ed-clone = %{version}\"]\n\
+         noarch = true\n\n[package.vcs]",
+    );
+    let directory = workspace(&manifest);
+    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+    // gen succeeding means the render/verify round trip accepted the new tags.
+    success(&output);
+    let spec = String::from_utf8_lossy(&output.stdout);
+
+    // BuildArch: noarch sits in the preamble block, immediately before BuildSystem.
+    assert!(
+        spec.contains("BuildArch:      noarch\nBuildSystem:    autotools\n"),
+        "{spec}"
+    );
+    // Requires: block follows BuildRequires; Provides: follows Requires.
+    let requires_at = spec.find("Requires:       coreutils").expect("requires");
+    let buildrequires_at = spec.find("BuildRequires:").expect("buildrequires");
+    let provides_at = spec.find("Provides:       ed-clone").expect("provides");
+    assert!(buildrequires_at < requires_at, "{spec}");
+    assert!(requires_at < provides_at, "{spec}");
+    assert!(
+        spec.contains("Requires:       %{name}-libs = %{version}-%{release}\n"),
+        "{spec}"
+    );
+    // Both blocks precede %description.
+    assert!(
+        provides_at < spec.find("%description").expect("description"),
+        "{spec}"
+    );
+}
+
+#[test]
+fn absent_main_package_fields_render_nothing() {
+    // The default ed manifest declares none of the three; none should appear, and
+    // ed is a compiled package so BuildArch must be absent.
+    let directory = workspace(MANIFEST);
+    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+    success(&output);
+    let spec = String::from_utf8_lossy(&output.stdout);
+    assert!(!spec.contains("\nRequires:"), "{spec}");
+    assert!(!spec.contains("\nProvides:"), "{spec}");
+    assert!(!spec.contains("BuildArch:"), "{spec}");
+}
