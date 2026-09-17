@@ -46,7 +46,7 @@ pub(crate) fn run(
         (Tag::Name, package.name.as_str()),
         (Tag::Version, &package.version),
         (Tag::Release, &profile.release),
-        (Tag::Summary, &package.summary),
+        (Tag::Summary, &package.body.summary),
         (Tag::License, &package.license),
         (Tag::URL, &package.url),
     ] {
@@ -94,8 +94,16 @@ pub(crate) fn run(
         tags.push((Tag::BuildRequires, None, TagValue::Dep(value)));
     }
     for (field, tag, values) in [
-        ("package.requires", Tag::Requires, &recipe.package.requires),
-        ("package.provides", Tag::Provides, &recipe.package.provides),
+        (
+            "package.requires",
+            Tag::Requires,
+            &recipe.package.body.requires,
+        ),
+        (
+            "package.provides",
+            Tag::Provides,
+            &recipe.package.body.provides,
+        ),
     ] {
         for expression in values {
             let state = ParserState::new();
@@ -193,7 +201,7 @@ pub(crate) fn run(
     else {
         return Err(mismatch("sections"));
     };
-    let mut lines: Vec<_> = package.description.lines().collect();
+    let mut lines: Vec<_> = package.body.description.lines().collect();
     // The parser discards separator lines at the end, not indentation or spaces in prose.
     while lines.last().is_some_and(|line| line.trim().is_empty()) {
         lines.pop();
@@ -286,7 +294,7 @@ fn build_scripts(
 }
 
 fn files(content: &[FilesContent<Span>], recipe: &Manifest) -> Result<(), RenderError> {
-    let files = &recipe.package.files;
+    let files = &recipe.package.body.files;
     let mut expected = Vec::new();
     for (directive, paths) in [
         (FileDirective::License, &files.license),

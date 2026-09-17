@@ -192,7 +192,7 @@ fn keeps_each_checksum_bound_to_its_source() {
 #[test]
 fn ignores_layout_but_preserves_prose_and_macro_structure() {
     let mut recipe = manifest::parse(MANIFEST).unwrap();
-    recipe.package.description =
+    recipe.package.body.description =
         "An editor with %{name} and 100%% text.\n  Indented text  \n \n".into();
     recipe
         .build_requires

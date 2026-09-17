@@ -36,7 +36,12 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
     write_tag(&mut output, "Name:", &recipe.package.name, column);
     write_tag(&mut output, "Version:", &recipe.package.version, column);
     write_tag(&mut output, "Release:", &profile.release, column);
-    write_tag(&mut output, "Summary:", &recipe.package.summary, column);
+    write_tag(
+        &mut output,
+        "Summary:",
+        &recipe.package.body.summary,
+        column,
+    );
     write_tag(&mut output, "License:", &recipe.package.license, column);
     write_tag(&mut output, "URL:", &recipe.package.url, column);
     match &recipe.package.vcs {
@@ -88,22 +93,22 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
         output.push('\n');
     }
 
-    for require in &recipe.package.requires {
+    for require in &recipe.package.body.requires {
         write_tag(&mut output, "Requires:", require, column);
     }
-    if !recipe.package.requires.is_empty() {
+    if !recipe.package.body.requires.is_empty() {
         output.push('\n');
     }
 
-    for provide in &recipe.package.provides {
+    for provide in &recipe.package.body.provides {
         write_tag(&mut output, "Provides:", provide, column);
     }
-    if !recipe.package.provides.is_empty() {
+    if !recipe.package.body.provides.is_empty() {
         output.push('\n');
     }
 
     output.push_str("%description\n");
-    output.push_str(recipe.package.description.trim_end_matches('\n'));
+    output.push_str(recipe.package.body.description.trim_end_matches('\n'));
     output.push_str("\n\n");
     for (stage, config) in &recipe.build.stages {
         for (suffix, script) in [
@@ -130,19 +135,19 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
         }
     }
     output.push_str("%files\n");
-    if !recipe.package.files.license.is_empty() {
+    if !recipe.package.body.files.license.is_empty() {
         writeln!(
             output,
             "%license {}",
-            recipe.package.files.license.join(" ")
+            recipe.package.body.files.license.join(" ")
         )
         .expect("writing to a String cannot fail");
     }
-    if !recipe.package.files.doc.is_empty() {
-        writeln!(output, "%doc {}", recipe.package.files.doc.join(" "))
+    if !recipe.package.body.files.doc.is_empty() {
+        writeln!(output, "%doc {}", recipe.package.body.files.doc.join(" "))
             .expect("writing to a String cannot fail");
     }
-    for path in &recipe.package.files.entries {
+    for path in &recipe.package.body.files.entries {
         writeln!(output, "{path}").expect("writing to a String cannot fail");
     }
 

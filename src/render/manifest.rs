@@ -59,14 +59,24 @@ pub(crate) struct Manifest {
 pub(crate) struct Package {
     pub(crate) name: String,
     pub(crate) version: String,
-    pub(crate) summary: String,
+    // License, URL, VCS, and noarch belong to the main package alone; a
+    // subpackage inherits them and never restates them.
     pub(crate) license: String,
     pub(crate) url: String,
-    pub(crate) description: String,
     pub(crate) vcs: Vcs,
+    pub(crate) noarch: bool,
+    // Fields a subpackage also carries live in the shared body, so the renderer
+    // and verifier can treat main package and subpackage through one path.
+    pub(crate) body: PackageBody,
+}
+
+/// The part of a package shared by the main package and every subpackage:
+/// its summary, description, dependency edges, and file list.
+pub(crate) struct PackageBody {
+    pub(crate) summary: String,
+    pub(crate) description: String,
     pub(crate) requires: Vec<String>,
     pub(crate) provides: Vec<String>,
-    pub(crate) noarch: bool,
     pub(crate) files: Files,
 }
 #[derive(Deserialize)]
@@ -347,15 +357,17 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
         package: Package {
             name: input.package.name,
             version: input.package.version,
-            summary: input.package.summary,
             license: input.package.license,
             url: input.package.url,
-            description: input.package.description,
             vcs,
-            requires: input.package.requires,
-            provides: input.package.provides,
             noarch: input.package.noarch,
-            files: input.package.files,
+            body: PackageBody {
+                summary: input.package.summary,
+                description: input.package.description,
+                requires: input.package.requires,
+                provides: input.package.provides,
+                files: input.package.files,
+            },
         },
         spec: input.spec,
         sources: input.sources,
