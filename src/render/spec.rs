@@ -86,26 +86,24 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
         output.push('\n');
     }
 
-    for requirement in &recipe.build_requires.rpm {
-        write_tag(&mut output, "BuildRequires:", requirement, column);
-    }
-    if !recipe.build_requires.rpm.is_empty() {
-        output.push('\n');
-    }
-
-    for require in &recipe.package.body.requires {
-        write_tag(&mut output, "Requires:", require, column);
-    }
-    if !recipe.package.body.requires.is_empty() {
-        output.push('\n');
-    }
-
-    for provide in &recipe.package.body.provides {
-        write_tag(&mut output, "Provides:", provide, column);
-    }
-    if !recipe.package.body.provides.is_empty() {
-        output.push('\n');
-    }
+    render_tag_block(
+        &mut output,
+        "BuildRequires:",
+        &recipe.build_requires.rpm,
+        column,
+    );
+    render_tag_block(
+        &mut output,
+        "Requires:",
+        &recipe.package.body.requires,
+        column,
+    );
+    render_tag_block(
+        &mut output,
+        "Provides:",
+        &recipe.package.body.provides,
+        column,
+    );
 
     output.push_str("%description\n");
     output.push_str(recipe.package.body.description.trim_end_matches('\n'));
@@ -158,4 +156,16 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
 
 fn write_tag(output: &mut String, label: &str, value: &str, column: usize) {
     writeln!(output, "{label:<column$}{value}").expect("writing to a String cannot fail");
+}
+
+/// Renders one tag line per value, then a blank line when the block is
+/// non-empty. BuildRequires, Requires, and Provides share this shape, and each
+/// subpackage will reuse it for its own dependency edges.
+fn render_tag_block(output: &mut String, label: &str, values: &[String], column: usize) {
+    for value in values {
+        write_tag(output, label, value, column);
+    }
+    if !values.is_empty() {
+        output.push('\n');
+    }
 }
