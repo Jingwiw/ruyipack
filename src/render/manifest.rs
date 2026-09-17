@@ -189,6 +189,84 @@ pub(crate) struct Files {
 /// source numbers) still abort during deserialization. Every content check
 /// then runs on the whole manifest and the failures are reported together, so
 /// filling one field does not just uncover the next.
+/// Validates the fields shared by the main package and every subpackage,
+/// returning one formatted message per problem. `prefix` names the location in
+/// reports (e.g. `package` or `subpackages.devel`). `files_required` is true for
+/// the main package and false for subpackages, which may ship no files.
+fn validate_body(
+    prefix: &str,
+    summary: &str,
+    description: &str,
+    requires: &[String],
+    provides: &[String],
+    files: &Files,
+    files_required: bool,
+) -> Vec<String> {
+    let invalid = |field: &str, reason: &str| format!("{field}: {reason}");
+    let mut messages = Vec::new();
+    if let Err(error) = single_line(&format!("{prefix}.summary"), summary) {
+        messages.push(error.to_string());
+    }
+    if description.trim().is_empty()
+        || description.chars().any(|c| c.is_control() && c != '\n')
+        || description
+            .lines()
+            .any(|line| line.trim_start().starts_with('%'))
+    {
+        messages.push(invalid(
+            &format!("{prefix}.description"),
+            "expected non-empty LF text without lines starting with %",
+        ));
+    }
+    for require in requires {
+        if let Err(error) = single_line(&format!("{prefix}.requires"), require) {
+            messages.push(error.to_string());
+        }
+    }
+    for provide in provides {
+        if let Err(error) = single_line(&format!("{prefix}.provides"), provide) {
+            messages.push(error.to_string());
+        }
+    }
+    if files_required
+        && files.license.is_empty()
+        && files.doc.is_empty()
+        && files.entries.is_empty()
+    {
+        messages.push(invalid(
+            &format!("{prefix}.files"),
+            "at least one file entry is required",
+        ));
+    }
+    for (suffix, values) in [
+        ("files.license", &files.license),
+        ("files.doc", &files.doc),
+        ("files.entries", &files.entries),
+    ] {
+        let field = format!("{prefix}.{suffix}");
+        for value in values {
+            if let Err(error) = single_line(&field, value) {
+                messages.push(error.to_string());
+            }
+            if value.chars().any(char::is_whitespace) {
+                messages.push(invalid(
+                    &field,
+                    "expected one path per entry, without whitespace",
+                ));
+            }
+        }
+    }
+    for entry in &files.entries {
+        if !entry.starts_with('/') && !entry.starts_with("%{") {
+            messages.push(invalid(
+                &format!("{prefix}.files.entries"),
+                "paths must start with / or %{",
+            ));
+        }
+    }
+    messages
+}
+
 pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
     let input: ManifestInput = toml::from_str(source)?;
     let package = &input.package;
@@ -227,24 +305,8 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
             .validate(&package.version)
             .map_err(RenderError::Invalid),
     );
-    record(single_line("package.summary", &package.summary));
     record(single_line("package.license", &package.license));
     record(https_url("package.url", &package.url));
-    if package.description.trim().is_empty()
-        || package
-            .description
-            .chars()
-            .any(|c| c.is_control() && c != '\n')
-        || package
-            .description
-            .lines()
-            .any(|line| line.trim_start().starts_with('%'))
-    {
-        record(Err(invalid(
-            "package.description",
-            "expected non-empty LF text without lines starting with %",
-        )));
-    }
     // Deferred from deserialization so an empty [package.vcs] table joins the
     // report instead of aborting the parse before other fields are seen.
     let vcs = match resolve_vcs(&package.vcs) {
@@ -311,41 +373,19 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
     for requirement in &input.build_requires.rpm {
         record(single_line("build-requires.rpm", requirement));
     }
-    for require in &package.requires {
-        record(single_line("package.requires", require));
-    }
-    for provide in &package.provides {
-        record(single_line("package.provides", provide));
-    }
-    let files = &package.files;
-    if files.license.is_empty() && files.doc.is_empty() && files.entries.is_empty() {
-        record(Err(invalid(
-            "package.files",
-            "at least one file entry is required",
-        )));
-    }
-    for (field, values) in [
-        ("package.files.license", &files.license),
-        ("package.files.doc", &files.doc),
-        ("package.files.entries", &files.entries),
-    ] {
-        for value in values {
-            record(single_line(field, value));
-            if value.chars().any(char::is_whitespace) {
-                record(Err(invalid(
-                    field,
-                    "expected one path per entry, without whitespace",
-                )));
-            }
-        }
-    }
-    for entry in &files.entries {
-        if !entry.starts_with('/') && !entry.starts_with("%{") {
-            record(Err(invalid(
-                "package.files.entries",
-                "paths must start with / or %{",
-            )));
-        }
+    // summary, description, requires, provides, and files share one validator
+    // so a subpackage is held to the same rules as the main package. Only the
+    // field prefix and whether files may be empty differ.
+    for message in validate_body(
+        "package",
+        &package.summary,
+        &package.description,
+        &package.requires,
+        &package.provides,
+        &package.files,
+        true,
+    ) {
+        errors.push(message);
     }
 
     if !errors.is_empty() {
