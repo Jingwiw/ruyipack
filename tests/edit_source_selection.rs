@@ -69,8 +69,17 @@ fn a_conditional_context_field_blocks_only_sources_that_reference_it() {
     ] {
         let source = SPEC.replace("Version:        1.22.5", version);
         let directory = fixture(&source);
+        only_source_url(&selected_view(directory.path(), "sources.0.url"), URL);
         rejected(
-            &selected_view(directory.path(), "sources.0.url"),
+            &run(
+                directory.path(),
+                &[
+                    "ed.spec",
+                    "--set",
+                    &format!("sources.0.url={URL}"),
+                    "--stdout",
+                ],
+            ),
             "unsupported source macro",
         );
         let summary = selected_view(directory.path(), "package.summary");
@@ -98,8 +107,17 @@ fn unknown_include_and_statement_invalidate_context_not_literal_source_urls() {
     for directive in ["%include absent-context.inc\n", "%{unresolved_statement}\n"] {
         let source = format!("{directive}{SPEC}");
         let directory = fixture(&source);
+        only_source_url(&selected_view(directory.path(), "sources.0.url"), URL);
         rejected(
-            &selected_view(directory.path(), "sources.0.url"),
+            &run(
+                directory.path(),
+                &[
+                    "ed.spec",
+                    "--set",
+                    &format!("sources.0.url={URL}"),
+                    "--stdout",
+                ],
+            ),
             "unavailable or ambiguous",
         );
         success(&selected_view(directory.path(), "package.summary"));

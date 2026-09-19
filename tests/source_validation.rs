@@ -79,7 +79,7 @@ fn generated_sources_are_viewable_and_round_trip_without_changing_a_byte() {
 }
 
 #[test]
-fn invalid_or_unsupported_sources_are_rejected_at_both_boundaries_and_on_edit() {
+fn invalid_or_unsupported_sources_can_be_viewed_but_not_published() {
     for url in [
         "https://",
         "https://bad host/file",
@@ -120,10 +120,11 @@ fn invalid_or_unsupported_sources_are_rejected_at_both_boundaries_and_on_edit() 
         );
         let spec = SPEC.replace(URL, url);
         fs::write(directory.path().join("ed.spec"), &spec).unwrap();
-        rejected(
-            &run(directory.path(), &["edit", "ed.spec", "--view"]),
-            "sources.0.url",
-        );
+        let view = run(directory.path(), &["edit", "ed.spec", "--view"]);
+        success(&view);
+        let document: toml::Table =
+            toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
+        assert_eq!(document["sources"]["0"]["url"].as_str(), Some(url));
         assert_eq!(
             fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
             spec
@@ -141,6 +142,130 @@ fn invalid_or_unsupported_sources_are_rejected_at_both_boundaries_and_on_edit() 
             SPEC
         );
         assert!(!directory.path().join("MUST_NOT_EXIST").exists());
+    }
+}
+
+#[test]
+fn selected_source_repairs_validate_the_new_url_not_the_old_one() {
+    let directory = tempfile::tempdir().unwrap();
+    for (old, replacement) in [
+        ("https://", "https://example.org/fixed.tar.lz"),
+        (
+            "https://example.org/a%20b.tar.lz",
+            "https://example.org/a%%20b.tar.lz",
+        ),
+    ] {
+        let original = SPEC.replace(URL, old);
+        fs::write(directory.path().join("ed.spec"), &original).unwrap();
+        let same = format!("sources.0.url={old}");
+        rejected(
+            &run(directory.path(), &["edit", "ed.spec", "--set", &same]),
+            "sources.0.url",
+        );
+        assert_eq!(
+            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+            original
+        );
+        let assignment = format!("sources.0.url={replacement}");
+        let preview = run(
+            directory.path(),
+            &["edit", "ed.spec", "--set", &assignment, "--stdout"],
+        );
+        success(&preview);
+        assert_eq!(preview.stdout, SPEC.replace(URL, replacement).as_bytes());
+        assert_eq!(
+            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+            original
+        );
+        let saved = run(directory.path(), &["edit", "ed.spec", "--set", &assignment]);
+        assert!(saved.status.success(), "{saved:?}");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+            SPEC.replace(URL, replacement)
+        );
+    }
+}
+
+#[test]
+fn generated_bare_sources_remain_editable_without_inventing_a_digest() {
+    let directory = tempfile::tempdir().unwrap();
+    let manifest = MANIFEST.replace(&format!("sha256 = \"{HASH}\"\n"), "");
+    fs::write(directory.path().join("ed.toml"), manifest).unwrap();
+    let generated = run(directory.path(), &["gen", "ed", "--stdout"]);
+    assert!(generated.status.success(), "{generated:?}");
+    assert!(String::from_utf8_lossy(&generated.stderr).contains("no sha256"));
+    let spec = String::from_utf8(generated.stdout).unwrap();
+    assert_eq!(
+        spec,
+        SPEC.replace(&format!("#!RemoteAsset:  sha256:{HASH}"), "#!RemoteAsset")
+    );
+    fs::write(directory.path().join("ed.spec"), &spec).unwrap();
+    for fields in [vec![], vec!["--field", "sources.0.url"]] {
+        let mut args = vec!["edit", "ed.spec", "--view"];
+        args.extend(fields);
+        let view = run(directory.path(), &args);
+        success(&view);
+        let document: toml::Table =
+            toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
+        let source = document["sources"]["0"].as_table().unwrap();
+        assert_eq!(source.len(), 1);
+        assert_eq!(source["url"].as_str(), Some(URL));
+    }
+    rejected(
+        &run(
+            directory.path(),
+            &["edit", "ed.spec", "--field", "sources.0.sha256", "--view"],
+        ),
+        "sources.0.sha256",
+    );
+    let replacement = "https://example.org/replacement.tar.lz";
+    let assignment = format!("sources.0.url={replacement}");
+    let edited = run(
+        directory.path(),
+        &["edit", "ed.spec", "--set", &assignment, "--stdout"],
+    );
+    success(&edited);
+    assert_eq!(edited.stdout, spec.replace(URL, replacement).as_bytes());
+    assert_eq!(
+        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+        spec
+    );
+    let saved = run(directory.path(), &["edit", "ed.spec", "--set", &assignment]);
+    assert!(saved.status.success(), "{saved:?}");
+    assert_eq!(
+        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+        spec.replace(URL, replacement)
+    );
+    for (malformed, error) in [
+        (
+            spec.replace("#!RemoteAsset\n", "#!RemoteAsset extra\n"),
+            "RemoteAsset",
+        ),
+        (
+            spec.replace("#!RemoteAsset\n", "#!RemoteAsset\n#!RemoteAsset\n"),
+            "RemoteAsset",
+        ),
+        (
+            spec.replace("#!RemoteAsset\n", "#!RemoteAsset\n\n"),
+            "RemoteAsset",
+        ),
+        (
+            spec.replace(
+                "BuildSystem:",
+                &format!("#!RemoteAsset\nSource0: {URL}\nBuildSystem:"),
+            ),
+            "duplicate Source identity",
+        ),
+    ] {
+        fs::write(directory.path().join("ed.spec"), &malformed).unwrap();
+        rejected(
+            &run(directory.path(), &["edit", "ed.spec", "--view"]),
+            error,
+        );
+        assert_eq!(
+            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+            malformed
+        );
     }
 }
 
@@ -259,8 +384,18 @@ fn source_context_is_order_independent_and_only_required_when_referenced() {
     fs::write(directory.path().join("ed.spec"), &later).unwrap();
     success(&run(directory.path(), &["edit", "ed.spec", "--view"]));
     fs::write(directory.path().join("ed.spec"), &spec).unwrap();
+    success(&run(directory.path(), &["edit", "ed.spec", "--view"]));
     rejected(
-        &run(directory.path(), &["edit", "ed.spec", "--view"]),
+        &run(
+            directory.path(),
+            &[
+                "edit",
+                "ed.spec",
+                "--set",
+                "sources.0.url=%{url}/%{name}-%{version}.tar.lz",
+                "--stdout",
+            ],
+        ),
         "unavailable",
     );
     let explicit = spec.replace(
@@ -280,8 +415,18 @@ fn source_macros_do_not_recursively_evaluate_package_fields() {
             &format!("Version:        {version}"),
         );
         fs::write(directory.path().join("ed.spec"), spec).unwrap();
+        success(&run(directory.path(), &["edit", "ed.spec", "--view"]));
         rejected(
-            &run(directory.path(), &["edit", "ed.spec", "--view"]),
+            &run(
+                directory.path(),
+                &[
+                    "edit",
+                    "ed.spec",
+                    "--set",
+                    &format!("sources.0.url={URL}"),
+                    "--stdout",
+                ],
+            ),
             "not a supported static literal",
         );
         assert!(!directory.path().join("MUST_NOT_EXIST").exists());

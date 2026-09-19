@@ -150,19 +150,23 @@ impl Snapshot {
                                 ));
                             }
                             let asset_text = &source[asset.clone()];
-                            let prefix = profile.remote_asset_prefix.as_str();
-                            let hash = asset_text
-                                .strip_prefix(prefix)
-                                .and_then(|s| s.strip_suffix('\n'))
-                                .ok_or_else(|| {
-                                    format!("{identity}.sha256: unsupported RemoteAsset syntax")
-                                })?;
-                            valid_hash(hash, &format!("{identity}.sha256"))?;
-                            snapshot.scalar(
-                                &format!("{identity}.sha256"),
-                                asset.start + prefix.len()..asset.end - 1,
-                                false,
-                            )?;
+                            if asset_text.strip_suffix('\n')
+                                != Some(profile.remote_asset_bare.as_str())
+                            {
+                                let prefix = profile.remote_asset_prefix.as_str();
+                                let hash = asset_text
+                                    .strip_prefix(prefix)
+                                    .and_then(|s| s.strip_suffix('\n'))
+                                    .ok_or_else(|| {
+                                        format!("{identity}.sha256: unsupported RemoteAsset syntax")
+                                    })?;
+                                valid_hash(hash, &format!("{identity}.sha256"))?;
+                                snapshot.scalar(
+                                    &format!("{identity}.sha256"),
+                                    asset.start + prefix.len()..asset.end - 1,
+                                    false,
+                                )?;
+                            }
                             consumed_assets.push(asset);
                             (format!("{identity}.url"), expected)
                         }
@@ -235,15 +239,6 @@ impl Snapshot {
         if selection.is_empty() && lookup(&snapshot.document, "package.name").is_none() {
             return Err("package.name: required main package is missing".into());
         }
-        for scalar in &snapshot.scalars {
-            if scalar.field.starts_with("sources.") && scalar.field.ends_with(".url") {
-                valid_source_url(
-                    string(&snapshot.document, &scalar.field)?,
-                    &scalar.field,
-                    &snapshot.source_fields,
-                )?;
-            }
-        }
         Ok(snapshot)
     }
 
@@ -255,7 +250,10 @@ impl Snapshot {
         validate_shape(&self.document, edited)?;
         let mut fields = self.source_fields.clone();
         for name in ["name", "version", "url"] {
-            if let Some(value) = lookup(edited, &format!("package.{name}")).and_then(Value::as_str)
+            // An assignment cannot resolve context hidden by includes or ambiguity.
+            if fields.contains_key(name)
+                && let Some(value) =
+                    lookup(edited, &format!("package.{name}")).and_then(Value::as_str)
             {
                 fields.insert(name.to_owned(), value.to_owned());
             }
