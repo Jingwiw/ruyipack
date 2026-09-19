@@ -70,3 +70,33 @@ fn consistent_conditional_location_is_not_removed_by_error_code() {
     }
     assert_eq!(fs::read_to_string(&path).unwrap(), "%endif");
 }
+
+#[test]
+fn batch_edit_parser_diagnostics_identify_each_candidate_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = format!("%unknown value\n{}", include_str!("fixtures/ed.spec"));
+    let first = directory.path().join("first.spec");
+    let second = directory.path().join("second.spec");
+    for path in [&first, &second] {
+        fs::write(path, &source).unwrap();
+    }
+    let output = support::command()
+        .arg("edit")
+        .arg(&first)
+        .arg(&second)
+        .args(["--field", "package.version", "--check"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stderr = support::output_text(&output.stderr);
+    for path in [&first, &second] {
+        assert!(
+            stderr.contains(&format!(
+                "{} (candidate):1:1: warning[rpmspec/W0002]:",
+                path.display()
+            )),
+            "{stderr}"
+        );
+        assert_eq!(fs::read_to_string(path).unwrap(), source);
+    }
+}

@@ -33,8 +33,8 @@ impl<'src> Inspection<'src> {
         }
     }
 
-    pub(crate) fn write_diagnostics(&self, writer: &mut impl Write) -> io::Result<()> {
-        parser_diagnostic::write(&self.diagnostics, writer)
+    pub(crate) fn write_diagnostics(&self, path: &Path, writer: &mut impl Write) -> io::Result<()> {
+        parser_diagnostic::write(path, &self.diagnostics, writer)
     }
 
     pub(crate) fn write_human(&self, writer: &mut impl Write) -> io::Result<()> {

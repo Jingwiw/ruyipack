@@ -6,7 +6,10 @@
 
 //! First-party parser diagnostic results and their human-readable output.
 
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    path::Path,
+};
 
 use serde::Serialize;
 
@@ -31,8 +34,11 @@ pub(crate) struct Diagnostic {
 }
 
 /// Writes every recoverable issue reported by the parser.
-// TODO: Include the input path in human-readable parser diagnostics.
-pub(crate) fn write(diagnostics: &[Diagnostic], writer: &mut impl Write) -> io::Result<()> {
+pub(crate) fn write(
+    path: &Path,
+    diagnostics: &[Diagnostic],
+    writer: &mut impl Write,
+) -> io::Result<()> {
     for diagnostic in diagnostics {
         let severity = match diagnostic.severity {
             Severity::Warning => "warning",
@@ -44,10 +50,15 @@ pub(crate) fn write(diagnostics: &[Diagnostic], writer: &mut impl Write) -> io::
             .as_deref()
             .map_or_else(String::new, |code| format!("[{code}]"));
         let location = diagnostic.span.as_ref().map_or_else(String::new, |span| {
-            format!(" at {}:{}", span.start.0, span.start.1)
+            format!(":{}:{}", span.start.0, span.start.1)
         });
 
-        writeln!(writer, "{severity}{code}{location}: {}", diagnostic.message)?;
+        writeln!(
+            writer,
+            "{}{location}: {severity}{code}: {}",
+            path.display(),
+            diagnostic.message
+        )?;
         for note in &diagnostic.notes {
             writeln!(writer, "  note: {note}")?;
         }

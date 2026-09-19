@@ -115,10 +115,15 @@ mod tests {
             ])
         );
         let mut output = Vec::new();
-        crate::parser_diagnostic::write(&converted, &mut output).unwrap();
+        crate::parser_diagnostic::write(
+            std::path::Path::new("input.spec"),
+            &converted,
+            &mut output,
+        )
+        .unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
-            "error[rpmspec/E001] at 1:3: invalid syntax\n  note: the recovery context\nwarning: unlocated warning\nwarning[rpmspec/W0004]: unterminated macro\n  note: the macro recovery context\n"
+            "input.spec:1:3: error[rpmspec/E001]: invalid syntax\n  note: the recovery context\ninput.spec: warning: unlocated warning\ninput.spec: warning[rpmspec/W0004]: unterminated macro\n  note: the macro recovery context\n"
         );
     }
 

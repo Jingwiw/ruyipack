@@ -221,7 +221,7 @@ fn text_diagnostics_do_not_present_body_local_offsets_as_source_locations() {
             assert!(
                 stderr
                     .lines()
-                    .any(|line| line.starts_with(&format!("warning[{code}]:"))),
+                    .any(|line| line.starts_with(&format!("{}: warning[{code}]:", path.display()))),
                 "{stderr}"
             );
             assert!(
@@ -230,7 +230,10 @@ fn text_diagnostics_do_not_present_body_local_offsets_as_source_locations() {
             );
         }
         assert!(
-            stderr.contains(&format!("warning[rpmspec/W0017] at {boolean_line}:1:")),
+            stderr.contains(&format!(
+                "{}:{boolean_line}:1: warning[rpmspec/W0017]:",
+                path.display()
+            )),
             "{stderr}"
         );
     }

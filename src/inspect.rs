@@ -26,7 +26,7 @@ pub(crate) fn run(path: &Path, format: InspectFormat) -> Result<(), InspectError
     let mut output = io::stdout().lock();
     match format {
         InspectFormat::Human => {
-            view.write_diagnostics(&mut io::stderr().lock())
+            view.write_diagnostics(path, &mut io::stderr().lock())
                 .map_err(InspectError::Stderr)?;
             view.write_human(&mut output)
         }

@@ -302,7 +302,10 @@ fn check_continues_after_a_parser_warning() {
     );
     assert_eq!(
         output_text(&complete_output.stderr),
-        "warning[rpmspec/W0002] at 7:1: line not recognized\n"
+        format!(
+            "{}:7:1: warning[rpmspec/W0002]: line not recognized\n",
+            complete_spec.display()
+        )
     );
 
     let spec = write_file(
@@ -326,8 +329,8 @@ License: MIT
         output_text(&output.stderr),
         format!(
             "\
-warning[rpmspec/W0002] at 6:1: line not recognized
-{}:1:1: error[RPM015]: spec is missing the URL: tag
+{0}:6:1: warning[rpmspec/W0002]: line not recognized
+{0}:1:1: error[RPM015]: spec is missing the URL: tag
 ",
             spec.display()
         )
@@ -345,10 +348,10 @@ fn check_stops_tag_checks_when_the_parser_reports_an_error() {
     assert!(output.stdout.is_empty(), "{}", output_text(&output.stdout));
     assert_eq!(
         output_text(&output.stderr),
-        "\
-error[rpmspec/E0007] at 7:9: %package requires a subpackage name argument
-error: check incomplete because the SPEC parser reported an error
-"
+        format!(
+            "{}:7:9: error[rpmspec/E0007]: %package requires a subpackage name argument\nerror: check incomplete because the SPEC parser reported an error\n",
+            spec.display()
+        )
     );
 }
 
@@ -607,7 +610,10 @@ Summary: Broken subpackage
     assert_eq!(output_text(&output.stdout), "Name: demo\nVersion: 1\n");
     assert_eq!(
         output_text(&output.stderr),
-        "error[rpmspec/E0007] at 4:9: %package requires a subpackage name argument\n"
+        format!(
+            "{}:4:9: error[rpmspec/E0007]: %package requires a subpackage name argument\n",
+            spec.display()
+        )
     );
 }
 

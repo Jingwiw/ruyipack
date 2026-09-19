@@ -112,7 +112,7 @@ impl CheckReport {
 
     /// Writes human-readable parser diagnostics and static-check findings.
     pub(crate) fn write_human(&self, path: &Path, writer: &mut impl Write) -> io::Result<()> {
-        parser_diagnostic::write(&self.parser_diagnostics, writer)?;
+        parser_diagnostic::write(path, &self.parser_diagnostics, writer)?;
         for finding in &self.findings {
             let severity = match finding.severity {
                 Severity::Deny => "error",
