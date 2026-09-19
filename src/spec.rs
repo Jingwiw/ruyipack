@@ -40,7 +40,7 @@ impl<'src> ParsedSpec<'src> {
     }
 
     pub(crate) fn diagnostics(&self) -> Vec<Diagnostic> {
-        diagnostic::diagnostics(self.parsed.diagnostics.clone())
+        diagnostic::diagnostics(self.source, self.parsed.diagnostics.clone())
     }
 
     pub(crate) fn findings(&self, rules: &[SelectedRule]) -> Vec<Finding> {

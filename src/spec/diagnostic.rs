@@ -21,7 +21,10 @@ pub(crate) fn location(span: Span) -> SourceLocation {
     }
 }
 
-pub(crate) fn diagnostics(diagnostics: Vec<parse_result::Diagnostic>) -> Vec<Diagnostic> {
+pub(crate) fn diagnostics(
+    source: &str,
+    diagnostics: Vec<parse_result::Diagnostic>,
+) -> Vec<Diagnostic> {
     use parse_result::codes;
 
     diagnostics
@@ -36,6 +39,10 @@ pub(crate) fn diagnostics(diagnostics: Vec<parse_result::Diagnostic>) -> Vec<Dia
                     | codes::W_UNTERMINATED_MACRO
                     | codes::W_MACRO_EMPTY_NAME,
                 ) => None,
+                Some(codes::E_UNTERMINATED_CONDITIONAL) => diagnostic
+                    .span
+                    .filter(|span| consistent_endpoints(source, *span))
+                    .map(location),
                 _ => diagnostic.span.map(location),
             };
             Diagnostic {
@@ -53,23 +60,48 @@ pub(crate) fn diagnostics(diagnostics: Vec<parse_result::Diagnostic>) -> Vec<Dia
         .collect()
 }
 
+// Reject disproven locations without guessing the intended diagnostic range.
+fn consistent_endpoints(source: &str, span: Span) -> bool {
+    if source.get(span.start_byte..span.end_byte).is_none() {
+        return false;
+    }
+    [
+        (span.start_byte, (span.start_line, span.start_column)),
+        (span.end_byte, (span.end_line, span.end_column)),
+    ]
+    .into_iter()
+    .all(|(offset, expected)| {
+        let prefix = &source.as_bytes()[..offset];
+        let line = prefix.iter().filter(|&&byte| byte == b'\n').count() + 1;
+        let column = prefix
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(offset + 1, |newline| offset - newline);
+        u32::try_from(line).ok() == Some(expected.0)
+            && u32::try_from(column).ok() == Some(expected.1)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn recovery_diagnostics_keep_details_and_only_unambiguous_source_coordinates() {
-        let converted = diagnostics(vec![
-            parse_result::Diagnostic::error("invalid syntax")
-                .with_code("rpmspec/E001")
-                .with_span(Span::new(2, 8, 1, 3, 2, 4))
-                .with_note("the recovery context"),
-            parse_result::Diagnostic::warning("unlocated warning"),
-            parse_result::Diagnostic::warning("unterminated macro")
-                .with_code(parse_result::codes::W_UNTERMINATED_MACRO)
-                .with_span(Span::new(12, 12, 1, 13, 1, 13))
-                .with_note("the macro recovery context"),
-        ]);
+        let converted = diagnostics(
+            "",
+            vec![
+                parse_result::Diagnostic::error("invalid syntax")
+                    .with_code("rpmspec/E001")
+                    .with_span(Span::new(2, 8, 1, 3, 2, 4))
+                    .with_note("the recovery context"),
+                parse_result::Diagnostic::warning("unlocated warning"),
+                parse_result::Diagnostic::warning("unterminated macro")
+                    .with_code(parse_result::codes::W_UNTERMINATED_MACRO)
+                    .with_span(Span::new(12, 12, 1, 13, 1, 13))
+                    .with_note("the macro recovery context"),
+            ],
+        );
         assert_eq!(
             serde_json::to_value(&converted).unwrap(),
             serde_json::json!([
@@ -88,5 +120,38 @@ mod tests {
             String::from_utf8(output).unwrap(),
             "error[rpmspec/E001] at 1:3: invalid syntax\n  note: the recovery context\nwarning: unlocated warning\nwarning[rpmspec/W0004]: unterminated macro\n  note: the macro recovery context\n"
         );
+    }
+
+    #[test]
+    fn conditional_locations_require_valid_byte_boundaries_and_matching_endpoints() {
+        let source = "é\r\nx";
+        for (span, retained) in [
+            (Span::new(0, 2, 1, 1, 1, 3), true),
+            (Span::new(4, 4, 2, 1, 2, 1), true),
+            (Span::new(4, 5, 2, 1, 2, 2), true),
+            (Span::new(0, 2, 1, 1, 1, 2), false),
+            (Span::new(4, 5, 1, 5, 2, 2), false),
+            (Span::new(1, 2, 1, 2, 1, 3), false),
+            (Span::new(4, 6, 2, 1, 2, 3), false),
+        ] {
+            let converted = diagnostics(
+                source,
+                vec![
+                    parse_result::Diagnostic::error("conditional error")
+                        .with_code(parse_result::codes::E_UNTERMINATED_CONDITIONAL)
+                        .with_span(span)
+                        .with_note("original context"),
+                ],
+            );
+            assert_eq!(converted[0].span.is_some(), retained, "{span:?}");
+            let expected_span = retained.then(|| serde_json::to_value(location(span)).unwrap());
+            assert_eq!(
+                serde_json::to_value(&converted).unwrap(),
+                serde_json::json!([{
+                    "severity":"error", "code":"rpmspec/E0002", "span":expected_span,
+                    "message":"conditional error", "notes":["original context"]
+                }])
+            );
+        }
     }
 }

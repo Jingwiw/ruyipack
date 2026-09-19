@@ -29,7 +29,7 @@ impl<'src> Inspection<'src> {
         Self {
             source: spec.source,
             view: main_package_tag_view(spec.parsed.spec),
-            diagnostics: diagnostic::diagnostics(spec.parsed.diagnostics),
+            diagnostics: diagnostic::diagnostics(spec.source, spec.parsed.diagnostics),
         }
     }
 
