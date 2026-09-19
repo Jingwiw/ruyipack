@@ -300,6 +300,10 @@ impl Snapshot {
         for scalar in &self.scalars {
             let value = string(edited, &scalar.field)?;
             valid_text(value, &scalar.field, scalar.multiline)?;
+            if scalar.field == "package.url" {
+                crate::source::reject_credentials(value)
+                    .map_err(|reason| format!("package.url: {reason}"))?;
+            }
             if scalar.field.starts_with("sources.") && scalar.field.ends_with(".url") {
                 valid_source_url(value, &scalar.field, &fields)?;
             }

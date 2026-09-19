@@ -541,6 +541,8 @@ fn source_url(field: &str, value: &str, package: &PackageInput) -> Result<(), Re
 
 fn https_url(field: &str, value: &str) -> Result<(), RenderError> {
     single_line(field, value)?;
+    crate::source::reject_credentials(value)
+        .map_err(|reason| RenderError::Invalid(format!("{field}: {reason}")))?;
     let scheme = crate::source::validate_url(value)
         .map_err(|reason| RenderError::Invalid(format!("{field}: {reason}")))?;
     require_https(field, scheme)

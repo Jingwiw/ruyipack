@@ -499,3 +499,80 @@ fn remote_asset_digests_stay_bound_to_the_adjacent_source_identity() {
         );
     }
 }
+
+#[test]
+fn authoring_rejects_url_credentials_without_echoing_them() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("ed.spec"), SPEC).unwrap();
+    for url in [
+        "https://demo:private-marker@example.org/archive.tar.gz",
+        "https://private-marker@example.org/archive.tar.gz",
+        "https://:private-marker@example.org/archive.tar.gz",
+    ] {
+        for field in ["package.url", "sources.0.url"] {
+            let output = run(
+                directory.path(),
+                &[
+                    "edit",
+                    "ed.spec",
+                    "--set",
+                    &format!("{field}={url}"),
+                    "--stdout",
+                ],
+            );
+            rejected(&output, "URL credentials are not allowed");
+            assert!(!String::from_utf8_lossy(&output.stderr).contains("private-marker"));
+        }
+        for old in ["https://www.gnu.org/software/ed/", URL] {
+            fs::write(directory.path().join("ed.toml"), MANIFEST.replace(old, url)).unwrap();
+            let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+            rejected(&output, "URL credentials are not allowed");
+            assert!(!String::from_utf8_lossy(&output.stderr).contains("private-marker"));
+            assert!(!directory.path().join("ed.spec.new").exists());
+        }
+    }
+    assert_eq!(
+        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+        SPEC
+    );
+}
+
+#[test]
+fn unselected_credential_urls_do_not_block_version_edits_or_prevent_repairs() {
+    let directory = tempfile::tempdir().unwrap();
+    let credential = "https://demo:private-marker@example.org/archive.tar.gz";
+    let source = SPEC
+        .replace(URL, credential)
+        .replace("https://www.gnu.org/software/ed/", credential);
+    fs::write(directory.path().join("ed.spec"), &source).unwrap();
+    let output = run(
+        directory.path(),
+        &["edit", "ed.spec", "--set", "package.version=2", "--stdout"],
+    );
+    reviewed(&output, "package.version");
+    assert_eq!(
+        output.stdout,
+        source
+            .replace("Version:        1.22.5", "Version:        2")
+            .as_bytes()
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("private-marker"));
+    let repaired = run(
+        directory.path(),
+        &[
+            "edit",
+            "ed.spec",
+            "--set",
+            "package.url=https://example.org/",
+            "--set",
+            "sources.0.url=https://example.org/archive.tar.gz",
+            "--stdout",
+        ],
+    );
+    reviewed(&repaired, "sources.0.url");
+    assert!(!String::from_utf8_lossy(&repaired.stdout).contains("private-marker"));
+    assert_eq!(
+        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+        source
+    );
+}

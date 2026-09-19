@@ -19,6 +19,7 @@ pub(crate) enum Scheme {
 /// RPM syntax is recognized before URL validation, including escaped literal percent signs.
 pub(crate) fn validate_expression(value: &str, fields: &[(&str, &str)]) -> Result<Scheme, String> {
     let resolved = crate::spec::expression::substitute_fields(value, fields)?;
+    reject_credentials(&resolved)?;
     validate_url(&resolved)
 }
 
@@ -54,6 +55,20 @@ pub(crate) fn validate_url(value: &str) -> Result<Scheme, String> {
         "https" => Ok(Scheme::Https),
         _ => Err(invalid()),
     }
+}
+
+/// Authoring policy, separate from syntax checks on unselected existing metadata.
+/// Never put the URL or its credentials into the diagnostic.
+pub(crate) fn reject_credentials(value: &str) -> Result<(), String> {
+    let Ok(parsed) = Url::parse(value) else {
+        return Ok(()); // The syntax validator owns malformed-URL diagnostics.
+    };
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(
+            "URL credentials are not allowed; supply authentication outside the SPEC".into(),
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_sha256(value: &str) -> Result<(), &'static str> {
