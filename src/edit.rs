@@ -358,6 +358,7 @@ fn candidate(
         ));
     }
     let report = check::analyze(&parsed);
+    // TODO: Offer source-digest review reminders after Version or URL edits.
     Ok((rendered, report))
 }
 

@@ -381,15 +381,19 @@ Before writing, edit checks the TOML shape, renders source-local replacements,
 parses the candidate, compares the edited fields, and runs the same static checks
 as `check`. Text outside the selected replacements is preserved. Macro expressions
 remain expressions: this does not download archives, verify patch applicability,
-evaluate macros, or build packages.
+evaluate macros, or build packages. Changing Version or Source does not refresh
+recorded digests; review them and any patches before building or submitting.
 
 The editable subset includes main-package metadata, numbered remote Sources with
-adjacent SHA-256 markers, declarative BuildSystem, BuildRequires, descriptions,
+adjacent RemoteAsset markers (with or without SHA-256), declarative BuildSystem,
+BuildRequires, descriptions,
 simple file lists, header metadata, comments, and changelog text. Without `--field`,
 editing opens a full view, which requires a mapping for the whole source. This is
 limited to simple SPECs; VCS tags and build scripts require a selected-field view.
 `--field` and `--set` map only the selected fields, so unrelated constructs such
 as VCS tags or build scripts remain untouched.
+A view maps existing values without certifying their validity. An invalid Source
+URL can be replaced, but the final URL must pass validation before writing.
 Ambiguous selected fields and parser errors stop the operation. Deleting keys or
 adding unmapped groups is rejected; supported existing lists can change.
 

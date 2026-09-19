@@ -31,6 +31,7 @@ pub(crate) struct Diagnostic {
 }
 
 /// Writes every recoverable issue reported by the parser.
+// TODO: Include the input path in human-readable parser diagnostics.
 pub(crate) fn write(diagnostics: &[Diagnostic], writer: &mut impl Write) -> io::Result<()> {
     for diagnostic in diagnostics {
         let severity = match diagnostic.severity {
