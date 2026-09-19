@@ -6,14 +6,29 @@
 
 //! Field traversal without RPM evaluation.
 
-use rpm_spec::ast::{PreambleItem, Span, SpecFile, Tag, TagValue};
+use rpm_spec::ast::{PreambleItem, Span, SpecFile, SpecItem, Tag, TagValue};
 use rpm_spec_analyzer::visit::Visit;
 
 use crate::check::license::LicenseCheck;
 
-pub(super) fn license(spec: &SpecFile<Span>) -> LicenseCheck {
+pub(super) fn license(spec: &SpecFile<Span>, source: &str) -> LicenseCheck {
     let mut visitor = LicenseVisitor(LicenseCheck::default());
     visitor.visit_spec(spec);
+    // Match the top-level comments exposed as spec.license by header editing,
+    // not declaration-like text inside descriptions or shell bodies.
+    for item in &spec.items {
+        if let SpecItem::Comment(comment) = item
+            && let Some(raw) = source.get(comment.data.start_byte..comment.data.end_byte)
+            && let Some(value) =
+                crate::spec_metadata::license_declaration(raw.strip_suffix('\n').unwrap_or(raw))
+        {
+            visitor.0.check(
+                "spec.license",
+                Some(value),
+                super::diagnostic::location(comment.data),
+            );
+        }
+    }
     visitor.0
 }
 
@@ -26,8 +41,11 @@ impl<'ast> Visit<'ast> for LicenseVisitor {
                 TagValue::Text(text) => text.literal_str(),
                 _ => None,
             };
-            self.0
-                .check(literal, super::diagnostic::location(item.data));
+            self.0.check(
+                "package.license",
+                literal,
+                super::diagnostic::location(item.data),
+            );
         }
     }
 }

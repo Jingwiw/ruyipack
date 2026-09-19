@@ -8,9 +8,8 @@
 # SPECS/cmake/macros.buildsystem.cmake at commit
 # bc722d18574a5805aca1ab1a03bf1ce323489506, SHA-256
 # 49ec12458057fffe481406fa4ddf6ee1c9373c3a682f2dac412d266602413c37.
-# openRuyi mandates no build tools for CMake; cmake and ninja are supplied by the
-# OBS project Prefer list, so build-requires is empty and RPK004 enforces nothing.
-# Maintainers still declare the libraries and tools their package uses.
+# This profile does not prefill or enforce a common set of required tools.
+# Declare the tools and libraries the package uses and verify the target environment.
 name = "cmake"
 build-requires = []
 

@@ -7,7 +7,6 @@
 //! Manifest-to-SPEC rendering with the shared static checks.
 
 pub(crate) mod manifest;
-pub(crate) mod profile;
 pub(crate) mod spec;
 
 use crate::{
@@ -19,7 +18,7 @@ use crate::{
 /// Renders one manifest without file or terminal I/O.
 pub(crate) fn run(source: &str) -> Result<RenderedSpec, RenderError> {
     let manifest = manifest::parse(source)?;
-    let profile = profile::load(&manifest)?;
+    let profile = crate::profile::load()?;
     let contents = spec::render(&manifest, &profile);
     let parsed = ParsedSpec::parse(&contents);
     verify::run(&parsed, &manifest, &profile)?;

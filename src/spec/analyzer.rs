@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! The fixed analyzer integration; product rule selection stays with the caller.
+//! Adapter for the selected rpm-spec-analyzer rules.
 
 use rpm_spec::ast::{Span, SpecFile};
 use rpm_spec_analyzer::{

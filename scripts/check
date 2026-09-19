@@ -16,7 +16,7 @@ command -v reuse >/dev/null 2>&1 || {
     exit 2
 }
 command -v cargo-deny >/dev/null 2>&1 || {
-    echo "cargo-deny is required for this gate: cargo install cargo-deny" >&2
+    echo "cargo-deny is required for this gate: cargo install cargo-deny --version 0.20.2 --locked" >&2
     exit 2
 }
 

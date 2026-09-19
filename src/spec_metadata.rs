@@ -6,6 +6,11 @@
 
 //! Checks for single-line SPEC values and file header metadata.
 
+/// Reads the SPDX declaration shape supported by SPEC header editing.
+pub(crate) fn license_declaration(comment: &str) -> Option<&str> {
+    comment.strip_prefix(concat!("# SPDX-License-", "Identifier: "))
+}
+
 /// Checks a copyright year or inclusive year range.
 pub(crate) fn validate_years(value: &str) -> Result<(), &'static str> {
     let year = |value: &str| {

@@ -16,8 +16,7 @@ use crate::{
     spec::ParsedSpec,
 };
 
-// TODO: Confirm URL-less package policy with openRuyi before changing RPM015.
-// https://github.com/openRuyi-Project/openRuyi/issues/1227
+// Required main-package tags for this profile.
 const REQUIRED_TAG_LINT_IDS: [&str; 6] =
     ["RPM010", "RPM011", "RPM012", "RPM013", "RPM014", "RPM015"];
 

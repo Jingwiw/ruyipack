@@ -31,7 +31,7 @@ use std::{
 };
 
 use clap::Parser;
-use cli::{ArtifactFormat, Cli, Command};
+use cli::{Cli, Command};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -42,7 +42,6 @@ fn main() -> ExitCode {
         Command::Inspect { spec, format } => exit_for(inspect::run(&spec, format).map(|()| true)),
         Command::Gen {
             name,
-            format: ArtifactFormat::Spec,
             manifest,
             output,
         } => exit_for(generate::run(&name, manifest.as_deref(), &output).map(|()| true)),

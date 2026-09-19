@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! SPDX expression checks for package License tags.
+//! SPDX expression checks for package and SPEC file licenses.
 
 use crate::{
     check_report::{Finding, SelectedRule, Severity},
@@ -24,20 +24,20 @@ pub(crate) struct LicenseCheck {
 
 impl LicenseCheck {
     /// Checks a literal value, or records that syntax requires RPM evaluation.
-    pub(crate) fn check(&mut self, literal: Option<&str>, span: SourceLocation) {
+    pub(crate) fn check(&mut self, field: &str, literal: Option<&str>, span: SourceLocation) {
         let (severity, message) = match literal {
             Some(value) => match validate_expression(value) {
                 Ok(_) => return,
                 Err(error) => (
                     RULE.severity,
-                    format!("package.license: invalid or unrecognized SPDX expression: {error}"),
+                    format!("{field}: invalid or unrecognized SPDX expression: {error}"),
                 ),
             },
             None => {
                 self.unresolved = true;
                 (
                     Severity::Warn,
-                    "package.license: SPDX validation requires an evaluated License value".into(),
+                    format!("{field}: SPDX validation requires an evaluated License value"),
                 )
             }
         };

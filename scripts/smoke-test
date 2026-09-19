@@ -26,7 +26,8 @@ cd "$work"
 cp ed.spec original.spec
 "$binary" edit ed.spec --field package.version --view > version.toml
 "$binary" edit ed.spec --set package.version=1.22.6 --diff > version.diff
-test -s version.toml && test -s version.diff
+test -s version.toml
+test -s version.diff
 cmp ed.spec original.spec
 if "$binary" edit ed.spec --set 'package.version=1 2'; then
     echo "An invalid Version was accepted." >&2

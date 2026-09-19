@@ -43,8 +43,9 @@ description = '''
 # noarch = true
 {% if full %}
 # requires is what the installed package needs at runtime; build-requires is what
-# the build needs. They are separate lists. openRuyi only uses noarch, not other
-# BuildArch values. Subpackages are not modeled yet; these apply to the main package.
+# the build needs. This manifest supports noarch, not arbitrary BuildArch values.
+# These fields apply to the main package; subpackages declare
+# their own requires and provides below.
 {% endif %}
 
 [package.vcs]
@@ -102,4 +103,20 @@ entries = []
 {% if full %}
 # Inspect the installation result and list the files owned by this package; do not guess from the source tree.
 # A nonempty license/doc list also contributes packaged files, but does not replace the installed payload.
+
+# Optional subpackages ---------------------------------------------------------
+# Uncomment and adapt this block only when a separate RPM is needed.
+# The table key is a suffix: devel produces {{ name }}-devel. For a complete
+# package name, use that name as the key and set full-name = true.
+# Each subpackage requires its own nonempty summary and description.
+# requires and provides are optional lists of RPM expressions, as for the main package.
+# files supports license, doc, and entries; omit it or leave it empty for a package with no files.
+# [subpackages.devel]
+# full-name = false
+# summary = "Development files for %{name}"
+# description = "Headers and development files for %{name}."
+# requires = ["%{name} = %{version}-%{release}"]
+# provides = ["%{name}-development = %{version}-%{release}"]
+# [subpackages.devel.files]
+# entries = ["%{_includedir}/%{name}.h"]
 {% endif %}

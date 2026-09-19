@@ -70,6 +70,7 @@ fn comment_modes_share_fields_and_filled_scaffolds_use_gen() {
     assert_eq!(scaffold["sources"]["0"]["sha256"].as_str(), Some(""));
     assert!(scaffold["package"]["vcs"].as_table().unwrap().is_empty());
     assert!(scaffold.get("build").is_none());
+    assert!(scaffold.get("subpackages").is_none());
     assert!(!output_text(&standard.stdout).contains("SPDX-FileCopyrightText"));
     assert!(!output_text(&full.stdout).contains("RuyiPack"));
     assert_eq!(fs::read_dir(root).unwrap().count(), 0);
@@ -102,6 +103,39 @@ fn comment_modes_share_fields_and_filled_scaffolds_use_gen() {
         output_text(&generated.stdout),
         include_str!("fixtures/ed.spec")
     );
+}
+
+#[test]
+fn full_comments_offer_optional_subpackages_that_feed_generation() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let full = run(root, &["init", "ed", "--stdout", "--comments", "full"]);
+    success(&full);
+
+    // Consume the real commented example, allowing blank comments and spacing.
+    let example = output_text(&full.stdout)
+        .lines()
+        .map(str::trim_start)
+        .skip_while(|line| {
+            line.strip_prefix('#').map(str::trim_start) != Some("[subpackages.devel]")
+        })
+        .take_while(|line| line.is_empty() || line.starts_with('#'))
+        .map(|line| line.strip_prefix('#').unwrap_or_default().trim_start())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!example.is_empty(), "missing commented subpackage example");
+    let source = include_str!("../examples/ed/ed.toml").to_owned() + "\n" + &example;
+    fs::write(root.join("ed.toml"), source).unwrap();
+    let generated = run(root, &["gen", "ed", "--stdout"]);
+    success(&generated);
+    let spec = output_text(&generated.stdout);
+    for section in ["%package", "%description", "%files"] {
+        assert!(
+            spec.lines()
+                .any(|line| line.split_whitespace().eq([section, "devel"])),
+            "missing {section} devel: {spec}"
+        );
+    }
 }
 
 #[test]

@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+name: Check
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: 1.91.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt --component clippy
+      - name: Install gate tools
+        run: |
+          python3 -m venv "$RUNNER_TEMP/reuse"
+          "$RUNNER_TEMP/reuse/bin/python" -m pip install reuse==6.2.0
+          echo "$RUNNER_TEMP/reuse/bin" >> "$GITHUB_PATH"
+          cargo install cargo-deny --version 0.20.2 --locked
+      - name: Check source
+        run: ./scripts/check
+      - name: Test source installation
+        run: |
+          cargo install --path . --locked --root "$RUNNER_TEMP/ruyipack-install"
+          ./scripts/smoke-test "$RUNNER_TEMP/ruyipack-install/bin/ruyipack"

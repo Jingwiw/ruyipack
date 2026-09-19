@@ -13,8 +13,7 @@ copyright-holders = [
 release = "%autorelease"
 changelog = "%autochangelog"
 no-public-vcs-comment = "# VCS: No VCS link available"
-# RemoteAsset marker with a sha256 digest, and the bare marker openRuyi accepts
-# when no digest is recorded (about 40% of cmake/meson packages use the bare form).
+# Use the bare RemoteAsset marker when no digest is recorded.
 remote-asset-prefix = "#!RemoteAsset:  sha256:"
 remote-asset-bare = "#!RemoteAsset"
 preamble-value-column = 16

@@ -4,14 +4,10 @@
 #
 # SPDX-License-Identifier: MulanPSL-2.0
 
-# Unlike CMake, openRuyi ships no build-system macro file of its own for Meson:
-# the stage macros are defined by upstream Meson's data/macros.meson, bundled in
-# the meson 1.10.2 tarball and installed unchanged by openRuyi's
+# Stage macros: Meson 1.10.2 data/macros.meson, installed by openRuyi's
 # SPECS/meson/meson.spec at commit 9a29ae4b294e31ed053bf8023262dc86b713ab0c.
-# There is therefore no openRuyi blob to hash; the action names below were
-# confirmed from Meson SPECs in the openRuyi corpus.
-# openRuyi mandates no build tools for Meson; meson and ninja are supplied by the
-# OBS project Prefer list, so build-requires is empty and RPK004 enforces nothing.
+# This profile does not prefill or enforce a common set of required tools.
+# Declare the tools and libraries the package uses and verify the target environment.
 name = "meson"
 build-requires = []
 

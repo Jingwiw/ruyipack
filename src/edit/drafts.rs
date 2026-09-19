@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Editable business fields and the original bytes needed to apply them safely.
+//! Saved editable fields and the original bytes needed to apply them safely.
 
 use std::{
     collections::HashSet,

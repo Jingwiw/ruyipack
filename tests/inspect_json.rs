@@ -158,6 +158,86 @@ fn inspection_and_check_share_complete_parser_diagnostics() {
 }
 
 #[test]
+fn text_diagnostics_do_not_present_body_local_offsets_as_source_locations() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("diagnostic.spec");
+    let source = include_str!("fixtures/ed.spec")
+        .replace("Version:        1.22.5", "Version:        %{unfinished")
+        .replace(
+            "Summary:        A line-oriented text editor",
+            "Summary:        Démo \\\n  %{unfinished\nGroup:          100% %{} %{shrink\nAutoReq:        invalid",
+        );
+    fs::write(&path, &source).unwrap();
+    let inspected = report(&command(&path).output().unwrap());
+    let checked = support::command()
+        .arg("check")
+        .arg(&path)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert!(checked.status.success(), "{checked:?}");
+    assert!(checked.stderr.is_empty());
+    let checked = support::json_line(&checked);
+    assert_eq!(
+        inspected["parser_diagnostics"],
+        checked["parser_diagnostics"]
+    );
+    let diagnostics = inspected["parser_diagnostics"].as_array().unwrap();
+    let text_codes = [
+        "rpmspec/W0001",
+        "rpmspec/W0003",
+        "rpmspec/W0004",
+        "rpmspec/W0021",
+    ];
+    for code in text_codes {
+        let matching: Vec<_> = diagnostics.iter().filter(|d| d["code"] == code).collect();
+        assert!(!matching.is_empty(), "missing {code}: {diagnostics:?}");
+        for diagnostic in matching {
+            assert_eq!(diagnostic["severity"], "warning");
+            assert!(diagnostic["span"].is_null(), "{diagnostic}");
+        }
+    }
+
+    // A source-anchored diagnostic and AST node still slice the original bytes.
+    let boolean = diagnostics
+        .iter()
+        .find(|d| d["code"] == "rpmspec/W0017")
+        .unwrap();
+    let span = &boolean["span"];
+    let start = span["start_byte"].as_u64().unwrap() as usize;
+    let end = span["end_byte"].as_u64().unwrap() as usize;
+    assert_eq!(&source[start..end], "AutoReq:        invalid\n");
+    let boolean_line = source[..start].lines().count() + 1;
+    assert_eq!(span["start_line"], boolean_line);
+    let version = &inspected["preamble"][1]["Preamble"]["data"];
+    let start = version["start_byte"].as_u64().unwrap() as usize;
+    let end = version["end_byte"].as_u64().unwrap() as usize;
+    assert_eq!(&source[start..end], "Version:        %{unfinished\n");
+    for action in ["inspect", "check"] {
+        let human = support::command().arg(action).arg(&path).output().unwrap();
+        assert!(human.status.success(), "{human:?}");
+        let stderr = support::output_text(&human.stderr);
+        for code in text_codes {
+            assert!(
+                stderr
+                    .lines()
+                    .any(|line| line.starts_with(&format!("warning[{code}]:"))),
+                "{stderr}"
+            );
+            assert!(
+                !stderr.contains(&format!("warning[{code}] at ")),
+                "{stderr}"
+            );
+        }
+        assert!(
+            stderr.contains(&format!("warning[rpmspec/W0017] at {boolean_line}:1:")),
+            "{stderr}"
+        );
+    }
+    assert_eq!(fs::read_to_string(&path).unwrap(), source);
+}
+
+#[test]
 fn empty_and_unreadable_inputs_keep_distinct_results() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("input.spec");

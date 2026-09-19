@@ -56,6 +56,6 @@ impl<'src> ParsedSpec<'src> {
     }
 
     pub(crate) fn licenses(&self) -> LicenseCheck {
-        syntax::license(&self.parsed.spec)
+        syntax::license(&self.parsed.spec, self.source)
     }
 }

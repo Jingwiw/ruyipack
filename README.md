@@ -8,7 +8,15 @@ SPDX-License-Identifier: MulanPSL-2.0
 
 # RuyiPack
 
-RuyiPack inspects, checks, edits selected fields in, and generates SPEC files for openRuyi.
+RuyiPack helps developers write and review SPEC files for openRuyi. It
+creates a TOML scaffold, generates a SPEC from the completed manifest, and checks
+or edits selected fields in existing SPECs.
+
+This is an early **source preview**. Platform support is experimental, and CLI,
+manifest, and report formats may change.
+Generated SPECs still need maintainer review and native RPM/build validation.
+RuyiPack does not discover upstream build requirements, resolve dependencies,
+or automatically build and package software.
 
 ## Installation
 
@@ -22,114 +30,31 @@ ruyipack --version
 
 Cargo installs the executable in `$CARGO_HOME/bin` (normally `$HOME/.cargo/bin`).
 Add that directory to `PATH`. Keep `Cargo.lock` with source distributions;
-`--locked` uses the reviewed dependency versions.
+`--locked` uses the dependency versions recorded in the lock file.
 
-To check a source checkout and test the installed executable:
+## Quick start
 
-```sh
-./scripts/check
-./scripts/smoke-test "$HOME/.cargo/bin/ruyipack"
-```
-
-`scripts/check` runs formatting, locked tests, Clippy, `reuse lint`, and
-`cargo deny --locked check`; it requires the `reuse` and `cargo-deny` tools on `PATH`.
-The smoke test uses temporary files and does not modify packages in the checkout.
-The commands below perform static analysis without executing RPM macros or builds.
-
-## Inspect
-
-
-Inspect an existing SPEC without changing it:
+From the source directory, try the included manifest in a temporary directory:
 
 ```sh
-ruyipack inspect ed.spec
-ruyipack inspect ed.spec --format json
+work=$(mktemp -d)
+cp examples/ed/ed.toml "$work/ed.toml"
+ruyipack gen ed --manifest "$work/ed.toml"
+ruyipack check "$work/ed.spec"
+ruyipack inspect "$work/ed.spec"
+ruyipack edit "$work/ed.spec" --set package.version=1.22.6 --diff
+printf 'Example files: %s\n' "$work"
 ```
 
-Human output shows normalized main-package tags and their conditional structure.
-JSON includes the same parser tree, the input path and SHA-256, the parser version
-and revision, and all parser diagnostics. Diagnostics use the same lowercase
-severity names as `check --format json` and stay in JSON rather than stderr.
-Parser warnings and recoverable errors do not change inspection's success status;
-use `check` to apply the selected static rules.
+This generates and checks a SPEC, then previews a version change without applying
+it. The files remain in the printed directory for inspection; the checkout is
+unchanged. No source archives are downloaded, RPM macros evaluated, or packages
+built.
 
-JSON `value` fields are parser syntax, not evaluated RPM values. Node `data` spans
-refer to the original UTF-8 input: byte offsets are zero-based and end-exclusive;
-line and byte-column numbers are one-based. Verify the input digest before using
-these offsets to read source text. Spans are parser locations, not guaranteed
-value-only or safe replacement ranges. The view omits macro definitions and section
-bodies and does not evaluate conditions. The preamble tree uses the recorded
-`rpm-spec` revision's serialization format.
-
-## Edit
-
-Select existing fields to edit through TOML:
-
-```sh
-ruyipack edit ed.spec --field package.version
-ruyipack edit ed.spec --set package.version=1.22.6 --diff
-ruyipack edit ed.spec --set package.version=1.22.6
-ruyipack edit ed.spec --field package.version --view
-```
-
-The editor command is selected from `--editor`, `$VISUAL`, `$EDITOR`, then `vim`.
-For VS Code, use `--editor 'code --wait'`; close the edited tabs to return to the
-command. After the editor exits successfully, checked edits are written to the
-source SPEC. Editor output stays on stderr.
-Commands are split into arguments without running a shell.
-
-`--set FIELD=VALUE` replaces an existing string field; repeat the option for more
-fields. Values are literal strings, including `=` characters after the first one.
-Use the editor for arrays. `--field` selects existing supported fields or tables
-and can be repeated. Unselected fields retain their original values.
-
-Before publication, edit checks the TOML shape, renders source-local replacements,
-parses the candidate, compares the edited fields, and runs the same static checks
-as `check`. Text outside the selected replacements is preserved. Macro expressions
-remain expressions: this does not download archives, verify patch applicability,
-evaluate macros, or build packages.
-
-The editable subset includes main-package metadata, numbered remote Sources with
-adjacent SHA-256 markers, declarative BuildSystem, BuildRequires, descriptions,
-simple file lists, header metadata, comments, and changelog text. Without `--field`,
-editing opens a full view, which requires a mapping for the whole source. This is
-limited to simple SPECs; VCS tags and build scripts require a selected-field view. `--field` and `--set` map only the selected fields,
-so unrelated constructs such as VCS tags or build scripts remain untouched.
-Ambiguous selected fields and parser errors stop the operation. Deleting keys or
-adding unmapped groups is rejected; supported existing lists can change.
-
-Use `--diff` or `--stdout` for a preview, or `-o FILE` for a separate destination.
-Replacing a different existing output file requires confirmation; `--force` with
-`--output` allows replacement without prompting. `--stdout` and
-`--output` accept one SPEC; `--diff` can preview a batch. Source changes detected
-after export or while waiting for the editor or menu stop publication, even with
-`--force`. Editor work is retained when validation fails or edits remain unapplied.
-
-Prepare ordinary files for longer or batch editing:
-
-```sh
-ruyipack edit ed.spec other.spec --field package.version --prepare drafts
-code drafts
-ruyipack edit --from drafts --check
-ruyipack edit --from drafts --check --format json
-ruyipack edit --from drafts --diff
-ruyipack edit --from drafts
-```
-
-`--from` checks and applies the saved drafts without opening an editor. To edit
-those drafts again, add `--editor COMMAND`.
-
-Each draft is named after its source file. The `.state` directory keeps original
-bytes, source identities, and JSON Schemas separate from editable fields. Keep it
-with the drafts. The directory is local to these source paths; prepare new drafts
-after the sources change or after applying a batch. Duplicate source basenames
-require separate draft directories. `--schema` prints a schema for one displayed
-view. Generated drafts declare TOML 1.1 and a local schema for compatible editors.
-
-Batch candidates are all checked before publication. Writes are atomic per file,
-not across the batch; a later I/O failure reports files already written. Inspect
-those files before retrying. Drafts do not update SPEC files in the background;
-write-back happens only after the command validates them.
+For your own package, start with `ruyipack init NAME`, fill in the manifest, and
+run `ruyipack gen NAME`. The scaffold is deliberately incomplete: identify the
+source, dependencies, build steps, and installed files before generating a SPEC.
+Use `ruyipack COMMAND --help` for the available options.
 
 ## Initialize
 
@@ -145,10 +70,15 @@ ruyipack init example --dir packaging --specs-dir /path/to/openRuyi/SPECS
 `init NAME` creates `NAME.toml` in the current directory. `--dir` selects an
 existing output directory; it does not create directories. The template contains
 current authoring fields and optional explicit build stages. No build system is
-selected by default. `--build-system autotools` selects Autotools, prefills its
-required tools from the shared contract, and shows its default actions and optional
-stage overrides. Add archive tools and package-specific dependencies as needed.
+selected by default. `--build-system` accepts `autotools`, `cmake`, or `meson`
+and shows that system's default actions and optional stage overrides. Autotools
+prefills `autoconf`, `automake`, `libtool`, and `make`; CMake and Meson do not
+prefill a common set of required tools. Declare the tools and libraries your
+package needs, and verify that the target RPM environment provides the selected
+macros. Selecting a build system does not install tools or validate that environment.
 `--comments full` adds guidance without changing the field values.
+It also includes a commented manual subpackage example; no subpackages are
+enabled by default.
 
 The current year and configured Git author are filled in once. Review these
 values, then fill the remaining package information, source digest, build commands,
@@ -172,10 +102,10 @@ SPEC.
 
 ## Generate
 
-Generate a SPEC from an Autotools manifest:
+Preview a SPEC from the included Autotools manifest:
 
 ```sh
-ruyipack gen ed --manifest examples/ed/ed.toml
+ruyipack gen ed --manifest examples/ed/ed.toml --stdout
 ```
 
 The command validates the authoring fields, parses the generated SPEC, compares its
@@ -265,6 +195,47 @@ the main script, and `prepend` and `append` add scripts before and after it.
 Omitting `[build]` emits no build stages. Declare the tools your commands need
 in `[build-requires]`; no build-system requirements are added or enforced.
 
+### Manual subpackages
+
+Declare each handwritten subpackage in a `[subpackages.NAME]` table:
+
+```toml
+[subpackages.devel]
+summary = "Development files for %{name}"
+description = "Headers and development files for %{name}."
+requires = ["%{name} = %{version}-%{release}"]
+provides = ["%{name}-development = %{version}-%{release}"]
+
+[subpackages.devel.files]
+entries = ["%{_includedir}/%{name}.h"]
+
+[subpackages.example-tools]
+full-name = true
+summary = "Tools for %{name}"
+description = "A dependency-only package selecting tools for %{name}."
+requires = ["%{name}"]
+```
+
+By default, the table key is a suffix: `devel` generates `%package devel` and
+names the RPM `<main-name>-devel`. With `full-name = true`, the key is the entire
+name and generates `%package -n example-tools`. The matching `%description`
+and `%files` sections use the same naming form. Names must be literal RPM names;
+the main package and every subpackage must have distinct resulting names.
+
+Each subpackage needs its own nonempty `summary` and `description`. Optional
+`requires` and `provides` lists use the same RPM expressions as the main package.
+The optional `files` table accepts `license`, `doc`, and `entries`, also with the
+main package's file-list rules. Omitted or empty subpackage files produce an empty
+`%files` section for a dependency-only package; the main package still requires
+at least one file. Keep file ownership separate when dividing installed files.
+
+Subpackage-specific license, URL, architecture, conditional declarations, and
+macro-generated subpackage families are not modeled by this authoring subset.
+Generation statically checks and compares every declared subpackage; it does not
+verify installed file ownership, resolve dependencies, or build the RPMs.
+
+### Output
+
 `gen NAME` reads `./NAME.toml` by default; `--manifest` selects another input file.
 The SPEC is written beside the manifest unless `-o, --output FILE` selects another
 path. Relative output paths are resolved from the current directory. The parent
@@ -315,9 +286,36 @@ be available as unambiguous static literals. Literal percent escapes use `%%`
 SHA-256 values contain 64 hexadecimal digits, with their original case preserved.
 
 Declare additional remote inputs as `[sources.1]`, `[sources.2]`, and so on, each
-with `url` and `sha256`. Source numbers are preserved and printed in numeric order.
-`sources.0` identifies the primary source. The Autotools default unpacking step
-uses it as the source archive.
+with `url` and an optional `sha256`. Omitting the digest emits a bare
+`#!RemoteAsset` and a warning; an empty digest is rejected. Source numbers are
+preserved and printed in numeric order. `sources.0` identifies the primary source.
+The Autotools default unpacking step uses it as the source archive.
+
+## Inspect
+
+Inspect an existing SPEC without changing it:
+
+```sh
+ruyipack inspect ed.spec
+ruyipack inspect ed.spec --format json
+```
+
+Human output shows normalized main-package tags and their conditional structure.
+JSON includes the same parser tree, the input path and SHA-256, the parser version
+and revision, and all parser diagnostics. Diagnostics use the same lowercase
+severity names as `check --format json` and stay in JSON rather than stderr.
+Certain macro-parser diagnostics have `null` spans when their source coordinates
+are not reliable; their severity and message are still reported.
+Parser warnings and recoverable errors do not change inspection's success status;
+use `check` to apply the selected static rules.
+
+JSON `value` fields are parser syntax, not evaluated RPM values. Node `data` spans
+refer to the original UTF-8 input: byte offsets are zero-based and end-exclusive;
+line and byte-column numbers are one-based. Verify the input digest before using
+these offsets to read source text. Spans are parser locations, not guaranteed
+value-only or safe replacement ranges. The view omits macro definitions and section
+bodies and does not evaluate conditions. The preamble tree uses the recorded
+`rpm-spec` revision's serialization format.
 
 ## Check
 
@@ -326,11 +324,21 @@ ruyipack check ed.spec
 ruyipack check ed.spec --format json
 ```
 
+A `pass` result means the selected static rules passed; parser warnings may still
+be present. Read the warnings in human output or the `parser_diagnostics` array
+in JSON output.
+
 `check`, `gen`, and `edit` share the selected SPEC checks, including SPDX
-expressions in package `License` tags (`RPK001`). Literal expressions are checked
-in main packages, subpackages, and conditional branches. Unresolved values prevent a successful check; the status is incomplete unless
-another finding already proves a failure. No macros are executed. This
-checks the declaration, not whether it matches the upstream source license.
+expressions in package `License` tags and recognized top-level SPDX file-license
+comments (`RPK001`). The latter declare the SPEC
+file's license, not the packaged software's license. Missing file-license comments
+are not rejected by this expression check; each recognized declaration is checked
+without requiring a particular license. Comments inside scripts are not declarations.
+Package expressions are checked in main packages, subpackages, and conditional
+branches. Unresolved values prevent
+a successful check; the status is incomplete unless another finding already proves
+a failure. No macros are executed. This checks the declaration, not whether it
+matches the upstream source license.
 License IDs are case-insensitive; operators use uppercase. Deprecated IDs remain
 valid. Unknown names are checked against the SPDX data bundled with the tool.
 
@@ -346,3 +354,100 @@ or unevaluated declarations could supply them, the result is incomplete rather
 than a claim that they are absent. Other build systems and context-dependent
 BuildSystem selections are outside this contract check. This is a declaration
 check, not dependency resolution or proof that a package builds.
+
+## Edit
+
+Select existing fields to edit through TOML:
+
+```sh
+ruyipack edit ed.spec --field package.version
+ruyipack edit ed.spec --set package.version=1.22.6 --diff
+ruyipack edit ed.spec --set package.version=1.22.6
+ruyipack edit ed.spec --field package.version --view
+```
+
+The editor command is selected from `--editor`, `$VISUAL`, `$EDITOR`, then `vim`.
+For VS Code, use `--editor 'code --wait'`; close the edited tabs to return to the
+command. After the editor exits successfully, checked edits are written to the
+source SPEC. Editor output stays on stderr.
+Commands are split into arguments without running a shell.
+
+`--set FIELD=VALUE` replaces an existing string field; repeat the option for more
+fields. Values are literal strings, including `=` characters after the first one.
+Use the editor for arrays. `--field` selects existing supported fields or tables
+and can be repeated. Unselected fields retain their original values.
+
+Before writing, edit checks the TOML shape, renders source-local replacements,
+parses the candidate, compares the edited fields, and runs the same static checks
+as `check`. Text outside the selected replacements is preserved. Macro expressions
+remain expressions: this does not download archives, verify patch applicability,
+evaluate macros, or build packages.
+
+The editable subset includes main-package metadata, numbered remote Sources with
+adjacent SHA-256 markers, declarative BuildSystem, BuildRequires, descriptions,
+simple file lists, header metadata, comments, and changelog text. Without `--field`,
+editing opens a full view, which requires a mapping for the whole source. This is
+limited to simple SPECs; VCS tags and build scripts require a selected-field view.
+`--field` and `--set` map only the selected fields, so unrelated constructs such
+as VCS tags or build scripts remain untouched.
+Ambiguous selected fields and parser errors stop the operation. Deleting keys or
+adding unmapped groups is rejected; supported existing lists can change.
+
+Use `--diff` or `--stdout` for a preview, or `-o FILE` for a separate destination.
+Replacing a different existing output file requires confirmation; `--force` with
+`--output` allows replacement without prompting. `--stdout` and
+`--output` accept one SPEC; `--diff` can preview a batch. Source changes detected
+after export or while waiting for the editor or menu stop writing, even with
+`--force`. Editor work is retained when validation fails or edits remain unapplied.
+
+Prepare ordinary files for longer or batch editing:
+
+```sh
+ruyipack edit ed.spec other.spec --field package.version --prepare drafts
+code drafts
+ruyipack edit --from drafts --check
+ruyipack edit --from drafts --check --format json
+ruyipack edit --from drafts --diff
+ruyipack edit --from drafts
+```
+
+`--from` checks and applies the saved drafts without opening an editor. To edit
+those drafts again, add `--editor COMMAND`.
+
+Each draft is named after its source file. The `.state` directory keeps original
+bytes, source identities, and JSON Schemas separate from editable fields. Keep it
+with the drafts. The directory is local to these source paths; prepare new drafts
+after the sources change or after applying a batch. Duplicate source basenames
+require separate draft directories. `--schema` prints a schema for one displayed
+view. Generated drafts declare TOML 1.1 and a local schema for compatible editors.
+
+Batch candidates are all checked before writing. Writes are atomic per file,
+not across the batch; a later I/O failure reports files already written. Inspect
+those files before retrying. Drafts do not update SPEC files in the background;
+write-back happens only after the command validates them.
+
+## Validation and contributing
+
+Run the repository checks before submitting a change:
+
+```sh
+./scripts/check
+./scripts/smoke-test "${CARGO_HOME:-$HOME/.cargo}/bin/ruyipack"
+```
+
+`scripts/check` runs formatting, locked tests, Clippy, `reuse lint`, and
+`cargo deny --locked check`. The validated external tool versions are `reuse`
+6.2.0 and `cargo-deny` 0.20.2; install them separately and make them available on
+`PATH`. The smoke test exercises an installed executable using temporary files
+without changing the checkout. Neither check replaces a native RPM build in the
+target distribution.
+
+Keep changes focused and include a regression test for changed behavior. When
+reporting a problem, include `ruyipack --version`, your OS and architecture, the
+exact command, a minimal input, and the complete output or error. Remove private
+paths, credentials, and other sensitive data from examples before sharing them.
+
+## License
+
+RuyiPack is licensed under [MulanPSL-2.0](LICENSE). File-level license declarations
+and the accompanying texts are recorded in [LICENSES](LICENSES).

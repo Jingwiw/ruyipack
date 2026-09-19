@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! A bounded author-field projection with source-local replacements.
+//! Editable TOML fields mapped to exact replacements in a SPEC source.
 
 use rpm_spec::{
     ast::{FileDirective, FilesContent, Section, Span, SpecItem, Tag},
@@ -555,8 +555,7 @@ impl Snapshot {
             } else if let Some(value) = raw.strip_prefix("# SPDX-FileContributor: ") {
                 let value_range = range.start + raw.len() - value.len()..range.start + raw.len();
                 self.list_item("spec.contributors", value_range, range)?;
-            } else if let Some(value) = raw.strip_prefix(concat!("# SPDX-License-", "Identifier: "))
-            {
+            } else if let Some(value) = crate::spec_metadata::license_declaration(&raw) {
                 self.scalar(
                     "spec.license",
                     range.start + raw.len() - value.len()..range.start + raw.len(),

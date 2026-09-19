@@ -22,18 +22,33 @@ pub(crate) fn location(span: Span) -> SourceLocation {
 }
 
 pub(crate) fn diagnostics(diagnostics: Vec<parse_result::Diagnostic>) -> Vec<Diagnostic> {
+    use parse_result::codes;
+
     diagnostics
         .into_iter()
-        .map(|diagnostic| Diagnostic {
-            severity: match diagnostic.severity {
-                parse_result::Severity::Warning => Severity::Warning,
-                parse_result::Severity::Error => Severity::Error,
-                _ => Severity::Unknown,
-            },
-            code: diagnostic.code,
-            span: diagnostic.span.map(location),
-            message: diagnostic.message,
-            notes: diagnostic.notes,
+        .map(|diagnostic| {
+            // The parser also emits these codes from fresh field/body cursors.
+            // Without coordinate provenance, their spans are not source locations.
+            let span = match diagnostic.code.as_deref() {
+                Some(
+                    codes::W_STRAY_PERCENT
+                    | codes::W_BUILTIN_MISSING_BODY
+                    | codes::W_UNTERMINATED_MACRO
+                    | codes::W_MACRO_EMPTY_NAME,
+                ) => None,
+                _ => diagnostic.span.map(location),
+            };
+            Diagnostic {
+                severity: match diagnostic.severity {
+                    parse_result::Severity::Warning => Severity::Warning,
+                    parse_result::Severity::Error => Severity::Error,
+                    _ => Severity::Unknown,
+                },
+                code: diagnostic.code,
+                span,
+                message: diagnostic.message,
+                notes: diagnostic.notes,
+            }
         })
         .collect()
 }
@@ -43,13 +58,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recovery_diagnostics_keep_severity_notes_and_all_source_coordinates() {
+    fn recovery_diagnostics_keep_details_and_only_unambiguous_source_coordinates() {
         let converted = diagnostics(vec![
             parse_result::Diagnostic::error("invalid syntax")
                 .with_code("rpmspec/E001")
                 .with_span(Span::new(2, 8, 1, 3, 2, 4))
                 .with_note("the recovery context"),
             parse_result::Diagnostic::warning("unlocated warning"),
+            parse_result::Diagnostic::warning("unterminated macro")
+                .with_code(parse_result::codes::W_UNTERMINATED_MACRO)
+                .with_span(Span::new(12, 12, 1, 13, 1, 13))
+                .with_note("the macro recovery context"),
         ]);
         assert_eq!(
             serde_json::to_value(&converted).unwrap(),
@@ -58,14 +77,16 @@ mod tests {
                  "span":{"start_byte":2,"end_byte":8,"start_line":1,"start_column":3,"end_line":2,"end_column":4},
                  "message":"invalid syntax", "notes":["the recovery context"]},
                 {"severity":"warning", "code":null, "span":null,
-                 "message":"unlocated warning", "notes":[]}
+                 "message":"unlocated warning", "notes":[]},
+                {"severity":"warning", "code":"rpmspec/W0004", "span":null,
+                 "message":"unterminated macro", "notes":["the macro recovery context"]}
             ])
         );
         let mut output = Vec::new();
         crate::parser_diagnostic::write(&converted, &mut output).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
-            "error[rpmspec/E001] at 1:3: invalid syntax\n  note: the recovery context\nwarning: unlocated warning\n"
+            "error[rpmspec/E001] at 1:3: invalid syntax\n  note: the recovery context\nwarning: unlocated warning\nwarning[rpmspec/W0004]: unterminated macro\n  note: the macro recovery context\n"
         );
     }
 }

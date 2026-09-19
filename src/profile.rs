@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Embedded openRuyi defaults shared by generation and existing-source projection.
+//! Embedded openRuyi defaults shared by SPEC generation and editing.
 
 use serde::Deserialize;
 
@@ -22,9 +22,7 @@ pub(crate) struct Profile {
 }
 
 impl Profile {
-    /// The RemoteAsset marker line for one source: with the digest when known,
-    /// or the bare marker openRuyi accepts when a package ships no sha256.
-    /// Generation and verification share this so both agree byte for byte.
+    /// The RemoteAsset marker, including a digest when supplied.
     pub(crate) fn remote_asset(&self, digest: Option<&str>) -> String {
         match digest {
             Some(hash) => format!("{}{hash}", self.remote_asset_prefix),

@@ -40,6 +40,11 @@ impl Field {
 
     /// Validates one literal without macro expansion or URL normalization.
     pub(crate) fn validate(&self, value: &str) -> Result<(), String> {
+        self.validate_at(value, self.name())
+    }
+
+    /// Uses the caller's authoring path when a shared rule applies to another package.
+    pub(crate) fn validate_at(&self, value: &str, field: &str) -> Result<(), String> {
         let result = match self {
             Self::Name => {
                 if value
@@ -72,7 +77,7 @@ impl Field {
             }
             Self::Url => crate::source::validate_url(value).map(|_| ()),
         };
-        result.map_err(|reason| format!("{}: {reason}", self.name()))
+        result.map_err(|reason| format!("{field}: {reason}"))
     }
 
     pub(crate) fn finding(&self, literal: Option<&str>, span: SourceLocation) -> Option<Finding> {

@@ -6,21 +6,9 @@
 
 //! Build-system contracts: declared requirements and default stage actions.
 //!
-//! Every openRuyi build system (autotools, cmake, meson, and the not-yet-added
-//! pyproject/rustcrates/golangmodules) shares the same stage shape
-//! (prep/conf/build/install/check) and differs only in data: the default action
-//! per stage, the required tools, and small per-stage notes. So a build system
-//! is a data file, not code.
-//!
-//! To add one:
-//!   1. Write `profiles/openruyi-v1/buildsystems/<name>.toml` with `name`,
-//!      `build-requires`, and one `[[stages]]` per stage. Record where openRuyi
-//!      defines those actions (file, commit, hash) in the file header.
-//!   2. Add one `include_str!` entry to `CONTRACTS` below.
-//!
-//! Nothing else changes: the `--build-system` value parser, the init template,
-//! and the RPK004 requirement check all read these contracts. There is no
-//! per-system Rust branch or template to extend.
+//! Each supported system has a TOML file in `profiles/openruyi-v1/buildsystems`
+//! and an entry in `CONTRACTS`. These supply CLI choices, init guidance, and
+//! the RPK004 requirement check.
 
 use crate::{
     check_report::{Finding, SelectedRule, Severity},
@@ -39,17 +27,12 @@ pub(super) const RULE: SelectedRule = SelectedRule {
 pub(crate) struct Contract {
     pub(crate) name: String,
     pub(crate) build_requires: Vec<String>,
-    // Default action per stage, sourced from openRuyi (see each contract file
-    // header for the exact file, commit, and hash). The init template renders
-    // these as guidance; nothing else consumes them yet.
+    // Default stage actions shown as guidance in init templates.
     #[serde(default)]
     pub(crate) stages: Vec<StageAction>,
 }
 
-/// One stage's default action and optional guidance, as declared by openRuyi.
-/// Serialized straight into the init template context, so the field names match
-/// the template. Notes stay `Option` (serialized as null, not skipped) because
-/// the template runs under strict undefined checks.
+/// Stage guidance for init. Missing notes serialize as null for strict templates.
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StageAction {
@@ -81,8 +64,6 @@ impl Embedded {
     }
 }
 
-// Each supported system maps to a profile TOML. Adding a system means adding a
-// contract file and one entry here, not a new lookup path.
 static CONTRACTS: [Embedded; 3] = [
     Embedded::new(include_str!(
         "../../profiles/openruyi-v1/buildsystems/autotools.toml"

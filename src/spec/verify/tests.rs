@@ -7,15 +7,18 @@
 //! Regression checks for syntactically valid corruption of generated facts.
 
 use super::run;
-use crate::render::{manifest, profile, spec};
 use crate::spec::ParsedSpec;
+use crate::{
+    profile,
+    render::{manifest, spec},
+};
 
 const MANIFEST: &str = include_str!("../../../examples/ed/ed.toml");
 
 #[test]
 fn rejects_changed_facts_even_when_the_spec_still_parses() {
     let recipe = manifest::parse(MANIFEST).unwrap();
-    let profile = profile::load(&recipe).unwrap();
+    let profile = profile::load().unwrap();
     let original = spec::render(&recipe, &profile);
     for (before, after, field) in [
         ("Name:           ed", "Name:           another", "Name"),
@@ -104,7 +107,7 @@ fn rejects_changed_vcs_declarations() {
     ] {
         let input = MANIFEST.replace("no-public-repository = true", choice);
         let recipe = manifest::parse(&input).unwrap();
-        let profile = profile::load(&recipe).unwrap();
+        let profile = profile::load().unwrap();
         let original = spec::render(&recipe, &profile);
         assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
         for declaration in [
@@ -136,7 +139,7 @@ fn rejects_changed_vcs_declarations() {
 #[test]
 fn rejects_missing_duplicate_and_unexpected_units() {
     let recipe = manifest::parse(MANIFEST).unwrap();
-    let profile = profile::load(&recipe).unwrap();
+    let profile = profile::load().unwrap();
     let original = spec::render(&recipe, &profile);
     for changed in [
         original.replace("Version:        1.22.5\n", ""),
@@ -163,7 +166,7 @@ fn keeps_each_checksum_bound_to_its_source() {
         "a".repeat(64)
     );
     let recipe = manifest::parse(&source).unwrap();
-    let profile = profile::load(&recipe).unwrap();
+    let profile = profile::load().unwrap();
     let original = spec::render(&recipe, &profile);
     let source_lines: Vec<_> = original
         .lines()
@@ -198,7 +201,7 @@ fn ignores_layout_but_preserves_prose_and_macro_structure() {
         .build_requires
         .rpm
         .push("pkgconfig(example) >= 1.2".into());
-    let profile = profile::load(&recipe).unwrap();
+    let profile = profile::load().unwrap();
     let original = spec::render(&recipe, &profile);
     let changed = original
         .replace("Name:           ", "Name:\t")
@@ -211,7 +214,7 @@ fn ignores_layout_but_preserves_prose_and_macro_structure() {
 #[test]
 fn preserves_remote_asset_marker_bytes() {
     let recipe = manifest::parse(MANIFEST).unwrap();
-    let profile = profile::load(&recipe).unwrap();
+    let profile = profile::load().unwrap();
     let original = spec::render(&recipe, &profile);
     assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
 
@@ -234,7 +237,7 @@ fn stage_options_match_their_stage_value_and_order() {
          [build.stages.build]\noptions = [\"CC_FOR_BUILD=gcc\"]\n"
     );
     let recipe = manifest::parse(&input).unwrap();
-    let profile = profile::load(&recipe).unwrap();
+    let profile = profile::load().unwrap();
     let original = spec::render(&recipe, &profile);
     assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
     for (before, after) in [
@@ -267,7 +270,7 @@ fn stage_scripts_match_kind_placement_and_exact_body() {
          [build.stages.install]\nappend = '''cat <<'END' > generated\n\tcontent\n\nEND\n\n'''\n"
     );
     let recipe = manifest::parse(&input).unwrap();
-    let profile = profile::load(&recipe).unwrap();
+    let profile = profile::load().unwrap();
     let original = spec::render(&recipe, &profile);
     assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
     for (before, after) in [
@@ -303,7 +306,7 @@ fn stage_replacement_checks_explicit_main_sections() {
          [build.stages.check]\nreplace = '# Tests require unavailable hardware.'\n"
     );
     let recipe = manifest::parse(&input).unwrap();
-    let profile = profile::load(&recipe).unwrap();
+    let profile = profile::load().unwrap();
     let original = spec::render(&recipe, &profile);
     assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
     for (before, after) in [
@@ -326,7 +329,7 @@ fn stage_replacement_checks_explicit_main_sections() {
 #[test]
 fn build_system_presence_matches_the_manifest() {
     let mut recipe = manifest::parse(MANIFEST).unwrap();
-    let profile = profile::load(&recipe).unwrap();
+    let profile = profile::load().unwrap();
     let declarative = spec::render(&recipe, &profile);
     recipe.build.system = None;
     let explicit = spec::render(&recipe, &profile);
@@ -334,4 +337,206 @@ fn build_system_presence_matches_the_manifest() {
     assert!(run(&ParsedSpec::parse(&declarative), &recipe, &profile).is_err());
     recipe.build.system = Some("autotools".into());
     assert!(run(&ParsedSpec::parse(&explicit), &recipe, &profile).is_err());
+}
+
+const SUBPACKAGES: &str = r#"
+[subpackages.devel]
+summary = "Development files"
+description = "Headers for ed development."
+requires = ["%{name} = %{version}-%{release}", "pkgconfig(example) >= 1"]
+provides = ["ed-devel-api = %{version}"]
+[subpackages.devel.files]
+license = ["COPYING.devel"]
+doc = ["README.devel"]
+entries = ["%{_includedir}/ed.h"]
+
+[subpackages.editor-tools]
+full-name = true
+summary = "Editor tools"
+description = "Standalone editor utilities."
+requires = ["coreutils"]
+provides = ["editor-helper = 1"]
+[subpackages.editor-tools.files]
+entries = ["%{_bindir}/editor-helper"]
+
+[subpackages.meta]
+summary = "Editor metapackage"
+description = "Install the editor family."
+"#;
+
+#[test]
+fn subpackage_facts_are_verified_independently_of_the_main_package() {
+    let recipe = manifest::parse(&format!("{MANIFEST}{SUBPACKAGES}")).unwrap();
+    let profile = profile::load().unwrap();
+    let original = spec::render(&recipe, &profile);
+    let parsed = ParsedSpec::parse(&original);
+    assert!(parsed.parsed.diagnostics.is_empty());
+    assert!(run(&parsed, &recipe, &profile).is_ok());
+    for (before, after) in [
+        ("%package        devel", "%package        headers"),
+        ("%package        devel", "%package        -n devel"),
+        (
+            "%package        -n editor-tools",
+            "%package        editor-tools",
+        ),
+        ("%description    devel", "%description    headers"),
+        ("%description    devel", "%description    -n devel"),
+        (
+            "%description    -n editor-tools",
+            "%description    editor-tools",
+        ),
+        ("%files devel", "%files headers"),
+        ("%files devel", "%files -n devel"),
+        ("%files -n editor-tools", "%files editor-tools"),
+        (
+            "%files -n editor-tools",
+            "%files -n unexpected -n editor-tools",
+        ),
+        (
+            "%files -n editor-tools",
+            "%files unexpected -n editor-tools",
+        ),
+        ("%files devel", "%files -f extra.files devel"),
+        (
+            "Summary:        Development files",
+            "Summary:        Other headers",
+        ),
+        (
+            "Summary:        Development files",
+            "Summary(fr):    Development files",
+        ),
+        (
+            "Requires:       %{name} = %{version}-%{release}",
+            "Requires:       %{name} >= %{version}-%{release}",
+        ),
+        (
+            "Requires:       pkgconfig(example) >= 1",
+            "Requires(pre):  pkgconfig(example) >= 1",
+        ),
+        (
+            "Provides:       ed-devel-api = %{version}",
+            "Provides:       ed-devel-api = 2",
+        ),
+        ("Headers for ed development.", "Headers for another editor."),
+        ("%license COPYING.devel", "%doc COPYING.devel"),
+        ("%doc README.devel", "%doc NEWS.devel"),
+        ("%{_includedir}/ed.h", "%{_includedir}/red.h"),
+        ("%files meta\n", "%files meta\n/usr/share/unexpected\n"),
+    ] {
+        let changed = original.replacen(before, after, 1);
+        assert_ne!(changed, original, "mutation did not apply: {before}");
+        let parsed = ParsedSpec::parse(&changed);
+        assert!(
+            parsed.parsed.diagnostics.is_empty(),
+            "not a clean parser result: {before}"
+        );
+        assert!(
+            run(&parsed, &recipe, &profile).is_err(),
+            "accepted: {before}"
+        );
+    }
+}
+
+#[test]
+fn subpackages_reject_missing_duplicate_and_unexpected_units() {
+    let recipe = manifest::parse(&format!("{MANIFEST}{SUBPACKAGES}")).unwrap();
+    let profile = profile::load().unwrap();
+    let original = spec::render(&recipe, &profile);
+    assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
+    for (before, after) in [
+        ("Summary:        Development files\n", ""),
+        (
+            "Summary:        Development files\n",
+            "Summary:        Development files\nSummary: Development files\n",
+        ),
+        (
+            "Summary:        Development files\n",
+            "Summary:        Development files\nLicense: MIT\n",
+        ),
+        ("Requires:       coreutils\n", ""),
+        (
+            "Requires:       coreutils\n",
+            "Requires:       coreutils\nRequires: coreutils\n",
+        ),
+        ("Provides:       editor-helper = 1\n", ""),
+        (
+            "Provides:       editor-helper = 1\n",
+            "Provides:       editor-helper = 1\nProvides: editor-helper = 1\n",
+        ),
+        ("%description    devel\nHeaders for ed development.\n\n", ""),
+        (
+            "%description    devel\nHeaders for ed development.\n\n",
+            "%description devel\nHeaders for ed development.\n\n%description devel\nHeaders for ed development.\n\n",
+        ),
+        ("%files -n editor-tools\n%{_bindir}/editor-helper\n\n", ""),
+        (
+            "%files -n editor-tools\n%{_bindir}/editor-helper\n\n",
+            "%files -n editor-tools\n%{_bindir}/editor-helper\n\n%files -n editor-tools\n%{_bindir}/editor-helper\n\n",
+        ),
+        ("%{_includedir}/ed.h\n", ""),
+        (
+            "%{_includedir}/ed.h\n",
+            "%{_includedir}/ed.h\n%{_includedir}/ed.h\n",
+        ),
+        (
+            "%package        meta\nSummary:        Editor metapackage\n\n",
+            "",
+        ),
+        (
+            "%package        meta\nSummary:        Editor metapackage\n\n",
+            "%package meta\nSummary: Editor metapackage\n\n%package meta\nSummary: Editor metapackage\n\n",
+        ),
+    ] {
+        let changed = original.replacen(before, after, 1);
+        assert_ne!(changed, original, "mutation did not apply: {before}");
+        let parsed = ParsedSpec::parse(&changed);
+        assert!(
+            parsed.parsed.diagnostics.is_empty(),
+            "not a clean parser result: {before}"
+        );
+        assert!(
+            run(&parsed, &recipe, &profile).is_err(),
+            "accepted: {before}"
+        );
+    }
+    let extra_tail = format!("{original}\n%files unexpected\n");
+    let parsed = ParsedSpec::parse(&extra_tail);
+    assert!(parsed.parsed.diagnostics.is_empty());
+    let error = run(&parsed, &recipe, &profile).unwrap_err().to_string();
+    assert!(error.contains("unexpected sections"), "{error}");
+}
+
+#[test]
+fn subpackage_facts_cannot_be_moved_between_package_scopes() {
+    let recipe = manifest::parse(&format!("{MANIFEST}{SUBPACKAGES}")).unwrap();
+    let profile = profile::load().unwrap();
+    let original = spec::render(&recipe, &profile);
+    assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
+    for (left, right) in [
+        ("Development files", "Editor tools"),
+        (
+            "Headers for ed development.",
+            "Standalone editor utilities.",
+        ),
+        (
+            "Requires:       %{name} = %{version}-%{release}",
+            "Requires:       coreutils",
+        ),
+        (
+            "Provides:       ed-devel-api = %{version}",
+            "Provides:       editor-helper = 1",
+        ),
+        ("%{_includedir}/ed.h", "%{_bindir}/editor-helper"),
+    ] {
+        // Preserve the complete set of facts but attach each pair to the wrong
+        // package. Counting tags globally is not an adequate round-trip check.
+        let changed = original
+            .replace(left, "SWAPPED_TEST_FACT")
+            .replace(right, left)
+            .replace("SWAPPED_TEST_FACT", right);
+        assert_ne!(changed, original);
+        let parsed = ParsedSpec::parse(&changed);
+        assert!(parsed.parsed.diagnostics.is_empty(), "{left}");
+        assert!(run(&parsed, &recipe, &profile).is_err(), "accepted: {left}");
+    }
 }

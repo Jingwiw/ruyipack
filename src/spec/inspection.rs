@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Native syntax evidence and normalized main-package tags.
+//! Parsed SPEC syntax and normalized main-package tags.
 
 mod json;
 use super::{ParsedSpec, diagnostic};

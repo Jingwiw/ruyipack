@@ -108,6 +108,19 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
     output.push_str("%description\n");
     output.push_str(recipe.package.body.description.trim_end_matches('\n'));
     output.push_str("\n\n");
+
+    for subpackage in &recipe.subpackages {
+        let arg = subpackage_arg(&subpackage.name);
+        write_tag(&mut output, "%package", &arg, column);
+        write_tag(&mut output, "Summary:", &subpackage.body.summary, column);
+        output.push('\n');
+        render_tag_block(&mut output, "Requires:", &subpackage.body.requires, column);
+        render_tag_block(&mut output, "Provides:", &subpackage.body.provides, column);
+        write_tag(&mut output, "%description", &arg, column);
+        output.push_str(subpackage.body.description.trim_end_matches('\n'));
+        output.push_str("\n\n");
+    }
+
     for (stage, config) in &recipe.build.stages {
         for (suffix, script) in [
             (
@@ -133,20 +146,12 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
         }
     }
     output.push_str("%files\n");
-    if !recipe.package.body.files.license.is_empty() {
-        writeln!(
-            output,
-            "%license {}",
-            recipe.package.body.files.license.join(" ")
-        )
-        .expect("writing to a String cannot fail");
-    }
-    if !recipe.package.body.files.doc.is_empty() {
-        writeln!(output, "%doc {}", recipe.package.body.files.doc.join(" "))
+    render_files(&mut output, &recipe.package.body.files);
+
+    for subpackage in &recipe.subpackages {
+        writeln!(output, "\n%files {}", subpackage_arg(&subpackage.name))
             .expect("writing to a String cannot fail");
-    }
-    for path in &recipe.package.body.files.entries {
-        writeln!(output, "{path}").expect("writing to a String cannot fail");
+        render_files(&mut output, &subpackage.body.files);
     }
 
     writeln!(output, "\n%changelog\n{}", profile.changelog)
@@ -158,9 +163,28 @@ fn write_tag(output: &mut String, label: &str, value: &str, column: usize) {
     writeln!(output, "{label:<column$}{value}").expect("writing to a String cannot fail");
 }
 
-/// Renders one tag line per value, then a blank line when the block is
-/// non-empty. BuildRequires, Requires, and Provides share this shape, and each
-/// subpackage will reuse it for its own dependency edges.
+/// Section argument: a suffix or `-n` followed by a complete package name.
+fn subpackage_arg(name: &crate::render::manifest::SubpackageName) -> String {
+    use crate::render::manifest::SubpackageName;
+    match name {
+        SubpackageName::Suffix(suffix) => suffix.clone(),
+        SubpackageName::Absolute(full) => format!("-n {full}"),
+    }
+}
+
+fn render_files(output: &mut String, files: &crate::render::manifest::Files) {
+    if !files.license.is_empty() {
+        writeln!(output, "%license {}", files.license.join(" "))
+            .expect("writing to a String cannot fail");
+    }
+    if !files.doc.is_empty() {
+        writeln!(output, "%doc {}", files.doc.join(" ")).expect("writing to a String cannot fail");
+    }
+    for path in &files.entries {
+        writeln!(output, "{path}").expect("writing to a String cannot fail");
+    }
+}
+
 fn render_tag_block(output: &mut String, label: &str, values: &[String], column: usize) {
     for value in values {
         write_tag(output, label, value, column);

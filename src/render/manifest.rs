@@ -8,7 +8,7 @@
 
 use super::RenderError;
 use serde::{Deserialize, Deserializer, de::Error as _};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Deserialized authoring input. Content checks are deferred to `parse` so an
 /// empty scaffold reports every unfilled field at once instead of aborting on
@@ -23,6 +23,26 @@ struct ManifestInput {
     #[serde(default)]
     build: Build,
     build_requires: BuildRequires,
+    // Explicit subpackage declarations, keyed by suffix or complete name.
+    #[serde(default)]
+    subpackages: BTreeMap<String, SubpackageInput>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct SubpackageInput {
+    summary: String,
+    description: String,
+    #[serde(default)]
+    requires: Vec<String>,
+    #[serde(default)]
+    provides: Vec<String>,
+    // false: the map key is a suffix appended to the main name (%package <suffix>).
+    // true: the key is the complete package name (%package -n <key>).
+    #[serde(default)]
+    full_name: bool,
+    #[serde(default)]
+    files: Files,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,43 +55,53 @@ struct PackageInput {
     description: String,
     vcs: VcsInput,
     // Runtime dependency and capability expressions for the main package.
-    // Subpackages are a separate, later concern; these are the main package's.
     #[serde(default)]
     requires: Vec<String>,
     #[serde(default)]
     provides: Vec<String>,
-    // openRuyi only ever uses BuildArch: noarch, so this is a flag, not a free
-    // architecture list. Other BuildArch values are a documented TODO.
+    // The manifest supports BuildArch: noarch, not arbitrary architecture lists.
     #[serde(default)]
     noarch: bool,
     files: Files,
 }
 
-/// Validated manifest. It only exists once `parse` accepts every field, so
-/// downstream rendering and verification never see an unresolved value.
+/// Authoring input after structural and content checks. RPM expressions are
+/// still preserved as text; generation verifies them through the SPEC adapter.
 pub(crate) struct Manifest {
     pub(crate) spec: SpecMetadata,
     pub(crate) package: Package,
     pub(crate) sources: BTreeMap<u32, Source>,
     pub(crate) build: Build,
     pub(crate) build_requires: BuildRequires,
+    pub(crate) subpackages: Vec<Subpackage>,
+}
+
+/// A validated subpackage: its name form plus the same body a main package has.
+pub(crate) struct Subpackage {
+    pub(crate) name: SubpackageName,
+    pub(crate) body: PackageBody,
+}
+
+/// How a subpackage names itself relative to the main package.
+pub(crate) enum SubpackageName {
+    /// Suffix appended to the main name: renders `%package <suffix>`.
+    Suffix(String),
+    /// Complete package name: renders `%package -n <name>`.
+    Absolute(String),
 }
 pub(crate) struct Package {
     pub(crate) name: String,
     pub(crate) version: String,
-    // License, URL, VCS, and noarch belong to the main package alone; a
-    // subpackage inherits them and never restates them.
+    // This authoring model declares these fields on the main package only;
+    // subpackage overrides are not supported.
     pub(crate) license: String,
     pub(crate) url: String,
     pub(crate) vcs: Vcs,
     pub(crate) noarch: bool,
-    // Fields a subpackage also carries live in the shared body, so the renderer
-    // and verifier can treat main package and subpackage through one path.
     pub(crate) body: PackageBody,
 }
 
-/// The part of a package shared by the main package and every subpackage:
-/// its summary, description, dependency edges, and file list.
+/// Fields shared by the main package and subpackages.
 pub(crate) struct PackageBody {
     pub(crate) summary: String,
     pub(crate) description: String,
@@ -173,22 +203,19 @@ pub(crate) struct StageConfig {
 pub(crate) struct BuildRequires {
     pub(crate) rpm: Vec<String>,
 }
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Files {
     #[serde(default)]
     pub(crate) license: Vec<String>,
     #[serde(default)]
     pub(crate) doc: Vec<String>,
+    // Serde-optional so a subpackage may declare no files; the main package's
+    // "at least one entry" requirement is enforced in validate_body instead.
+    #[serde(default)]
     pub(crate) entries: Vec<String>,
 }
 
-/// Reads the supported authoring fields without evaluating RPM macros.
-///
-/// Structural problems (missing fields, wrong types, unknown keys, malformed
-/// source numbers) still abort during deserialization. Every content check
-/// then runs on the whole manifest and the failures are reported together, so
-/// filling one field does not just uncover the next.
 /// Validates the fields shared by the main package and every subpackage,
 /// returning one formatted message per problem. `prefix` names the location in
 /// reports (e.g. `package` or `subpackages.devel`). `files_required` is true for
@@ -267,6 +294,8 @@ fn validate_body(
     messages
 }
 
+/// Reads authoring fields without evaluating RPM macros. Structural errors
+/// abort deserialization; content errors are collected across the manifest.
 pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
     let input: ManifestInput = toml::from_str(source)?;
     let package = &input.package;
@@ -332,6 +361,14 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
             );
         }
     }
+    if let Some(system) = &input.build.system
+        && crate::check::build::contract(system).is_none()
+    {
+        record(Err(invalid(
+            "build.system",
+            &format!("unsupported build system {system:?}"),
+        )));
+    }
     for (stage, config) in &input.build.stages {
         if input.build.system.is_none() && !config.options.is_empty() {
             record(Err(invalid(
@@ -373,10 +410,7 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
     for requirement in &input.build_requires.rpm {
         record(single_line("build-requires.rpm", requirement));
     }
-    // summary, description, requires, provides, and files share one validator
-    // so a subpackage is held to the same rules as the main package. Only the
-    // field prefix and whether files may be empty differ.
-    for message in validate_body(
+    errors.extend(validate_body(
         "package",
         &package.summary,
         &package.description,
@@ -384,15 +418,61 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
         &package.provides,
         &package.files,
         true,
-    ) {
-        errors.push(message);
+    ));
+    let mut package_names = BTreeSet::from([package.name.clone()]);
+    for (name, subpackage) in &input.subpackages {
+        let field = format!("subpackages.{name}");
+        if let Err(message) = crate::check::metadata::Field::Name.validate_at(name, &field) {
+            errors.push(message);
+        }
+        let effective_name = if subpackage.full_name {
+            name.clone()
+        } else {
+            format!("{}-{name}", package.name)
+        };
+        // Distinct table keys can still designate the same RPM package.
+        if !package_names.insert(effective_name.clone()) {
+            errors.push(
+                invalid(
+                    &field,
+                    &format!("duplicate package name {effective_name:?}"),
+                )
+                .to_string(),
+            );
+        }
+        errors.extend(validate_body(
+            &field,
+            &subpackage.summary,
+            &subpackage.description,
+            &subpackage.requires,
+            &subpackage.provides,
+            &subpackage.files,
+            false,
+        ));
     }
 
     if !errors.is_empty() {
         return Err(RenderError::Invalid(errors.join("\n")));
     }
-    // Every field passed, so the deferred repository choice resolved.
     let vcs = vcs.expect("vcs is set when no errors were recorded");
+    let subpackages = input
+        .subpackages
+        .into_iter()
+        .map(|(name, sub)| Subpackage {
+            name: if sub.full_name {
+                SubpackageName::Absolute(name)
+            } else {
+                SubpackageName::Suffix(name)
+            },
+            body: PackageBody {
+                summary: sub.summary,
+                description: sub.description,
+                requires: sub.requires,
+                provides: sub.provides,
+                files: sub.files,
+            },
+        })
+        .collect();
     Ok(Manifest {
         package: Package {
             name: input.package.name,
@@ -413,6 +493,7 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
         sources: input.sources,
         build: input.build,
         build_requires: input.build_requires,
+        subpackages,
     })
 }
 

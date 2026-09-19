@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Source coordinates retained for diagnostic output, not a syntax-tree model.
+//! Byte ranges and line positions for diagnostic output.
 
 use std::ops::Range;
 
@@ -22,7 +22,6 @@ pub(crate) struct SourceLocation {
 
 impl Serialize for SourceLocation {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // Preserve the existing report protocol without depending on the parser type.
         let mut span = serializer.serialize_struct("Span", 6)?;
         span.serialize_field("start_byte", &self.bytes.start)?;
         span.serialize_field("end_byte", &self.bytes.end)?;

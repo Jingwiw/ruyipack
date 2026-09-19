@@ -10,15 +10,18 @@ use super::ParsedSpec;
 use crate::profile::Profile;
 use crate::render::{
     RenderError,
-    manifest::{Manifest, Stage, Vcs},
+    manifest::{Files, Manifest, PackageBody, Stage, SubpackageName, Vcs},
 };
 use rpm_spec::{
     ast::{
         BuildScriptKind, BuildScriptPlacement, ChangelogItem, CommentStyle, FileDirective,
-        FilesContent, Section, Span, SpecItem, Tag, TagValue, Text, TextSegment,
+        FilesContent, PackageName, PreambleContent, PreambleItem, Section, Span, SpecItem,
+        SubpkgRef, Tag, TagValue, Text, TextSegment,
     },
     parser::{Input, ParserState, deps::parse_dep_expr, text::parse_text},
 };
+
+type ExpectedTag = (Tag, Option<&'static str>, TagValue);
 
 /// Checks candidate facts against the manifest and profile.
 pub(crate) fn run(
@@ -46,7 +49,6 @@ pub(crate) fn run(
         (Tag::Name, package.name.as_str()),
         (Tag::Version, &package.version),
         (Tag::Release, &profile.release),
-        (Tag::Summary, &package.body.summary),
         (Tag::License, &package.license),
         (Tag::URL, &package.url),
     ] {
@@ -86,32 +88,13 @@ pub(crate) fn run(
             ));
         }
     }
-    for requirement in &recipe.build_requires.rpm {
-        let state = ParserState::new();
-        let value =
-            parse_dep_expr(&state, requirement).map_err(|()| mismatch("build-requires.rpm"))?;
-        check(state.diagnostics.borrow().is_empty(), "build-requires.rpm")?;
-        tags.push((Tag::BuildRequires, None, TagValue::Dep(value)));
-    }
-    for (field, tag, values) in [
-        (
-            "package.requires",
-            Tag::Requires,
-            &recipe.package.body.requires,
-        ),
-        (
-            "package.provides",
-            Tag::Provides,
-            &recipe.package.body.provides,
-        ),
-    ] {
-        for expression in values {
-            let state = ParserState::new();
-            let value = parse_dep_expr(&state, expression).map_err(|()| mismatch(field))?;
-            check(state.diagnostics.borrow().is_empty(), field)?;
-            tags.push((tag.clone(), None, TagValue::Dep(value)));
-        }
-    }
+    dependency_tags(
+        &mut tags,
+        Tag::BuildRequires,
+        &recipe.build_requires.rpm,
+        "build-requires.rpm",
+    )?;
+    tags.extend(body_tags(&package.body, "package")?);
 
     let mut comments = Vec::new();
     let mut sections = Vec::new();
@@ -119,15 +102,7 @@ pub(crate) fn run(
         match item {
             SpecItem::Preamble(item) => {
                 let field = format!("{:?}", item.tag);
-                check(item.qualifiers.is_empty(), &field)?;
-                let position = tags
-                    .iter()
-                    .position(|(tag, argument, _)| {
-                        *tag == item.tag && *argument == item.lang.as_deref()
-                    })
-                    .ok_or_else(|| mismatch(&field))?;
-                let (_, _, expected) = tags.remove(position);
-                check(item.value == expected, &field)?;
+                match_tag(item, &mut tags, &field)?;
                 if let Tag::Source(Some(number)) = item.tag {
                     let expected = format!(
                         "{}\n",
@@ -185,47 +160,203 @@ pub(crate) fn run(
         "SPEC metadata",
     )?;
 
-    let [
-        Section::Description {
-            subpkg: None, body, ..
-        },
-        scripts @ ..,
-        Section::Files {
-            subpkg: None,
-            file_lists,
-            content,
-            ..
-        },
-        Section::Changelog { items, .. },
-    ] = sections.as_slice()
-    else {
-        return Err(mismatch("sections"));
-    };
-    let mut lines: Vec<_> = package.body.description.lines().collect();
-    // The parser discards separator lines at the end, not indentation or spaces in prose.
-    while lines.last().is_some_and(|line| line.trim().is_empty()) {
-        lines.pop();
+    // Consume the complete generated sequence. Extra sections are not ignored,
+    // and every subpackage reference must retain its declared naming form.
+    let mut sections = sections.into_iter();
+    description(
+        sections.next(),
+        None,
+        &package.body.description,
+        "package.description",
+    )?;
+    for subpackage in &recipe.subpackages {
+        let (name, reference, field) = subpackage_identity(&subpackage.name)?;
+        let Some(Section::Package {
+            name_arg, content, ..
+        }) = sections.next()
+        else {
+            return Err(mismatch(&field));
+        };
+        check(*name_arg == name, &field)?;
+        let mut tags = body_tags(&subpackage.body, &field)?;
+        for item in content {
+            match item {
+                PreambleContent::Item(item) => {
+                    match_tag(item, &mut tags, &format!("{field}.{:?}", item.tag))?;
+                }
+                PreambleContent::Blank => {}
+                _ => return Err(mismatch(&field)),
+            }
+        }
+        check(tags.is_empty(), &field)?;
+        description(
+            sections.next(),
+            Some(&reference),
+            &subpackage.body.description,
+            &format!("{field}.description"),
+        )?;
     }
-    let expected_body = lines.into_iter().map(text).collect::<Result<Vec<_>, _>>()?;
-    check(body.lines == expected_body, "package.description")?;
-    build_scripts(scripts, source, recipe)?;
-    check(file_lists.is_empty(), "package.files")?;
-    files(content, recipe)?;
+    build_scripts(&mut sections, source, recipe)?;
+    file_section(
+        sections.next(),
+        source,
+        None,
+        &package.body.files,
+        "package.files",
+    )?;
+    for subpackage in &recipe.subpackages {
+        let (_, reference, field) = subpackage_identity(&subpackage.name)?;
+        file_section(
+            sections.next(),
+            source,
+            Some(&reference),
+            &subpackage.body.files,
+            &format!("{field}.files"),
+        )?;
+    }
+    let Some(Section::Changelog { items, .. }) = sections.next() else {
+        return Err(mismatch("changelog"));
+    };
     let expected_changelog = text(&profile.changelog)?;
     check(
         matches!((items.as_slice(), expected_changelog.segments.as_slice()),
         ([ChangelogItem::Statement { macro_ref, .. }], [TextSegment::Macro(expected)]) if macro_ref == expected.as_ref()),
         "changelog",
     )?;
+    check(sections.next().is_none(), "unexpected sections")
+}
+
+fn body_tags(body: &PackageBody, field: &str) -> Result<Vec<ExpectedTag>, RenderError> {
+    let mut tags = vec![(Tag::Summary, None, TagValue::Text(text(&body.summary)?))];
+    dependency_tags(
+        &mut tags,
+        Tag::Requires,
+        &body.requires,
+        &format!("{field}.requires"),
+    )?;
+    dependency_tags(
+        &mut tags,
+        Tag::Provides,
+        &body.provides,
+        &format!("{field}.provides"),
+    )?;
+    Ok(tags)
+}
+
+fn dependency_tags(
+    tags: &mut Vec<ExpectedTag>,
+    tag: Tag,
+    values: &[String],
+    field: &str,
+) -> Result<(), RenderError> {
+    for expression in values {
+        let state = ParserState::new();
+        let value = parse_dep_expr(&state, expression).map_err(|()| mismatch(field))?;
+        check(state.diagnostics.borrow().is_empty(), field)?;
+        tags.push((tag.clone(), None, TagValue::Dep(value)));
+    }
     Ok(())
 }
 
-fn build_scripts(
-    sections: &[&Section<Span>],
+fn match_tag(
+    item: &PreambleItem<Span>,
+    tags: &mut Vec<ExpectedTag>,
+    field: &str,
+) -> Result<(), RenderError> {
+    check(item.qualifiers.is_empty(), field)?;
+    let position = tags
+        .iter()
+        .position(|(tag, argument, _)| *tag == item.tag && *argument == item.lang.as_deref())
+        .ok_or_else(|| mismatch(field))?;
+    let (_, _, expected) = tags.remove(position);
+    check(item.value == expected, field)
+}
+
+fn subpackage_identity(
+    name: &SubpackageName,
+) -> Result<(PackageName, SubpkgRef, String), RenderError> {
+    match name {
+        SubpackageName::Suffix(name) => {
+            let value = text(name)?;
+            Ok((
+                PackageName::Relative(value.clone()),
+                SubpkgRef::Relative(value),
+                format!("subpackages.{name}"),
+            ))
+        }
+        SubpackageName::Absolute(name) => {
+            let value = text(name)?;
+            Ok((
+                PackageName::Absolute(value.clone()),
+                SubpkgRef::Absolute(value),
+                format!("subpackages.{name}"),
+            ))
+        }
+    }
+}
+
+fn description(
+    section: Option<&Section<Span>>,
+    expected_subpkg: Option<&SubpkgRef>,
+    expected: &str,
+    field: &str,
+) -> Result<(), RenderError> {
+    let Some(Section::Description { subpkg, body, .. }) = section else {
+        return Err(mismatch(field));
+    };
+    check(subpkg.as_ref() == expected_subpkg, field)?;
+    let mut lines: Vec<_> = expected.lines().collect();
+    // The parser discards separator lines at the end, not indentation or prose spaces.
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    let expected = lines.into_iter().map(text).collect::<Result<Vec<_>, _>>()?;
+    check(body.lines == expected, field)
+}
+
+fn file_section(
+    section: Option<&Section<Span>>,
+    source: &str,
+    expected_subpkg: Option<&SubpkgRef>,
+    expected: &Files,
+    field: &str,
+) -> Result<(), RenderError> {
+    let Some(Section::Files {
+        subpkg,
+        file_lists,
+        content,
+        data,
+    }) = section
+    else {
+        return Err(mismatch(field));
+    };
+    check(
+        subpkg.as_ref() == expected_subpkg && file_lists.is_empty(),
+        field,
+    )?;
+    // The pinned parser overwrites earlier package arguments in a %files
+    // header. Check the source header as well so those lost arguments cannot
+    // make an invalid declaration look like the expected package reference.
+    let header = source
+        .get(data.start_byte..data.end_byte)
+        .and_then(|section| section.lines().next())
+        .ok_or_else(|| mismatch(field))?;
+    let words: Vec<_> = header.split_whitespace().collect();
+    let header_matches = match (words.as_slice(), expected_subpkg) {
+        (["%files"], None) => true,
+        (["%files", name], Some(SubpkgRef::Relative(expected)))
+        | (["%files", "-n", name], Some(SubpkgRef::Absolute(expected))) => text(name)? == *expected,
+        _ => false,
+    };
+    check(header_matches, field)?;
+    files(content, expected, field)
+}
+
+fn build_scripts<'a>(
+    sections: &mut impl Iterator<Item = &'a Section<Span>>,
     source: &str,
     recipe: &Manifest,
 ) -> Result<(), RenderError> {
-    let mut sections = sections.iter();
     for (stage, config) in &recipe.build.stages {
         let expected_kind = match stage {
             Stage::Prep => BuildScriptKind::Prep,
@@ -290,11 +421,10 @@ fn build_scripts(
             )?;
         }
     }
-    check(sections.next().is_none(), "unexpected build scripts")
+    Ok(())
 }
 
-fn files(content: &[FilesContent<Span>], recipe: &Manifest) -> Result<(), RenderError> {
-    let files = &recipe.package.body.files;
+fn files(content: &[FilesContent<Span>], files: &Files, field: &str) -> Result<(), RenderError> {
     let mut expected = Vec::new();
     for (directive, paths) in [
         (FileDirective::License, &files.license),
@@ -312,21 +442,20 @@ fn files(content: &[FilesContent<Span>], recipe: &Manifest) -> Result<(), Render
         match item {
             FilesContent::Blank => {}
             FilesContent::Entry(entry) => {
-                let (directives, path) =
-                    expected.next().ok_or_else(|| mismatch("package.files"))?;
+                let (directives, path) = expected.next().ok_or_else(|| mismatch(field))?;
                 check(
                     entry.directives == directives
                         && entry
                             .path
                             .as_ref()
                             .is_some_and(|actual| actual.path == path),
-                    "package.files",
+                    field,
                 )?;
             }
-            _ => return Err(mismatch("package.files")),
+            _ => return Err(mismatch(field)),
         }
     }
-    check(expected.next().is_none(), "package.files")
+    check(expected.next().is_none(), field)
 }
 
 /// Parses expressions for comparison without evaluating or rewriting their macros.
