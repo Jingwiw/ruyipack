@@ -717,7 +717,10 @@ fn generated_vcs_and_scripts_offer_selected_editing_when_full_views_are_unsuppor
                 "--diff",
             ],
         );
-        success(&diff);
+        assert!(diff.status.success(), "{diff:?}");
+        let stderr = String::from_utf8_lossy(&diff.stderr);
+        assert_eq!(stderr.lines().count(), 1);
+        assert!(stderr.contains("review required after changing package.version:"));
         assert!(String::from_utf8_lossy(&diff.stdout).contains("+Version:        1.22.6"));
         assert_eq!(
             fs::read(directory.path().join("ed.spec")).unwrap(),

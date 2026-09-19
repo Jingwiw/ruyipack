@@ -229,15 +229,34 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
     let mut errors = Vec::new();
     for item in inputs {
         match candidate(item, &options.set) {
-            Ok((text, report)) => {
+            Ok((text, report, review_triggers)) => {
                 let success = report.is_success();
                 let label = format!("{} (candidate)", item.path.display());
                 valid.push(success);
+                let review_required: &[&str] = if review_triggers.is_empty() {
+                    &[]
+                } else {
+                    &[
+                        "source-content-and-digests",
+                        "patch-applicability",
+                        "native-build",
+                    ]
+                };
                 if json_output {
-                    records.push(json!({"source": item.path, "draft": item.draft, "valid": success,
-                        "changed": text != item.source, "report": report.structured(Path::new(&label))}));
+                    records.push(
+                        json!({"source": item.path, "draft": item.draft, "valid": success,
+                        "changed": text != item.source, "review_triggers": review_triggers,
+                        "review_required": review_required,
+                        "report": report.structured(Path::new(&label))}),
+                    );
                 }
                 if !matches!(options.format, Some(CheckFormat::Json)) {
+                    if !review_triggers.is_empty() {
+                        writeln!(io::stderr().lock(),
+                            "{} (candidate): review required after changing {}: source content and recorded SHA-256, patch applicability, and native build have not been verified",
+                            item.path.display(), review_triggers.join(", "))
+                            .map_err(|e| e.to_string())?;
+                    }
                     report
                         .write_human(Path::new(&label), &mut io::stderr().lock())
                         .map_err(|e| e.to_string())?;
@@ -315,7 +334,7 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
 fn candidate(
     item: &Input,
     assignments: &[(String, String)],
-) -> Result<(String, CheckReport), String> {
+) -> Result<(String, CheckReport, Vec<String>), String> {
     if !utf8_file::is_unchanged(&item.path, &item.source)
         .map_err(|e| format!("{}: {e}", item.path.display()))?
     {
@@ -358,8 +377,20 @@ fn candidate(
         ));
     }
     let report = check::analyze(&parsed);
-    // TODO: Offer source-digest review reminders after Version or URL edits.
-    Ok((rendered, report))
+    let mut review_triggers = Vec::new();
+    let before = item.snapshot.document();
+    if fields::lookup(before, "package.version") != fields::lookup(&document, "package.version") {
+        review_triggers.push("package.version".to_owned());
+    }
+    if let Some(sources) = document.get("sources").and_then(toml::Value::as_table) {
+        for number in sources.keys() {
+            let field = format!("sources.{number}.url");
+            if fields::lookup(before, &field) != fields::lookup(&document, &field) {
+                review_triggers.push(field);
+            }
+        }
+    }
+    Ok((rendered, report, review_triggers))
 }
 
 /// A destination must not replace the draft or its recovery inputs.

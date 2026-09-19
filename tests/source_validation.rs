@@ -30,6 +30,16 @@ fn success(output: &Output) {
     assert!(output.stderr.is_empty(), "{output:?}");
 }
 
+fn reviewed(output: &Output, field: &str) {
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(
+        stderr.contains(&format!("review required after changing {field}:")),
+        "{stderr}"
+    );
+}
+
 fn rejected(output: &Output, field: &str) {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");
@@ -171,7 +181,7 @@ fn selected_source_repairs_validate_the_new_url_not_the_old_one() {
             directory.path(),
             &["edit", "ed.spec", "--set", &assignment, "--stdout"],
         );
-        success(&preview);
+        reviewed(&preview, "sources.0.url");
         assert_eq!(preview.stdout, SPEC.replace(URL, replacement).as_bytes());
         assert_eq!(
             fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
@@ -224,7 +234,7 @@ fn generated_bare_sources_remain_editable_without_inventing_a_digest() {
         directory.path(),
         &["edit", "ed.spec", "--set", &assignment, "--stdout"],
     );
-    success(&edited);
+    reviewed(&edited, "sources.0.url");
     assert_eq!(edited.stdout, spec.replace(URL, replacement).as_bytes());
     assert_eq!(
         fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
@@ -291,7 +301,7 @@ fn existing_http_sources_remain_editable_but_new_generation_requires_https() {
             "--stdout",
         ],
     );
-    success(&edited);
+    reviewed(&edited, "package.version");
     assert_eq!(
         edited.stdout,
         spec.replace("Version:        1.22.5", "Version:        1.22.6")

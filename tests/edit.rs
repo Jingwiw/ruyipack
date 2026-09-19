@@ -897,3 +897,55 @@ fn check_json_versions_success_and_early_errors() {
     }
     unchanged(directory.path());
 }
+
+#[test]
+fn upgrade_review_is_visible_without_changing_static_check_success() {
+    let directory = fixture();
+    for (assignment, trigger) in [
+        ("package.version=2", Some("package.version")),
+        (
+            "sources.0.url=https://example.org/new.tar.gz",
+            Some("sources.0.url"),
+        ),
+        ("package.version=1.22.5", None),
+        ("package.summary=Updated summary", None),
+    ] {
+        let output = command(directory.path())
+            .args([
+                "ed.spec", "--set", assignment, "--check", "--format", "json",
+            ])
+            .output()
+            .unwrap();
+        success(&output);
+        assert!(output.stderr.is_empty());
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let file = &report["files"][0];
+        assert_eq!(file["valid"], true);
+        assert_eq!(file["report"]["evidence"]["status"], "pass");
+        if let Some(trigger) = trigger {
+            assert_eq!(file["review_triggers"], serde_json::json!([trigger]));
+            assert_eq!(
+                file["review_required"],
+                serde_json::json!([
+                    "source-content-and-digests",
+                    "patch-applicability",
+                    "native-build"
+                ])
+            );
+        } else {
+            assert_eq!(file["review_triggers"], serde_json::json!([]));
+            assert_eq!(file["review_required"], serde_json::json!([]));
+        }
+        let preview = command(directory.path())
+            .args(["ed.spec", "--set", assignment, "--stdout"])
+            .output()
+            .unwrap();
+        success(&preview);
+        assert_eq!(
+            String::from_utf8_lossy(&preview.stderr).contains("review required"),
+            trigger.is_some()
+        );
+        assert!(String::from_utf8_lossy(&preview.stdout).contains("sha256:56e107"));
+    }
+    unchanged(directory.path());
+}

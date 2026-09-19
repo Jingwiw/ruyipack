@@ -72,11 +72,25 @@ fn disconnected_standard_streams_return_errors_without_panicking() {
             .output()
             .unwrap();
         assert_eq!(result.status.code(), Some(1), "{args:?}: {result:?}");
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        let mut lines = stderr.lines();
+        if args.contains(&"--set") {
+            assert!(
+                lines
+                    .next()
+                    .unwrap()
+                    .contains("review required after changing package.version:"),
+                "{stderr}"
+            );
+        }
         assert!(
-            String::from_utf8_lossy(&result.stderr)
+            lines
+                .next()
+                .unwrap()
                 .starts_with("error: failed to write output to stdout:"),
             "{args:?}: {result:?}"
         );
+        assert!(lines.next().is_none(), "{stderr}");
     }
 
     for args in [
