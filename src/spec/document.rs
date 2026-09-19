@@ -82,7 +82,11 @@ impl Snapshot {
         let mut comments = Vec::new();
         let mut consumed_assets = Vec::new();
         let mut sections = Vec::new();
+        let mut next_source = Some(0_u32);
         for (index, item) in parsed.spec.items.iter().enumerate() {
+            if !matches!(item, SpecItem::Preamble(_)) && may_declare_sources(source, item) {
+                next_source = None;
+            }
             match item {
                 SpecItem::Blank => {}
                 SpecItem::Comment(comment) => {
@@ -91,8 +95,42 @@ impl Snapshot {
                     comments.push(range);
                 }
                 SpecItem::Preamble(item) => {
-                    if !selection.is_empty()
-                        && !preamble_field(&item.tag).is_some_and(|field| snapshot.selects(&field))
+                    // Number every declaration before filtering the selected fields.
+                    let number = if let Tag::Source(explicit) = item.tag {
+                        let number = explicit.or(next_source);
+                        next_source = next_source.and_then(|next| {
+                            number.and_then(|number| number.checked_add(1).map(|n| next.max(n)))
+                        });
+                        if number.is_none() && snapshot.selects("sources") {
+                            return Err("sources: implicit Source number is uncertain after unsupported or conditional declarations".into());
+                        }
+                        number
+                    } else {
+                        None
+                    };
+                    // Only literals, known package references and the profile's
+                    // Release expression are known not to emit extra declarations.
+                    let raw_value = source
+                        .get(item.data.start_byte..item.data.end_byte)
+                        .and_then(|raw| raw.split_once(':'))
+                        .map(|(_, value)| value.trim());
+                    if let Some(value) = raw_value.filter(|value| value.contains('%')) {
+                        let fields = snapshot
+                            .source_fields
+                            .iter()
+                            .map(|(name, value)| (name.as_str(), value.as_str()))
+                            .collect::<Vec<_>>();
+                        if !(matches!(item.tag, Tag::Release) && value == profile.release)
+                            && super::expression::substitute_fields(value, &fields)
+                                .map_or(true, |value| value.contains(['\n', '\r']))
+                        {
+                            next_source = None;
+                        }
+                    }
+                    let field = number
+                        .map(|number| format!("sources.{number}"))
+                        .or_else(|| preamble_field(&item.tag));
+                    if !selection.is_empty() && !field.is_some_and(|field| snapshot.selects(&field))
                     {
                         continue;
                     }
@@ -126,8 +164,8 @@ impl Snapshot {
                             snapshot.list_item("build-requires.rpm", value_range, range)?;
                             continue;
                         }
-                        Tag::Source(number) => {
-                            let number = number.unwrap_or(0);
+                        Tag::Source(_) => {
+                            let number = number.ok_or("sources: unresolved Source number")?;
                             let identity = format!("sources.{number}");
                             if lookup(&snapshot.document, &format!("{identity}.url")).is_some() {
                                 return Err(format!("{identity}: duplicate Source identity"));
@@ -665,6 +703,47 @@ fn selected(selection: &[String], field: &str) -> bool {
         })
 }
 
+// Unknown declarations can advance RPM's source counter; never execute them.
+fn may_declare_sources(source: &str, item: &SpecItem<Span>) -> bool {
+    match item {
+        SpecItem::Preamble(item) => {
+            matches!(item.tag, Tag::Source(_))
+                || source
+                    .get(item.data.start_byte..item.data.end_byte)
+                    .is_none_or(|raw| raw.contains('%'))
+        }
+        SpecItem::Conditional(condition) => {
+            condition.branches.iter().any(|branch| {
+                branch
+                    .body
+                    .iter()
+                    .any(|item| may_declare_sources(source, item))
+            }) || condition
+                .otherwise
+                .as_ref()
+                .is_some_and(|items| items.iter().any(|item| may_declare_sources(source, item)))
+        }
+        SpecItem::Section(section) => matches!(
+            section.as_ref(),
+            Section::SourceList { .. } | Section::Package { .. }
+        ),
+        SpecItem::MacroDef(definition) => definition
+            .body
+            .literal_str()
+            .is_none_or(|body| body.contains(['\n', '\r'])),
+        SpecItem::BuildCondition(condition) => condition
+            .default
+            .as_ref()
+            .is_some_and(|value| value.literal_str().is_none()),
+        SpecItem::Comment(comment) => {
+            comment.style == rpm_spec::ast::CommentStyle::Hash
+                && comment.text.literal_str().is_none()
+        }
+        SpecItem::Blank => false,
+        _ => true,
+    }
+}
+
 fn preamble_field(tag: &Tag) -> Option<String> {
     Some(match tag {
         Tag::Name => "package.name".into(),
@@ -674,7 +753,8 @@ fn preamble_field(tag: &Tag) -> Option<String> {
         Tag::License => "package.license".into(),
         Tag::URL => "package.url".into(),
         Tag::BuildRequires => "build-requires.rpm".into(),
-        Tag::Source(number) => format!("sources.{}", number.unwrap_or(0)),
+        Tag::Source(Some(number)) => format!("sources.{number}"),
+        Tag::Source(None) => "sources".into(),
         Tag::Other(name) if name.eq_ignore_ascii_case("BuildSystem") => "build.system".into(),
         _ => return None,
     })

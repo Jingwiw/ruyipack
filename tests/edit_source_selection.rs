@@ -260,3 +260,113 @@ fn selecting_one_source_url_preserves_an_unmapped_sibling_source_and_its_digest(
         source
     );
 }
+
+#[test]
+fn implicit_source_numbers_follow_rpm_before_field_selection() {
+    for case in include_str!("fixtures/source-numbering.tsv")
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+    {
+        let (headers, numbers) = case.split_once('\t').unwrap();
+        let headers = headers.split(',').collect::<Vec<_>>();
+        let numbers = numbers
+            .split(',')
+            .map(|n| n.parse::<u32>().unwrap())
+            .collect::<Vec<_>>();
+        let declarations = headers
+            .iter()
+            .enumerate()
+            .map(|(i, header)| {
+                format!("#!RemoteAsset\n{header}: https://example.org/asset-{i}.tar.gz\n")
+            })
+            .collect::<String>();
+        let old = format!("#!RemoteAsset:  sha256:{HASH}\nSource0:        {URL}\n");
+        let source = format!(
+            "%global _smp_mflags -j1\n{}",
+            SPEC.replace(&old, &declarations)
+        );
+        let directory = fixture(&source);
+        for (i, number) in numbers.iter().enumerate() {
+            let field = format!("sources.{number}.url");
+            let view = selected_view(directory.path(), &field);
+            success(&view);
+            let document: toml::Table =
+                toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
+            assert_eq!(
+                document["sources"][number.to_string()]["url"].as_str(),
+                Some(format!("https://example.org/asset-{i}.tar.gz").as_str())
+            );
+            let edited = run(
+                directory.path(),
+                &[
+                    "ed.spec",
+                    "--set",
+                    &format!("{field}=https://example.org/replaced.tar.gz"),
+                    "--stdout",
+                ],
+            );
+            success(&edited);
+            assert_eq!(
+                edited.stdout,
+                source
+                    .replace(
+                        &format!("https://example.org/asset-{i}.tar.gz"),
+                        "https://example.org/replaced.tar.gz"
+                    )
+                    .as_bytes()
+            );
+        }
+        if !numbers.contains(&0) {
+            rejected(
+                &selected_view(directory.path(), "sources.0"),
+                "unknown field",
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+            source
+        );
+    }
+}
+
+#[test]
+fn uncertain_implicit_source_numbers_do_not_block_unrelated_edits() {
+    for prefix in [
+        "%if 0\nSource3: https://example.org/conditional.tar.gz\n%endif\n",
+        "%include absent.inc\n",
+        "%{unknown_statement}\n",
+        "%global number %{unknown_number}\n",
+        "Vendor: %{unknown_vendor}\n",
+        "%if 0\nVendor: %{unknown_vendor}\n%endif\n",
+    ] {
+        let source = format!("{prefix}{}", SPEC.replace("Source0:", "Source:"));
+        let directory = fixture(&source);
+        rejected(&selected_view(directory.path(), "sources.0.url"), "sources");
+        rejected(
+            &run(
+                directory.path(),
+                &[
+                    "ed.spec",
+                    "--set",
+                    "sources.0.url=https://example.org/replaced.tar.gz",
+                ],
+            ),
+            "sources",
+        );
+        let version = run(
+            directory.path(),
+            &["ed.spec", "--set", "package.version=2", "--stdout"],
+        );
+        success(&version);
+        assert_eq!(
+            version.stdout,
+            source
+                .replace("Version:        1.22.5", "Version:        2")
+                .as_bytes()
+        );
+        assert_eq!(
+            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+            source
+        );
+    }
+}

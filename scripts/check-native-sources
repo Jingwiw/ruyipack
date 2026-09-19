@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+"""Check the shared Source numbering expectations in a trusted openRuyi RPM environment."""
+import pathlib
+import subprocess
+import tempfile
+
+root = pathlib.Path(__file__).resolve().parent.parent
+subprocess.run(["rpm", "-q", "rpm", "rpm-build", "rpm-config-openruyi"], check=True)
+cases = root / "tests/fixtures/source-numbering.tsv"
+with tempfile.TemporaryDirectory(prefix="ruyipack-native-") as directory:
+    for case in cases.read_text().splitlines():
+        if not case or case.startswith("#"):
+            continue
+        headers, numbers = case.split("\t")
+        headers = headers.split(",")
+        numbers = [int(number) for number in numbers.split(",")]
+        spec = "%global _smp_mflags -j1\nName: numbering-probe\nVersion: 1\nRelease: 1\nSummary: Source numbering\nLicense: MIT\n"
+        for index, header in enumerate(headers):
+            spec += f"{header}: https://example.org/asset-{index}.tar.gz\n"
+        spec += "\n%description\n"
+        for number in range(max(numbers) + 2):
+            spec += f"NATIVE_SOURCE{number}=%{{?SOURCE{number}}}\n"
+        spec += "\n%files\n"
+        path = pathlib.Path(directory) / "numbering.spec"
+        path.write_text(spec)
+        result = subprocess.run(["rpmspec", "-P", str(path)], check=True, capture_output=True, text=True)
+        observed = {}
+        for line in result.stdout.splitlines():
+            if line.startswith("NATIVE_SOURCE"):
+                field, value = line.split("=", 1)
+                if value:
+                    observed[int(field.removeprefix("NATIVE_SOURCE"))] = pathlib.PurePosixPath(value).name
+        expected = {number: f"asset-{index}.tar.gz" for index, number in enumerate(numbers)}
+        if observed != expected:
+            raise SystemExit(f"{headers}: expected {expected}, observed {observed}")
+        print(f"{','.join(headers)} -> {','.join(map(str, numbers))}: PASS")

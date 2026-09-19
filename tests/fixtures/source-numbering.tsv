@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+# Source headers (comma-separated)	Expected effective numbers
+Source	0
+Source3,Source	3,4
+Source,Source	0,1
+Source0,Source	0,1
+Source3,Source8,Source	3,8,9
+Source8,Source3,Source	8,3,9
