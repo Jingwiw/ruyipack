@@ -655,7 +655,77 @@ fn noninteractive_edit_requires_an_explicit_input_mode() {
 fn script(directory: &Path, body: &str) -> String {
     let path = directory.join("editor with spaces.sh");
     fs::write(&path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
-    format!("/bin/sh '{}'", path.display())
+    format!("/bin/sh {}", shell_words::quote(&path.to_string_lossy()))
+}
+
+#[cfg(unix)]
+#[test]
+fn draft_hints_are_executable_with_shell_special_characters_in_paths() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("author's $workspace");
+    fs::create_dir(&directory).unwrap();
+    fs::write(directory.join("ed.spec"), SOURCE).unwrap();
+    let execute_hint = |output: &Output, label: &str| {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let hint = stderr
+            .lines()
+            .find_map(|line| line.strip_prefix(label))
+            .unwrap();
+        let bin = Path::new(env!("CARGO_BIN_EXE_ruyipack")).parent().unwrap();
+        let mut paths = vec![bin.to_path_buf()];
+        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+        let result = Command::new("/bin/sh")
+            .args(["-c", hint])
+            .current_dir(&directory)
+            .env("PATH", std::env::join_paths(paths).unwrap())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        success(&result);
+    };
+    let prepared = command(&directory)
+        .args([
+            "ed.spec",
+            "--field",
+            "package.version",
+            "--prepare",
+            "draft's $pending",
+        ])
+        .output()
+        .unwrap();
+    success(&prepared);
+    execute_hint(&prepared, "Check: ");
+    execute_hint(&prepared, "Preview: ");
+    unchanged(&directory);
+
+    for editor_fails in [false, true] {
+        fs::write(directory.join("ed.spec"), SOURCE).unwrap();
+        let editor = script(
+            &directory,
+            &format!(
+                "sed 's/1.22.5/1.22.6/' \"$1\" > \"$1.next\"\nmv \"$1.next\" \"$1\"\nexit {}",
+                if editor_fails { 7 } else { 0 }
+            ),
+        );
+        let output = command(&directory)
+            .args([
+                "ed.spec",
+                "--field",
+                "package.version",
+                "--editor",
+                &editor,
+                "--stdout",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(i32::from(editor_fails)));
+        unchanged(&directory);
+        execute_hint(&output, "Resume: ");
+        assert_eq!(
+            fs::read_to_string(directory.join("ed.spec")).unwrap(),
+            version_source("1.22.6")
+        );
+    }
 }
 
 #[cfg(unix)]
