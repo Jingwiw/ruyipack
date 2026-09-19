@@ -40,7 +40,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, EditError> {
     match execute(options) {
         Err(error) if options.check && matches!(options.format, Some(CheckFormat::Json)) => {
             let text =
-                serde_json::to_string_pretty(&json!({"valid": false, "files": [], "error": error}))
+                serde_json::to_string_pretty(&json!({"format_version": 1, "scope": "selected-edit-static", "valid": false, "files": [], "error": error}))
                     .map_err(|e| EditError(e.to_string()))?;
             write_stdout(&(text + "\n")).map_err(EditError)?;
             Ok(false)
@@ -265,7 +265,7 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
         if matches!(options.format, Some(CheckFormat::Json)) {
             write_stdout(
                 &(serde_json::to_string_pretty(
-                    &json!({"valid":errors.is_empty(), "files":records}),
+                    &json!({"format_version": 1, "scope": "selected-edit-static", "valid":errors.is_empty(), "files":records}),
                 )
                 .map_err(|e| e.to_string())?
                     + "\n"),

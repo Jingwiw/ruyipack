@@ -318,6 +318,8 @@ fn selected_draft_requires_every_selected_field() {
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["format_version"], 1);
+    assert_eq!(report["scope"], "selected-edit-static");
     assert_eq!(report["valid"], false);
     assert_eq!(report["files"][0]["valid"], false);
     assert!(
@@ -860,4 +862,38 @@ fn invalid_cli_combinations_fail_before_editing() {
         assert_eq!(output.status.code(), Some(2), "{output:?}");
         unchanged(directory.path());
     }
+}
+
+#[test]
+fn check_json_versions_success_and_early_errors() {
+    let directory = fixture();
+    for (file, exit) in [("ed.spec", 0), ("missing.spec", 1)] {
+        let output = command(directory.path())
+            .args([
+                file,
+                "--field",
+                "package.version",
+                "--check",
+                "--format",
+                "json",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(exit), "{output:?}");
+        assert!(output.stderr.is_empty());
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["format_version"], 1);
+        assert_eq!(report["scope"], "selected-edit-static");
+        assert_eq!(report["valid"], exit == 0);
+        if exit == 0 {
+            assert_eq!(
+                report["files"][0]["report"]["evidence"]["stage"],
+                "spec-static"
+            );
+        } else {
+            assert!(report["files"].as_array().unwrap().is_empty());
+            assert!(report["error"].is_string());
+        }
+    }
+    unchanged(directory.path());
 }
