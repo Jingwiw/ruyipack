@@ -56,6 +56,18 @@ run `ruyipack gen NAME`. The scaffold is deliberately incomplete: identify the
 source, dependencies, build steps, and installed files before generating a SPEC.
 Use `ruyipack COMMAND --help` for the available options.
 
+### Capability at a glance
+
+| Task | Supported now | Still needs external work |
+| --- | --- | --- |
+| Start a package | `init` scaffold and local name check | Upstream facts, dependency decisions |
+| Generate a SPEC | Main package, explicit Sources, manual subpackages and supported build stages | Native macro behavior, build and file ownership |
+| Inspect/check | Source syntax and selected static rules | Macro-expanded values and whole-package quality |
+| Edit an existing SPEC | Supported existing main-package fields and Source values | Adding missing digest fields, Patch and subpackage editing |
+| Preserve manual work | Unselected source bytes stay unchanged | Arbitrary full-SPEC conversion |
+
+[中文快速入门](docs/quickstart.zh-CN.md)
+
 ## Initialize
 
 Create a manifest to fill in before generating a SPEC:
@@ -284,6 +296,9 @@ HTTPS; editing also accepts existing HTTP sources. Referenced package fields mus
 be available as unambiguous static literals. Literal percent escapes use `%%`
 (for example, `a%%20b.tar.gz`); unhandled macro tokens are reported as unsupported.
 SHA-256 values contain 64 hexadecimal digits, with their original case preserved.
+Generated URLs and selected URL edits reject usernames/passwords in URL userinfo;
+provide authentication outside the manifest or SPEC. This does not detect secrets
+in arbitrary query strings or redact existing source text shown by view/diff.
 
 Declare additional remote inputs as `[sources.1]`, `[sources.2]`, and so on, each
 with `url` and an optional `sha256`. Omitting the digest emits a bare
@@ -326,7 +341,10 @@ ruyipack check ed.spec --format json
 
 A `pass` result means the selected static rules passed; parser warnings may still
 be present. Read the warnings in human output or the `parser_diagnostics` array
-in JSON output.
+in JSON output. JSON records the actual `selected_rules` and `spec-static` stage.
+Standalone `check` does not validate Source URLs/RemoteAsset associations, download
+or hash source archives, test patches, evaluate native RPM macros, or build packages.
+It is not a credential audit. A static pass does not establish those missing checks.
 
 `check`, `gen`, and `edit` share the selected SPEC checks, including SPDX
 expressions in package `License` tags and recognized top-level SPDX file-license
@@ -383,8 +401,19 @@ as `check`. Text outside the selected replacements is preserved. Macro expressio
 remain expressions: this does not download archives, verify patch applicability,
 evaluate macros, or build packages. Changing Version or Source does not refresh
 recorded digests; review them and any patches before building or submitting.
+A changed Version or Source URL emits a candidate review reminder. The JSON check
+report includes `review_triggers` and `review_required`; these do not change a
+static pass into a failure. Empty review lists mean no such change triggered a
+reminder, not that external verification ran.
 
-The editable subset includes main-package metadata, numbered remote Sources with
+Existing `Source:` declarations use their effective source number when it can be
+established statically. For example, `Source3:` followed by `Source:` maps to
+`sources.3` and `sources.4`, while retaining the original header spelling. Earlier
+conditions, includes or unsupported expressions can make implicit numbering
+uncertain; related Source edits are refused rather than guessed. Unrelated
+selected-field edits can still preserve those declarations.
+
+The editable subset includes main-package metadata, remote Sources with
 adjacent RemoteAsset markers (with or without SHA-256), declarative BuildSystem,
 BuildRequires, descriptions,
 simple file lists, header metadata, comments, and changelog text. Without `--field`,
@@ -418,6 +447,11 @@ ruyipack edit --from drafts
 `--from` checks and applies the saved drafts without opening an editor. To edit
 those drafts again, add `--editor COMMAND`.
 
+The JSON batch envelope has `format_version: 1` and
+`scope: "selected-edit-static"` on successful checks and reported input/candidate
+errors. Each successfully analyzed file embeds the existing `spec-static` report.
+A malformed CLI invocation can still fail before producing this report.
+
 Each draft is named after its source file. The `.state` directory keeps original
 bytes, source identities, and JSON Schemas separate from editable fields. Keep it
 with the drafts. The directory is local to these source paths; prepare new drafts
@@ -429,6 +463,12 @@ Batch candidates are all checked before writing. Writes are atomic per file,
 not across the batch; a later I/O failure reports files already written. Inspect
 those files before retrying. Drafts do not update SPEC files in the background;
 write-back happens only after the command validates them.
+
+Use drafts only from your own trusted workspace. Their hashes detect inconsistent
+state, not who created it; do not apply an unknown downloaded draft directory.
+Concurrent-edit checks are best effort, not a lock against arbitrary competing
+writers. Atomic replacement does not promise crash durability across power loss.
+The configured editor is a trusted executable, not a sandboxed program.
 
 ## Validation and contributing
 
@@ -445,6 +485,17 @@ Run the repository checks before submitting a change:
 `PATH`. The smoke test exercises an installed executable using temporary files
 without changing the checkout. Neither check replaces a native RPM build in the
 target distribution.
+
+In a trusted openRuyi environment with Python 3, `rpm`, `rpmspec`, and
+`rpm-config-openruyi` installed, run `./scripts/check-native-sources`.
+It prints the RPM/macro package identities and checks the same Source-numbering
+cases used by the Rust integration tests. It neither downloads sources nor builds
+packages; this is a separate native semantic gate, not part of the portable CI.
+
+This preview does not promise compatibility for saved drafts or manifests across
+versions. Pin the tool and parser identities used by automation; JSON consumers
+must check `format_version`. Incompatible report changes require a version change;
+new optional output fields may be added. `inspect.preamble` remains parser-specific.
 
 Keep changes focused and include a regression test for changed behavior. When
 reporting a problem, include `ruyipack --version`, your OS and architecture, the
