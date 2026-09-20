@@ -11,6 +11,11 @@ SPDX-License-Identifier: MulanPSL-2.0
 # Each stage runs in its own shell. Keep heredoc terminators at the required indentation.
 # An empty replace explicitly supplies an empty main section. A commented stage supplies no section.
 {% endif %}
+# Optional for each stage: prepend/append run before/after the main script.
+# prepend = '''
+# '''
+# append = '''
+# '''
 # [build.stages.prep]
 # replace = '''
 # '''
@@ -29,9 +34,4 @@ SPDX-License-Identifier: MulanPSL-2.0
 
 # [build.stages.check]
 # replace = '''
-# '''
-# Optional for each stage: prepend/append run before/after the main script.
-# prepend = '''
-# '''
-# append = '''
 # '''
