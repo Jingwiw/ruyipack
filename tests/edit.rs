@@ -175,7 +175,7 @@ fn unchanged_assignment_preserves_every_source_byte() {
         .unwrap();
     success(&saved);
     assert!(saved.stdout.is_empty());
-    assert!(saved.stderr.is_empty());
+    assert!(String::from_utf8_lossy(&saved.stderr).contains("Unchanged "));
     unchanged(directory.path());
 }
 

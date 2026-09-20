@@ -190,29 +190,57 @@ pub(crate) enum EditMode {
     Overwrite,
 }
 
-/// Publishes a checked edit batch. Individual files are staged, not the whole batch.
-pub(crate) fn run_edits(files: &[EditFile<'_>], mode: EditMode) -> Result<(), OutputError> {
-    let mut written = Vec::new();
-    run_edit_batch(files, mode, &mut written).map_err(|source| {
-        if written.is_empty() {
-            source
-        } else {
-            OutputError::Partial {
-                written: written
-                    .iter()
-                    .map(|path: &PathBuf| path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                source: Box::new(source),
+/// Observed result for one edit destination.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum EditOutcome {
+    Written(PathBuf),
+    Unchanged(PathBuf),
+    Skipped(PathBuf),
+}
+
+impl EditOutcome {
+    pub(crate) fn write_human(&self, writer: &mut impl Write) -> io::Result<()> {
+        let (action, path) = match self {
+            Self::Written(path) => ("Wrote", path),
+            Self::Unchanged(path) => ("Unchanged", path),
+            Self::Skipped(path) => ("Kept", path),
+        };
+        writeln!(writer, "{action} {}", path.display())
+    }
+}
+
+/// Publishes checked candidates, retaining exact paths on partial failure.
+pub(crate) fn run_edits(
+    files: &[EditFile<'_>],
+    mode: EditMode,
+) -> Result<Vec<EditOutcome>, OutputError> {
+    let mut outcomes = Vec::new();
+    match run_edit_batch(files, mode, &mut outcomes) {
+        Ok(()) => Ok(outcomes),
+        Err(source) => {
+            let written = outcomes
+                .into_iter()
+                .filter_map(|outcome| match outcome {
+                    EditOutcome::Written(path) => Some(path),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if written.is_empty() {
+                Err(source)
+            } else {
+                Err(OutputError::Partial {
+                    written,
+                    source: Box::new(source),
+                })
             }
         }
-    })
+    }
 }
 
 fn run_edit_batch(
     files: &[EditFile<'_>],
     mode: EditMode,
-    written: &mut Vec<PathBuf>,
+    outcomes: &mut Vec<EditOutcome>,
 ) -> Result<(), OutputError> {
     let mut overwritten = vec![false; files.len()];
     check_sources(files, &overwritten)?;
@@ -244,6 +272,7 @@ fn run_edit_batch(
         .zip(&targets)
         .all(|(file, target)| target == file.source_path && file.contents == file.original)
     {
+        outcomes.extend(targets.into_iter().map(EditOutcome::Unchanged));
         return Ok(());
     }
     // Writing back to the source is the edit action, not an output conflict.
@@ -279,10 +308,7 @@ fn run_edit_batch(
         _ => unreachable!("read-only edit modes already returned"),
     };
     if matches!(action, ConflictAction::Skip) {
-        for target in &targets {
-            writeln!(io::stderr().lock(), "Kept {}", target.display())
-                .map_err(OutputError::Stderr)?;
-        }
+        outcomes.extend(targets.into_iter().map(EditOutcome::Skipped));
         return Ok(());
     }
     for (index, (file, target)) in files.iter().zip(&targets).enumerate() {
@@ -310,6 +336,7 @@ fn run_edit_batch(
                 return Err(OutputError::Changed(target.clone()));
             }
             if existing[index].as_deref() == Some(file.contents.as_bytes()) {
+                outcomes.push(EditOutcome::Unchanged(target.clone()));
                 continue;
             }
             let permissions = access_permissions(if existing[index].is_some() {
@@ -334,8 +361,7 @@ fn run_edit_batch(
             }
             target.clone()
         };
-        written.push(path.clone());
-        writeln!(io::stderr().lock(), "Wrote {}", path.display()).map_err(OutputError::Stderr)?;
+        outcomes.push(EditOutcome::Written(path));
     }
     Ok(())
 }
@@ -673,9 +699,11 @@ pub(crate) enum OutputError {
         "output already exists with different content; confirmation requires a terminal\nhelp: use --force to replace it, --output FILE for another path, or --diff to preview the source edit"
     )]
     EditPrompt,
-    #[error("batch stopped after writing {written}; remaining files were not published: {source}")]
+    #[error(
+        "batch stopped after writing {written:?}; remaining files were not published: {source}"
+    )]
     Partial {
-        written: String,
+        written: Vec<PathBuf>,
         #[source]
         source: Box<OutputError>,
     },
@@ -769,7 +797,13 @@ mod tests {
                 contents: "edited second\n",
             },
         ];
-        run_edits(&files, EditMode::Overwrite).unwrap();
+        assert_eq!(
+            run_edits(&files, EditMode::Overwrite).unwrap(),
+            vec![
+                EditOutcome::Written(first.clone()),
+                EditOutcome::Written(second.clone())
+            ]
+        );
         assert_eq!(fs::read_to_string(first).unwrap(), "edited first\n");
         assert_eq!(fs::read_to_string(second).unwrap(), "edited second\n");
     }
@@ -875,5 +909,60 @@ mod tests {
             fs::metadata(&input).unwrap().permissions().mode() & 0o7777,
             0o640
         );
+    }
+    #[test]
+    fn unchanged_edits_do_not_replace_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = source(directory.path(), "unchanged.spec", "same\n");
+        let before = fs::metadata(&input).unwrap();
+        let files = [EditFile {
+            source_path: &input,
+            original: "same\n",
+            target_path: &input,
+            contents: "same\n",
+        }];
+        assert_eq!(
+            run_edits(&files, EditMode::Overwrite).unwrap(),
+            vec![EditOutcome::Unchanged(input.clone())]
+        );
+        let after = fs::metadata(&input).unwrap();
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+        #[cfg(unix)]
+        assert_eq!(before.ino(), after.ino());
+        assert_eq!(fs::read_to_string(&input).unwrap(), "same\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_later_write_failure_retains_exact_written_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = source(directory.path(), "first, with spaces.spec", "first\n");
+        let locked = directory.path().join("locked");
+        fs::create_dir(&locked).unwrap();
+        let second = source(&locked, "second.spec", "second\n");
+        let files = [
+            EditFile {
+                source_path: &first,
+                original: "first\n",
+                target_path: &first,
+                contents: "changed first\n",
+            },
+            EditFile {
+                source_path: &second,
+                original: "second\n",
+                target_path: &second,
+                contents: "changed second\n",
+            },
+        ];
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+        let result = run_edits(&files, EditMode::Overwrite);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        let Err(OutputError::Partial { written, source }) = result else {
+            panic!("expected a partial permission failure: {result:?}")
+        };
+        assert_eq!(written, vec![first.clone()]);
+        assert!(matches!(*source, OutputError::Write { .. }));
+        assert_eq!(fs::read_to_string(first).unwrap(), "changed first\n");
+        assert_eq!(fs::read_to_string(second).unwrap(), "second\n");
     }
 }

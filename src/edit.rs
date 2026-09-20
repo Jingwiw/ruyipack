@@ -333,7 +333,11 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
     } else {
         file_output::EditMode::Write
     };
-    file_output::run_edits(&files, mode).map_err(|e| e.to_string())?;
+    for outcome in file_output::run_edits(&files, mode).map_err(|e| e.to_string())? {
+        outcome
+            .write_human(&mut io::stderr().lock())
+            .map_err(|e| e.to_string())?;
+    }
     Ok(true)
 }
 
