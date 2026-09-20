@@ -13,7 +13,6 @@ use std::{
 };
 
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 use crate::{
     parser_diagnostic::{self, Diagnostic as ParserDiagnostic},
@@ -62,7 +61,7 @@ impl CheckReport {
         parser_diagnostics: Vec<ParserDiagnostic>,
     ) -> Self {
         Self {
-            sha256: source_digest(source),
+            sha256: crate::utf8_file::digest(source),
             status: CheckStatus::Incomplete(INCOMPLETE_PARSER_ERROR),
             selected_rules,
             parser_diagnostics,
@@ -97,7 +96,7 @@ impl CheckReport {
             CheckStatus::Pass
         };
         Self {
-            sha256: source_digest(source),
+            sha256: crate::utf8_file::digest(source),
             status,
             selected_rules,
             parser_diagnostics,
@@ -202,10 +201,6 @@ impl CheckStatus {
             Self::Pass | Self::Fail => None,
         }
     }
-}
-
-fn source_digest(source: &str) -> String {
-    format!("{:x}", Sha256::digest(source.as_bytes()))
 }
 
 #[derive(Serialize)]

@@ -6,7 +6,22 @@
 
 //! Embedded openRuyi defaults shared by SPEC generation and editing.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+const SOURCE: &str = include_str!("../profiles/openruyi-v1/profile.toml");
+
+#[derive(Serialize)]
+pub(crate) struct Identity {
+    pub(crate) name: String,
+    pub(crate) sha256: String,
+}
+
+pub(crate) fn identity() -> Identity {
+    Identity {
+        name: "openruyi-v1".into(),
+        sha256: crate::utf8_file::digest(SOURCE),
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
@@ -31,5 +46,5 @@ impl Profile {
     }
 }
 pub(crate) fn load() -> Result<Profile, toml::de::Error> {
-    toml::from_str(include_str!("../profiles/openruyi-v1/profile.toml"))
+    toml::from_str(SOURCE)
 }

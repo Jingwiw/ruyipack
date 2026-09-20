@@ -318,12 +318,13 @@ fn selected_draft_requires_every_selected_field() {
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["format_version"], 1);
+    assert_eq!(report["format_version"], 2);
     assert_eq!(report["scope"], "selected-edit-static");
     assert_eq!(report["valid"], false);
     assert_eq!(report["files"][0]["valid"], false);
+    assert_eq!(report["files"][0]["error"]["code"], "draft-shape");
     assert!(
-        report["files"][0]["error"]
+        report["files"][0]["error"]["message"]
             .as_str()
             .unwrap()
             .contains("package.version")
@@ -347,7 +348,8 @@ fn invalid_toml_reports_its_file_line_and_column_in_check_json() {
     assert!(output.stderr.is_empty());
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["valid"], false);
-    let error = report["files"][0]["error"].as_str().unwrap();
+    assert_eq!(report["files"][0]["error"]["code"], "invalid-draft");
+    let error = report["files"][0]["error"]["message"].as_str().unwrap();
     assert!(error.contains("ed.toml:2:"), "{error}");
     assert_eq!(
         fs::read_to_string(path).unwrap(),
@@ -378,7 +380,8 @@ fn all_prepared_files_are_checked_before_any_source_is_written() {
     assert_eq!(report["files"].as_array().unwrap().len(), 2);
     assert_eq!(report["files"][0]["valid"], true);
     assert_eq!(report["files"][1]["valid"], false);
-    let error = report["files"][1]["error"].as_str().unwrap();
+    assert_eq!(report["files"][1]["error"]["code"], "draft-shape");
+    let error = report["files"][1]["error"]["message"].as_str().unwrap();
     assert!(error.contains("package.version"), "{error}");
     assert!(error.contains("expected a string"), "{error}");
     let output = command(directory.path())
@@ -535,8 +538,9 @@ fn stale_draft_does_not_hide_other_files_check_results() {
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["files"].as_array().unwrap().len(), 2);
     assert_eq!(report["files"][0]["valid"], false);
+    assert_eq!(report["files"][0]["error"]["code"], "source-changed");
     assert!(
-        report["files"][0]["error"]
+        report["files"][0]["error"]["message"]
             .as_str()
             .unwrap()
             .contains("changed")
@@ -881,7 +885,7 @@ fn check_json_versions_success_and_early_errors() {
         assert_eq!(output.status.code(), Some(exit), "{output:?}");
         assert!(output.stderr.is_empty());
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(report["format_version"], 1);
+        assert_eq!(report["format_version"], 2);
         assert_eq!(report["scope"], "selected-edit-static");
         assert_eq!(report["valid"], exit == 0);
         if exit == 0 {
@@ -891,7 +895,8 @@ fn check_json_versions_success_and_early_errors() {
             );
         } else {
             assert!(report["files"].as_array().unwrap().is_empty());
-            assert!(report["error"].is_string());
+            assert!(report["error"]["code"].is_string());
+            assert!(report["error"]["message"].is_string());
         }
     }
     unchanged(directory.path());
@@ -946,5 +951,51 @@ fn upgrade_review_is_visible_without_changing_static_check_success() {
         );
         assert!(String::from_utf8_lossy(&preview.stdout).contains("sha256:56e107"));
     }
+    unchanged(directory.path());
+}
+
+#[test]
+fn edit_reports_bind_original_candidate_and_profile_without_inventing_a_path() {
+    use sha2::{Digest, Sha256};
+    let directory = fixture();
+    let source_path = directory.path().join("ed.spec").canonicalize().unwrap();
+    let output = command(directory.path())
+        .args([
+            "ed.spec",
+            "--set",
+            "package.version=2",
+            "--check",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    success(&output);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let file = &value["files"][0];
+    assert_eq!(file["source"], source_path.to_str().unwrap());
+    assert_eq!(
+        file["report"]["input"]["display_path"],
+        source_path.to_str().unwrap()
+    );
+    assert_eq!(
+        file["original_sha256"],
+        format!("{:x}", Sha256::digest(SOURCE.as_bytes()))
+    );
+    assert_eq!(
+        file["report"]["input"]["sha256"],
+        format!("{:x}", Sha256::digest(version_source("2").as_bytes()))
+    );
+    assert_eq!(file["report_subject"], "candidate");
+    assert_eq!(file["profile"]["name"], "openruyi-v1");
+    assert_eq!(
+        file["profile"]["sha256"],
+        format!(
+            "{:x}",
+            Sha256::digest(include_bytes!("../profiles/openruyi-v1/profile.toml"))
+        )
+    );
+    assert_eq!(file["report"]["evidence"]["stage"], "spec-static");
+    assert!(file.get("environment").is_none());
     unchanged(directory.path());
 }

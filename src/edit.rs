@@ -9,6 +9,10 @@
 mod candidate;
 mod drafts;
 mod editor;
+mod error;
+
+pub(crate) use error::EditError;
+use error::Kind;
 pub(crate) mod fields;
 mod options;
 
@@ -38,16 +42,16 @@ pub(crate) fn run(options: &Options) -> Result<bool, EditError> {
     match execute(options) {
         Err(error) if options.check && matches!(options.format, Some(CheckFormat::Json)) => {
             let text =
-                serde_json::to_string_pretty(&json!({"format_version": 1, "scope": "selected-edit-static", "valid": false, "files": [], "error": error}))
-                    .map_err(|e| EditError(e.to_string()))?;
-            write_stdout(&(text + "\n")).map_err(EditError)?;
+                serde_json::to_string_pretty(&json!({"format_version": 2, "scope": "selected-edit-static", "valid": false, "files": [], "error": error}))
+                    .map_err(|e| EditError::from(e.to_string()))?;
+            write_stdout(&(text + "\n")).map_err(EditError::from)?;
             Ok(false)
         }
-        result => result.map_err(EditError),
+        result => result,
     }
 }
 
-fn execute(options: &Options) -> Result<bool, String> {
+fn execute(options: &Options) -> Result<bool, EditError> {
     let mut inputs = if let Some(dir) = &options.from {
         drafts::load(dir)?
             .into_iter()
@@ -80,10 +84,7 @@ fn execute(options: &Options) -> Result<bool, String> {
     }
     for (i, item) in inputs.iter().enumerate() {
         if inputs[..i].iter().any(|other| other.path == item.path) {
-            return Err(format!(
-                "{}: SPEC selected more than once",
-                item.path.display()
-            ));
+            return Err(format!("{}: SPEC selected more than once", item.path.display()).into());
         }
     }
     if options.view || options.schema {
@@ -128,7 +129,7 @@ fn execute(options: &Options) -> Result<bool, String> {
             .filter_map(|item| item.draft.as_deref())
             .collect::<Vec<_>>();
         if let Err(error) = editor::open(&paths, options.editor.as_deref()) {
-            return Err(retain(error, temporary, &inputs));
+            return Err(retain(error.into(), temporary, &inputs));
         }
     }
     let result = apply(options, &inputs);
@@ -175,7 +176,7 @@ fn input(
     source: String,
     fields: Vec<String>,
     draft: Option<PathBuf>,
-) -> Result<Input, String> {
+) -> Result<Input, EditError> {
     let parsed = ParsedSpec::parse(&source);
     let snapshot = if fields.is_empty() {
         Snapshot::capture(&parsed)
@@ -193,9 +194,10 @@ fn input(
                 "\nFull-view editing requires a mapping for every construct. Select supported fields instead, for example:\n  ruyipack edit {quoted} --field package.version --view\nOmit --view to edit the selected field. Use inspect to read the main-package tags."
             ));
         }
-        message
+        EditError::at(Kind::UnmappableFields, &path, &fields, message)
     })?;
-    fields::select(snapshot.document(), &fields)?;
+    fields::select(snapshot.document(), &fields)
+        .map_err(|error| EditError::at(Kind::UnmappableFields, &path, &fields, error))?;
     Ok(Input {
         path,
         source,
@@ -220,7 +222,7 @@ fn create_drafts(dir: &Path, inputs: &[Input]) -> Result<Vec<drafts::Draft>, Str
     drafts::create(dir, &documents)
 }
 
-fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
+fn apply(options: &Options, inputs: &[Input]) -> Result<bool, EditError> {
     if let Some(output) = &options.output {
         protect_drafts(output, inputs)?;
     }
@@ -251,9 +253,11 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
                 if json_output {
                     records.push(
                         json!({"source": item.path, "draft": item.draft, "valid": success,
+                        "original_sha256": utf8_file::digest(&item.source), "report_subject": "candidate",
+                        "profile": crate::profile::identity(),
                         "changed": text != item.source, "review_triggers": review_triggers,
                         "review_required": review_required,
-                        "report": report.structured(Path::new(&label))}),
+                        "report": report.structured(&item.path)}),
                     );
                 }
                 if !matches!(options.format, Some(CheckFormat::Json)) {
@@ -268,10 +272,17 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
                         .map_err(|e| e.to_string())?;
                 }
                 if !success {
-                    errors.push(format!(
-                        "{}: candidate failed static checks",
-                        item.path.display()
-                    ));
+                    let error = EditError::at(
+                        Kind::StaticCheckFailed,
+                        &item.path,
+                        &item.fields,
+                        format!("{}: candidate failed static checks", item.path.display()),
+                    );
+                    if json_output {
+                        records.last_mut().expect("candidate record")["error"] =
+                            serde_json::to_value(&error).expect("serializable error");
+                    }
+                    errors.push(error);
                 }
                 candidates.push(text);
             }
@@ -290,7 +301,7 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
         if matches!(options.format, Some(CheckFormat::Json)) {
             write_stdout(
                 &(serde_json::to_string_pretty(
-                    &json!({"format_version": 1, "scope": "selected-edit-static", "valid":errors.is_empty(), "files":records}),
+                    &json!({"format_version": 2, "scope": "selected-edit-static", "valid":errors.is_empty(), "files":records}),
                 )
                 .map_err(|e| e.to_string())?
                     + "\n"),
@@ -312,7 +323,14 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
         return Ok(errors.is_empty());
     }
     if !errors.is_empty() {
-        return Err(errors.join("\n"));
+        let message = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut error = errors.remove(0);
+        error.message = message;
+        return Err(error);
     }
     let files = inputs
         .iter()
@@ -333,7 +351,7 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
     } else {
         file_output::EditMode::Write
     };
-    for outcome in file_output::run_edits(&files, mode).map_err(|e| e.to_string())? {
+    for outcome in file_output::run_edits(&files, mode).map_err(EditError::publication)? {
         outcome
             .write_human(&mut io::stderr().lock())
             .map_err(|e| e.to_string())?;
@@ -344,13 +362,18 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
 fn read_candidate(
     item: &Input,
     assignments: &[(String, String)],
-) -> Result<candidate::Candidate, String> {
+) -> Result<candidate::Candidate, EditError> {
     if !utf8_file::is_unchanged(&item.path, &item.source)
         .map_err(|e| format!("{}: {e}", item.path.display()))?
     {
-        return Err(format!(
-            "{}: source changed; prepare a fresh draft",
-            item.path.display()
+        return Err(EditError::at(
+            Kind::SourceChanged,
+            &item.path,
+            &item.fields,
+            format!(
+                "{}: source changed; prepare a fresh draft",
+                item.path.display()
+            ),
         ));
     }
     let document = if let Some(path) = &item.draft {
@@ -360,17 +383,32 @@ fn read_candidate(
             let before = &text[..offset];
             let line = before.bytes().filter(|byte| *byte == b'\n').count() + 1;
             let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
-            format!("{}:{line}:{column}: {}", path.display(), e.message())
+            EditError::at(
+                Kind::InvalidDraft,
+                path,
+                &item.fields,
+                format!("{}:{line}:{column}: {}", path.display(), e.message()),
+            )
         })?;
-        fields::merge(item.snapshot.document(), &item.fields, &edited)
-            .map_err(|e| format!("{}: {e}", path.display()))?
+        fields::merge(item.snapshot.document(), &item.fields, &edited).map_err(|e| {
+            EditError::at(
+                Kind::DraftShape,
+                path,
+                &item.fields,
+                format!("{}: {e}", path.display()),
+            )
+        })?
     } else {
-        fields::assign(item.snapshot.document(), assignments)?
+        fields::assign(item.snapshot.document(), assignments)
+            .map_err(|e| EditError::at(Kind::InvalidAssignment, &item.path, &item.fields, e))?
     };
     candidate::prepare(&item.snapshot, &item.fields, &document).map_err(|error| {
-        format!(
-            "{}: {error}",
-            item.draft.as_deref().unwrap_or(&item.path).display()
+        let path = item.draft.as_deref().unwrap_or(&item.path);
+        EditError::at(
+            Kind::InvalidCandidate,
+            path,
+            &item.fields,
+            format!("{}: {error}", path.display()),
         )
     })
 }
@@ -419,8 +457,12 @@ fn protect_drafts(output: &Path, inputs: &[Input]) -> Result<(), String> {
     Ok(())
 }
 
-fn retain(error: String, temporary: Option<tempfile::TempDir>, inputs: &[Input]) -> String {
-    match temporary {
+fn retain(
+    mut error: EditError,
+    temporary: Option<tempfile::TempDir>,
+    inputs: &[Input],
+) -> EditError {
+    error.message = match temporary {
         Some(dir) => {
             let path = dir.keep();
             if inputs
@@ -439,8 +481,9 @@ fn retain(error: String, temporary: Option<tempfile::TempDir>, inputs: &[Input])
                 )
             }
         }
-        None => error,
-    }
+        None => error.message,
+    };
+    error
 }
 fn write_stdout(text: &str) -> Result<(), String> {
     io::stdout()
@@ -448,6 +491,3 @@ fn write_stdout(text: &str) -> Result<(), String> {
         .write_all(text.as_bytes())
         .map_err(|e| format!("failed to write output to stdout: {e}"))
 }
-#[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub(crate) struct EditError(String);

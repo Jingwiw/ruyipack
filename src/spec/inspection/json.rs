@@ -13,7 +13,6 @@ use std::{
 
 use rpm_spec::ast::{Span, SpecFile, SpecItem};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 use crate::parser_diagnostic::Diagnostic;
 
@@ -30,7 +29,7 @@ pub(super) fn write(
         format_version: 1,
         input: InputIdentity {
             display_path: &path,
-            sha256: format!("{:x}", Sha256::digest(source.as_bytes())),
+            sha256: crate::utf8_file::digest(source),
         },
         parser: ParserIdentity {
             version: env!("RUYIPACK_RPM_SPEC_VERSION"),

@@ -14,7 +14,6 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::utf8_file;
 
@@ -95,7 +94,7 @@ pub(super) fn create(
         index.drafts.push(Entry {
             source,
             original: format!("originals/{position}.spec"),
-            original_sha256: digest(original),
+            original_sha256: utf8_file::digest(original),
             fields: fields.clone(),
             draft,
             schema,
@@ -184,7 +183,7 @@ pub(super) fn load(dir: &Path) -> Result<Vec<Draft>, String> {
                 original_path.display()
             )
         })?;
-        if digest(&original) != entry.original_sha256 {
+        if utf8_file::digest(&original) != entry.original_sha256 {
             return Err(format!(
                 "saved original hash mismatch for {}",
                 entry.source.display()
@@ -218,10 +217,6 @@ fn draft_name(source: &Path) -> Result<String, String> {
         ));
     }
     Ok(name)
-}
-
-fn digest(original: &str) -> String {
-    format!("{:x}", Sha256::digest(original.as_bytes()))
 }
 
 fn ensure_absent(path: &Path) -> Result<(), String> {
