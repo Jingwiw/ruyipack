@@ -84,6 +84,17 @@ pub(crate) fn contract(name: &str) -> Option<&'static Contract> {
         .find(|contract| contract.name == name)
 }
 
+/// Identifies the exact embedded contract selected by a manifest.
+pub(crate) fn contract_identity(name: &str) -> Option<crate::profile::Identity> {
+    CONTRACTS
+        .iter()
+        .find(|entry| entry.get().name == name)
+        .map(|entry| crate::profile::Identity {
+            name: format!("openruyi-v1/buildsystems/{name}"),
+            sha256: crate::utf8_file::digest(entry.toml),
+        })
+}
+
 /// Names of every supported build system, in declaration order.
 pub(crate) fn systems() -> impl Iterator<Item = &'static str> {
     CONTRACTS

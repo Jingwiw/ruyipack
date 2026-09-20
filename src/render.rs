@@ -33,7 +33,13 @@ pub(crate) fn run(source: &str) -> Result<RenderedSpec, RenderError> {
             format!("sources.{number}: no sha256; rendered a bare #!RemoteAsset without a digest")
         })
         .collect();
+    let build_contract = manifest
+        .build
+        .system
+        .as_deref()
+        .and_then(crate::check::build::contract_identity);
     Ok(RenderedSpec {
+        build_contract,
         name: manifest.package.name,
         contents,
         report,
@@ -41,6 +47,7 @@ pub(crate) fn run(source: &str) -> Result<RenderedSpec, RenderError> {
     })
 }
 pub(crate) struct RenderedSpec {
+    pub(crate) build_contract: Option<crate::profile::Identity>,
     pub(crate) name: String,
     pub(crate) contents: String,
     pub(crate) report: CheckReport,

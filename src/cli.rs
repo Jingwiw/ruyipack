@@ -56,6 +56,12 @@ Without a usable terminal or an explicit action, conflicting output is an error.
         /// Manifest to read; defaults to NAME.toml in the current directory.
         #[arg(long, value_name = "PATH")]
         manifest: Option<PathBuf>,
+        /// Checks generation without writing SPEC files or consulting output conflicts.
+        #[arg(long, conflicts_with_all = ["path", "stdout", "diff", "force", "skip_existing"])]
+        check: bool,
+        /// Selects the generation check report format.
+        #[arg(long, value_enum, requires = "check")]
+        format: Option<check_command::CheckFormat>,
         #[command(flatten, next_help_heading = "Output options")]
         output: file_output::OutputOptions,
     },

@@ -1012,3 +1012,116 @@ fn malformed_subpackage_dependencies_cannot_overwrite_even_with_force() {
         }
     }
 }
+
+#[test]
+fn generation_reports_identify_real_inputs_and_never_publish() {
+    use sha2::{Digest, Sha256};
+    let directory = workspace(MANIFEST);
+    let target = directory.path().join("ed.spec");
+    fs::write(&target, "existing manual SPEC\n").unwrap();
+    let args = ["gen", "ed", "--check", "--format", "json"];
+    let first = run(directory.path(), &args);
+    success(&first);
+    let second = run(directory.path(), &args);
+    success(&second);
+    assert_eq!(first.stdout, second.stdout);
+    let report: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(report["format_version"], 1);
+    assert_eq!(report["scope"], "manifest-generation-static");
+    assert_eq!(report["valid"], true);
+    assert_eq!(report["manifest"]["display_path"], "ed.toml");
+    assert_eq!(
+        report["manifest"]["sha256"],
+        format!("{:x}", Sha256::digest(MANIFEST.as_bytes()))
+    );
+    assert_eq!(
+        report["profile"]["sha256"],
+        format!(
+            "{:x}",
+            Sha256::digest(include_bytes!("../profiles/openruyi-v1/profile.toml"))
+        )
+    );
+    assert_eq!(
+        report["build_contract"]["name"],
+        "openruyi-v1/buildsystems/autotools"
+    );
+    assert_eq!(
+        report["build_contract"]["sha256"],
+        format!(
+            "{:x}",
+            Sha256::digest(include_bytes!(
+                "../profiles/openruyi-v1/buildsystems/autotools.toml"
+            ))
+        )
+    );
+    assert_eq!(report["report_subject"], "candidate");
+    assert_eq!(
+        report["report"]["input"]["sha256"],
+        format!("{:x}", Sha256::digest(SPEC.as_bytes()))
+    );
+    assert_eq!(report["report"]["evidence"]["stage"], "spec-static");
+    assert!(report.get("environment").is_none());
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        "existing manual SPEC\n"
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("ed.toml")).unwrap(),
+        MANIFEST
+    );
+    let without_check = run(directory.path(), &["gen", "ed", "--format", "json"]);
+    assert_eq!(without_check.status.code(), Some(2));
+    let human = run(directory.path(), &["gen", "ed", "--check"]);
+    success(&human);
+    assert!(human.stdout.is_empty());
+    for conflicting in [
+        "--stdout",
+        "--diff",
+        "--force",
+        "--skip-existing",
+        "--output=other.spec",
+    ] {
+        let result = run(directory.path(), &["gen", "ed", "--check", conflicting]);
+        assert_eq!(result.status.code(), Some(2));
+    }
+    let plain = MANIFEST.replace("system = \"autotools\"\n", "");
+    fs::write(directory.path().join("ed.toml"), plain).unwrap();
+    let result = run(directory.path(), &args);
+    success(&result);
+    let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert!(report["build_contract"].is_null());
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
+}
+
+#[test]
+fn generation_check_reports_static_failure_without_writing() {
+    let manifest = MANIFEST.replace("GPL-3.0-or-later AND LGPL-2.1-or-later", "Invalid-License");
+    let directory = workspace(&manifest);
+    let result = run(
+        directory.path(),
+        &["gen", "ed", "--check", "--format", "json"],
+    );
+    assert_eq!(result.status.code(), Some(1), "{result:?}");
+    assert!(result.stderr.is_empty(), "{result:?}");
+    let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(report["valid"], false);
+    assert_eq!(report["report"]["evidence"]["status"], "fail");
+    assert!(!directory.path().join("ed.spec").exists());
+    assert_eq!(
+        fs::read_to_string(directory.path().join("ed.toml")).unwrap(),
+        manifest
+    );
+}
+
+#[test]
+fn generation_input_failures_do_not_claim_a_candidate_report() {
+    let directory = workspace("not valid TOML!");
+    let result = run(
+        directory.path(),
+        &["gen", "ed", "--check", "--format", "json"],
+    );
+    assert_eq!(result.status.code(), Some(1));
+    assert!(result.stdout.is_empty());
+    assert!(!result.stderr.is_empty());
+    assert!(!directory.path().join("ed.spec").exists());
+}

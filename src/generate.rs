@@ -12,14 +12,16 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use crate::{file_output, render, utf8_file};
+use crate::{check_command::CheckFormat, file_output, render, utf8_file};
 
 /// Generates the SPEC owned by one manifest.
 pub(crate) fn run(
     requested_name: &str,
     manifest_path: Option<&Path>,
     output: &file_output::OutputOptions,
-) -> Result<(), GenerateError> {
+    check_only: bool,
+    format: Option<CheckFormat>,
+) -> Result<bool, GenerateError> {
     // NAME selects a package; it never acts as an implicit manifest path.
     let mut name_components = Path::new(requested_name).components();
     let name_is_file_component = matches!(name_components.next(), Some(Component::Normal(_)))
@@ -64,14 +66,31 @@ pub(crate) fn run(
         });
     }
 
+    let default_target = manifest_path.with_file_name(format!("{}.spec", rendered.name));
+    let target = output.path.as_deref().unwrap_or(&default_target);
+    if check_only && matches!(format, Some(CheckFormat::Json)) {
+        let report = serde_json::json!({
+            "format_version": 1,
+            "scope": "manifest-generation-static",
+            "valid": rendered.report.is_success(),
+            "manifest": {"display_path": manifest_path, "sha256": utf8_file::digest(&manifest_source)},
+            "profile": crate::profile::identity(),
+            "build_contract": rendered.build_contract,
+            "report_subject": "candidate",
+            "report": rendered.report.structured(target),
+            "warnings": rendered.warnings,
+        });
+        serde_json::to_writer(io::stdout().lock(), &report).map_err(GenerateError::Json)?;
+        writeln!(io::stdout().lock()).map_err(GenerateError::Stdout)?;
+        return Ok(rendered.report.is_success());
+    }
+
     // Non-fatal: a source without a digest is a valid openRuyi form. Report it
     // and keep the success exit code.
     for warning in &rendered.warnings {
         writeln!(io::stderr().lock(), "warning: {warning}").map_err(GenerateError::Stderr)?;
     }
 
-    let default_target = manifest_path.with_file_name(format!("{}.spec", rendered.name));
-    let target = output.path.as_deref().unwrap_or(&default_target);
     rendered
         .report
         .write_human(target, &mut io::stderr().lock())
@@ -80,6 +99,9 @@ pub(crate) fn run(
         return Err(GenerateError::CheckFailed);
     }
 
+    if check_only {
+        return Ok(true);
+    }
     if !output.action.stdout && !output.action.diff {
         if manifest_path == target {
             return Err(GenerateError::InputIsTarget(target.to_path_buf()));
@@ -101,6 +123,7 @@ pub(crate) fn run(
         &output.action,
         file_output::ConflictHint::WithOutputPath,
     )
+    .map(|()| true)
     .map_err(GenerateError::Output)
 }
 
@@ -124,6 +147,10 @@ fn reject_input_alias(manifest_path: &Path, target: &Path) -> Result<(), Generat
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum GenerateError {
+    #[error("failed to write generation report: {0}")]
+    Json(#[source] serde_json::Error),
+    #[error("failed to write output to stdout: {0}")]
+    Stdout(#[source] io::Error),
     #[error("{0}")]
     Input(#[source] utf8_file::Utf8FileError),
     #[error("failed to generate SPEC from {}: {source}", .path.display())]

@@ -266,6 +266,17 @@ ruyipack gen ed --force
 ruyipack gen ed --skip-existing
 ```
 
+`gen NAME --check` validates without publishing or checking target conflicts.
+Add `--format json` for a deterministic `format_version: 1` report with scope
+`manifest-generation-static`. It identifies the manifest bytes, embedded profile,
+selected declarative build contract (or `null`), parser, and candidate SPEC bytes.
+`report.input.display_path` is the intended destination, not a claim that the file
+exists or matches the candidate. Profile and contract hashes identify their TOML
+bytes, not an entire build environment. No native parsing or build is performed.
+Static failures return status 1 with the report; input/rendering failures can
+return status 1 on stderr before a report exists. `--format` requires `--check`,
+which cannot accompany output, preview, or overwrite options.
+
 `--stdout` prints the complete candidate without reading or writing the target.
 `--diff` prints a unified diff without writing files; a missing target is shown as
 a new file. Use `--diff --output FILE` to compare against a different target.
@@ -452,9 +463,18 @@ ruyipack edit --from drafts
 `--from` checks and applies the saved drafts without opening an editor. To edit
 those drafts again, add `--editor COMMAND`.
 
-The JSON batch envelope has `format_version: 1` and
+The JSON batch envelope has `format_version: 2` and
 `scope: "selected-edit-static"` on successful checks and reported input/candidate
 errors. Each successfully analyzed file embeds the existing `spec-static` report.
+Per-file `original_sha256` identifies the original SPEC; the nested report's
+input hash identifies the candidate, explicitly labeled by `report_subject`.
+The input path remains the actual source path, without a presentation suffix.
+`profile` identifies the embedded profile TOML. Errors are objects with a `code`
+and `message`, and an optional `path` and `selected_fields`; selected fields describe
+the operation's scope, not necessarily the single offending field. Codes include
+`source-changed`, `invalid-draft`, `draft-shape`, `invalid-assignment`,
+`unmappable-fields`, `invalid-candidate`, and `static-check-failed`; remaining
+failures use `operation-failed`. Consumers must handle unknown codes.
 A malformed CLI invocation can still fail before producing this report.
 
 Each draft is named after its source file. The `.state` directory keeps original
@@ -466,7 +486,10 @@ view. Generated drafts declare TOML 1.1 and a local schema for compatible editor
 
 Batch candidates are all checked before writing. Writes are atomic per file,
 not across the batch; a later I/O failure reports files already written. Inspect
-those files before retrying. Drafts do not update SPEC files in the background;
+those files before retrying. A successful batch reports `Wrote`, `Unchanged`, or
+`Kept` for each target after publication. A later stderr failure does not undo
+published files. These notices are not a machine-readable apply journal.
+Drafts do not update SPEC files in the background;
 write-back happens only after the command validates them.
 
 Use drafts only from your own trusted workspace. Their hashes detect inconsistent

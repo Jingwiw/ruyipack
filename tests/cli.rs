@@ -720,7 +720,8 @@ fn cli_prints_standard_help_and_version() {
     let gen_help = run([OsStr::new("gen"), OsStr::new("--help")]);
     assert!(gen_help.status.success());
     assert!(gen_help.stderr.is_empty());
-    assert!(!output_text(&gen_help.stdout).contains("--format"));
+    assert!(output_text(&gen_help.stdout).contains("--format"));
+    assert!(output_text(&gen_help.stdout).contains("--check"));
     for detail in [
         "NAME.spec beside the manifest",
         "parent directory must exist",

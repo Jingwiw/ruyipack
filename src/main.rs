@@ -43,8 +43,16 @@ fn main() -> ExitCode {
         Command::Gen {
             name,
             manifest,
+            check,
+            format,
             output,
-        } => exit_for(generate::run(&name, manifest.as_deref(), &output).map(|()| true)),
+        } => exit_for(generate::run(
+            &name,
+            manifest.as_deref(),
+            &output,
+            check,
+            format,
+        )),
     }
 }
 
