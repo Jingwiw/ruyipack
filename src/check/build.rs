@@ -8,7 +8,10 @@
 //!
 //! Each supported system has a TOML file in `profiles/openruyi-v1/buildsystems`
 //! and an entry in `CONTRACTS`. These supply CLI choices, init guidance, and
-//! the RPK004 requirement check.
+//! the RPK004 requirement check. Stage actions are guidance, not shell scripts
+//! executed by RuyiPack: the generated BuildSystem tag selects target RPM macros.
+//! Each TOML records its policy/macro source. An empty requirement list means
+//! this tool has no common requirement contract, not that the system needs no tools.
 
 use crate::{
     check_report::{Finding, SelectedRule, Severity},

@@ -34,6 +34,9 @@ struct Copyright {
     holders: List,
 }
 
+/// Original bytes plus replacement ranges for one fixed field selection.
+/// Capturing proves a field can be located, not that its old value is valid;
+/// rendering validates the selected replacement so damaged values remain repairable.
 pub(crate) struct Snapshot {
     source: String,
     document: Table,
@@ -82,6 +85,10 @@ impl Snapshot {
         let mut comments = Vec::new();
         let mut consumed_assets = Vec::new();
         let mut sections = Vec::new();
+        // RPM assigns an implicit Source the next available number, not always 0.
+        // Explicit lower numbers do not rewind it. None means an earlier construct
+        // may have declared unseen Sources; later literals cannot prove the counter.
+        // Native examples are shared with scripts/check-native-sources.
         let mut next_source = Some(0_u32);
         for (index, item) in parsed.spec.items.iter().enumerate() {
             if !matches!(item, SpecItem::Preamble(_)) && may_declare_sources(source, item) {
@@ -174,6 +181,9 @@ impl Snapshot {
                                 Tag::Source(Some(number)) => format!("Source{number}"),
                                 _ => "Source".to_owned(),
                             };
+                            // RemoteAsset belongs to the immediately following Source.
+                            // Requiring byte adjacency avoids stealing a different asset's
+                            // digest across blank lines or unrelated comments.
                             let Some(SpecItem::Comment(previous)) =
                                 index.checked_sub(1).and_then(|i| parsed.spec.items.get(i))
                             else {

@@ -5,6 +5,10 @@
 // SPDX-License-Identifier: MulanPSL-2.0
 
 //! Checks generated facts against the manifest and distribution defaults.
+//!
+//! Build expected facts from the manifest, not by asking the renderer to render
+//! again: the latter would repeat rendering mistakes instead of detecting them.
+//! This still shares rpm-spec with parsing; it is not native RPM validation.
 
 use super::ParsedSpec;
 use crate::profile::Profile;

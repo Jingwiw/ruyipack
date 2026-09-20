@@ -65,6 +65,8 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
     if recipe.package.noarch {
         write_tag(&mut output, "BuildArch:", "noarch", column);
     }
+    // RPM's declarative build machinery supplies the default stage bodies.
+    // Do not also inline the profile's guidance: that would replace those defaults.
     if let Some(system) = &recipe.build.system {
         write_tag(&mut output, "BuildSystem:", system, column);
     }
@@ -121,6 +123,8 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
         output.push_str("\n\n");
     }
 
+    // None keeps the RPM-provided action; Some("") deliberately emits an empty
+    // main section. Filtering empty replacements like hooks would undo that choice.
     for (stage, config) in &recipe.build.stages {
         for (suffix, script) in [
             (
