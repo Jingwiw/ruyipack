@@ -49,10 +49,6 @@ pub(crate) struct Snapshot {
 }
 
 impl Snapshot {
-    pub(crate) fn capture(spec: &ParsedSpec<'_>) -> Result<Self, String> {
-        Self::capture_selected(spec, &[])
-    }
-
     pub(crate) fn capture_selected(
         spec: &ParsedSpec<'_>,
         selection: &[String],
@@ -353,11 +349,10 @@ impl Snapshot {
             for value in &values {
                 if field == "spec.comments" {
                     valid_comments(value)?;
+                } else if field.starts_with("package.files.") {
+                    valid_path(value, field)?;
                 } else {
                     valid_text(value, field, false)?;
-                    if field.starts_with("package.files.") {
-                        valid_path(value, field)?;
-                    }
                 }
             }
             self.replace_list(list, &values, field, &list.prefix, &mut changes)?;

@@ -165,11 +165,7 @@ fn input(
     draft: Option<PathBuf>,
 ) -> Result<Input, EditError> {
     let parsed = ParsedSpec::parse(&source);
-    let snapshot = if fields.is_empty() {
-        Snapshot::capture(&parsed)
-    } else {
-        Snapshot::capture_selected(&parsed, &fields)
-    }
+    let snapshot = Snapshot::capture_selected(&parsed, &fields)
     .map_err(|error| {
         let mut message = format!("{}: {error}", path.display());
         if fields.is_empty() && !parsed.diagnostics().iter().any(|diagnostic| {
@@ -365,7 +361,6 @@ fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, 
             file_output::EditFile {
                 source_path: &item.input.path,
                 original: item.input.snapshot.source(),
-                target_path: options.output.as_deref().unwrap_or(&item.input.path),
                 contents: &candidate.contents,
             }
         })
@@ -379,7 +374,8 @@ fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, 
     } else {
         file_output::EditMode::Write
     };
-    let outcomes = file_output::run_edits(&files, mode).map_err(EditError::publication)?;
+    let outcomes = file_output::run_edits(&files, options.output.as_deref(), mode)
+        .map_err(EditError::publication)?;
     Ok(ApplyResult {
         success,
         changed_sources,
@@ -416,14 +412,6 @@ fn read_candidate(
                 path,
                 item.snapshot.selection(),
                 format!("{}:{line}:{column}: {}", path.display(), e.message()),
-            )
-        })?;
-        fields::validate_shape(item.snapshot.document(), &edited).map_err(|e| {
-            EditError::at(
-                Kind::DraftShape,
-                path,
-                item.snapshot.selection(),
-                format!("{}: {e}", path.display()),
             )
         })?;
         edited

@@ -312,9 +312,4 @@ fn selected_file_array_preserves_unselected_directives_when_cleared() {
         .join("\n")
         + "\n";
     assert_eq!(output.stdout, expected.as_bytes());
-    assert!(
-        String::from_utf8(output.stdout)
-            .unwrap()
-            .contains("%config /etc/ed.conf\n")
-    );
 }

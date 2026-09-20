@@ -233,7 +233,6 @@ fn a_source_url_draft_cannot_add_checksum_or_package_context_fields() {
     let output = run(directory.path(), &["--from", "drafts", "--stdout"]);
     success(&output);
     assert_eq!(output.stdout, SPEC.replace(URL, replacement).as_bytes());
-    assert!(String::from_utf8(output.stdout).unwrap().contains(HASH));
 }
 
 #[test]

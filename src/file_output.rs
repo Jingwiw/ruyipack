@@ -178,7 +178,6 @@ pub(crate) fn run(
 pub(crate) struct EditFile<'a> {
     pub(crate) source_path: &'a Path,
     pub(crate) original: &'a str,
-    pub(crate) target_path: &'a Path,
     pub(crate) contents: &'a str,
 }
 
@@ -212,10 +211,11 @@ impl EditOutcome {
 /// Publishes checked candidates, retaining exact paths on partial failure.
 pub(crate) fn run_edits(
     files: &[EditFile<'_>],
+    output: Option<&Path>,
     mode: EditMode,
 ) -> Result<Vec<EditOutcome>, OutputError> {
     let mut outcomes = Vec::new();
-    match run_edit_batch(files, mode, &mut outcomes) {
+    match run_edit_batch(files, output, mode, &mut outcomes) {
         Ok(()) => Ok(outcomes),
         Err(source) => {
             let written = outcomes
@@ -239,6 +239,7 @@ pub(crate) fn run_edits(
 
 fn run_edit_batch(
     files: &[EditFile<'_>],
+    output: Option<&Path>,
     mode: EditMode,
     outcomes: &mut Vec<EditOutcome>,
 ) -> Result<(), OutputError> {
@@ -262,7 +263,7 @@ fn run_edit_batch(
     if files.is_empty() {
         return Ok(());
     }
-    let targets = edit_targets(files)?;
+    let targets = edit_targets(files, output)?;
     let existing = targets
         .iter()
         .map(|path| read_optional_target(path))
@@ -429,7 +430,10 @@ fn select_edit_action(
 }
 
 /// Resolves destination parents while keeping the final path entry explicit.
-fn edit_targets(files: &[EditFile<'_>]) -> Result<Vec<PathBuf>, OutputError> {
+fn edit_targets(
+    files: &[EditFile<'_>],
+    output: Option<&Path>,
+) -> Result<Vec<PathBuf>, OutputError> {
     let mut sources: Vec<(PathBuf, fs::Metadata)> = Vec::new();
     for file in files {
         let path = fs::canonicalize(file.source_path).map_err(|source| OutputError::Read {
@@ -451,46 +455,35 @@ fn edit_targets(files: &[EditFile<'_>]) -> Result<Vec<PathBuf>, OutputError> {
         }
         sources.push((path, metadata));
     }
-    let mut targets: Vec<(PathBuf, Option<fs::Metadata>)> = Vec::new();
-    for (index, file) in files.iter().enumerate() {
-        let parent = file
-            .target_path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let parent = fs::canonicalize(parent).map_err(|source| OutputError::Read {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-        let name = file
-            .target_path
-            .file_name()
-            .ok_or_else(|| OutputError::EditLayout("target must name a file".into()))?;
-        let path = parent.join(name);
-        let metadata = target_metadata(&path)?;
-        for (source_index, (source, data)) in sources.iter().enumerate() {
-            if paths_alias(&path, metadata.as_ref(), source, Some(data))
-                && (index != source_index || path != *source)
-            {
-                return Err(OutputError::EditLayout(format!(
-                    "target {} aliases source {}",
-                    path.display(),
-                    source.display()
-                )));
-            }
-        }
-        if targets
-            .iter()
-            .any(|(other, data)| paths_alias(&path, metadata.as_ref(), other, data.as_ref()))
-        {
-            return Err(OutputError::EditLayout(format!(
-                "duplicate or aliased target {}",
-                path.display()
-            )));
-        }
-        targets.push((path, metadata));
+    let Some(output) = output else {
+        return Ok(sources.into_iter().map(|(path, _)| path).collect());
+    };
+    let [(source, data)] = sources.as_slice() else {
+        return Err(OutputError::EditLayout(
+            "--output requires exactly one file".into(),
+        ));
+    };
+    let parent = output
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let parent = fs::canonicalize(parent).map_err(|source| OutputError::Read {
+        path: parent.to_path_buf(),
+        source,
+    })?;
+    let name = output
+        .file_name()
+        .ok_or_else(|| OutputError::EditLayout("target must name a file".into()))?;
+    let path = parent.join(name);
+    let metadata = target_metadata(&path)?;
+    if path != *source && paths_alias(&path, metadata.as_ref(), source, Some(data)) {
+        return Err(OutputError::EditLayout(format!(
+            "target {} aliases source {}",
+            path.display(),
+            source.display()
+        )));
     }
-    Ok(targets.into_iter().map(|(path, _)| path).collect())
+    Ok(vec![path])
 }
 
 fn paths_alias(
@@ -737,18 +730,18 @@ mod tests {
             EditFile {
                 source_path: &first,
                 original: "first\n",
-                target_path: &first,
+
                 contents: "edited first\n",
             },
             EditFile {
                 source_path: &second,
                 original: "second\n",
-                target_path: &second,
+
                 contents: "edited second\n",
             },
         ];
         assert!(
-            matches!(run_edits(&files, EditMode::Overwrite), Err(OutputError::SourceChanged(path)) if path == second)
+            matches!(run_edits(&files, None, EditMode::Overwrite), Err(OutputError::SourceChanged(path)) if path == second)
         );
         assert_eq!(fs::read_to_string(first).unwrap(), "first\n");
         assert_eq!(fs::read_to_string(second).unwrap(), "changed externally\n");
@@ -762,11 +755,10 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let input = source(directory.path(), "input.spec", "original\n");
         let replacement = source(directory.path(), "replacement.spec", "original\n");
-        let target = directory.path().join("output.spec");
         let files = [EditFile {
             source_path: &input,
             original: "original\n",
-            target_path: &target,
+
             contents: "edited\n",
         }];
         check_sources(&files, &[false]).unwrap();
@@ -787,18 +779,18 @@ mod tests {
             EditFile {
                 source_path: &first,
                 original: "first\n",
-                target_path: &first,
+
                 contents: "edited first\n",
             },
             EditFile {
                 source_path: &second,
                 original: "second\n",
-                target_path: &second,
+
                 contents: "edited second\n",
             },
         ];
         assert_eq!(
-            run_edits(&files, EditMode::Overwrite).unwrap(),
+            run_edits(&files, None, EditMode::Overwrite).unwrap(),
             vec![
                 EditOutcome::Written(first.clone()),
                 EditOutcome::Written(second.clone())
@@ -806,33 +798,6 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(first).unwrap(), "edited first\n");
         assert_eq!(fs::read_to_string(second).unwrap(), "edited second\n");
-    }
-
-    #[test]
-    fn cross_source_targets_are_rejected_before_publication() {
-        let directory = tempfile::tempdir().unwrap();
-        let first = source(directory.path(), "first.spec", "first\n");
-        let second = source(directory.path(), "second.spec", "second\n");
-        let files = [
-            EditFile {
-                source_path: &first,
-                original: "first\n",
-                target_path: &second,
-                contents: "edited first\n",
-            },
-            EditFile {
-                source_path: &second,
-                original: "second\n",
-                target_path: &first,
-                contents: "edited second\n",
-            },
-        ];
-        assert!(matches!(
-            run_edits(&files, EditMode::Overwrite),
-            Err(OutputError::EditLayout(_))
-        ));
-        assert_eq!(fs::read_to_string(first).unwrap(), "first\n");
-        assert_eq!(fs::read_to_string(second).unwrap(), "second\n");
     }
 
     #[cfg(unix)]
@@ -846,29 +811,29 @@ mod tests {
         let own_alias = [EditFile {
             source_path: &first,
             original: "first\n",
-            target_path: &alias,
+
             contents: "edited\n",
         }];
         assert!(matches!(
-            run_edits(&own_alias, EditMode::Overwrite),
+            run_edits(&own_alias, Some(&alias), EditMode::Overwrite),
             Err(OutputError::EditLayout(_))
         ));
         let duplicate_sources = [
             EditFile {
                 source_path: &first,
                 original: "first\n",
-                target_path: &first,
+
                 contents: "edited\n",
             },
             EditFile {
                 source_path: &alias,
                 original: "first\n",
-                target_path: &alias,
+
                 contents: "edited\n",
             },
         ];
         assert!(matches!(
-            run_edits(&duplicate_sources, EditMode::Overwrite),
+            run_edits(&duplicate_sources, None, EditMode::Overwrite),
             Err(OutputError::EditLayout(_))
         ));
         assert_eq!(fs::read_to_string(first).unwrap(), "first\n");
@@ -885,9 +850,10 @@ mod tests {
             &[EditFile {
                 source_path: &input,
                 original: "original\n",
-                target_path: &target,
+
                 contents: "edited\n",
             }],
+            Some(&target),
             EditMode::Overwrite,
         )
         .unwrap();
@@ -899,9 +865,10 @@ mod tests {
             &[EditFile {
                 source_path: &input,
                 original: "original\n",
-                target_path: &input,
+
                 contents: "edited\n",
             }],
+            None,
             EditMode::Overwrite,
         )
         .unwrap();
@@ -918,11 +885,11 @@ mod tests {
         let files = [EditFile {
             source_path: &input,
             original: "same\n",
-            target_path: &input,
+
             contents: "same\n",
         }];
         assert_eq!(
-            run_edits(&files, EditMode::Overwrite).unwrap(),
+            run_edits(&files, None, EditMode::Overwrite).unwrap(),
             vec![EditOutcome::Unchanged(input.clone())]
         );
         let after = fs::metadata(&input).unwrap();
@@ -944,18 +911,18 @@ mod tests {
             EditFile {
                 source_path: &first,
                 original: "first\n",
-                target_path: &first,
+
                 contents: "changed first\n",
             },
             EditFile {
                 source_path: &second,
                 original: "second\n",
-                target_path: &second,
+
                 contents: "changed second\n",
             },
         ];
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
-        let result = run_edits(&files, EditMode::Overwrite);
+        let result = run_edits(&files, None, EditMode::Overwrite);
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         let Err(OutputError::Partial { written, source }) = result else {
             panic!("expected a partial permission failure: {result:?}")

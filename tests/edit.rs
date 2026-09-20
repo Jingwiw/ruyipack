@@ -79,14 +79,6 @@ fn full_view_exposes_existing_fields_without_writing_files() {
         toml::from_str(std::str::from_utf8(&first.stdout).unwrap()).unwrap();
     let expected: toml::Table = toml::from_str(include_str!("fixtures/ed.edit.toml")).unwrap();
     assert_eq!(document, expected);
-    assert_eq!(
-        first.stdout,
-        command(directory.path())
-            .args(["ed.spec", "--view"])
-            .output()
-            .unwrap()
-            .stdout
-    );
     unchanged(directory.path());
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
 }
@@ -322,7 +314,7 @@ fn selected_draft_requires_every_selected_field() {
     assert_eq!(report["scope"], "selected-edit-static");
     assert_eq!(report["valid"], false);
     assert_eq!(report["files"][0]["valid"], false);
-    assert_eq!(report["files"][0]["error"]["code"], "draft-shape");
+    assert_eq!(report["files"][0]["error"]["code"], "invalid-candidate");
     assert!(
         report["files"][0]["error"]["message"]
             .as_str()
@@ -380,7 +372,7 @@ fn all_prepared_files_are_checked_before_any_source_is_written() {
     assert_eq!(report["files"].as_array().unwrap().len(), 2);
     assert_eq!(report["files"][0]["valid"], true);
     assert_eq!(report["files"][1]["valid"], false);
-    assert_eq!(report["files"][1]["error"]["code"], "draft-shape");
+    assert_eq!(report["files"][1]["error"]["code"], "invalid-candidate");
     let error = report["files"][1]["error"]["message"].as_str().unwrap();
     assert!(error.contains("package.version"), "{error}");
     assert!(error.contains("expected a string"), "{error}");

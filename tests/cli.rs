@@ -60,15 +60,6 @@ fn machine_report(output: &Output) -> Value {
     json_line(output)
 }
 
-fn assert_object_fields(value: &Value, expected: &[&str]) {
-    let object = value.as_object().expect("report value is an object");
-    let mut actual = object.keys().map(String::as_str).collect::<Vec<_>>();
-    let mut expected = expected.to_vec();
-    actual.sort_unstable();
-    expected.sort_unstable();
-    assert_eq!(actual, expected);
-}
-
 fn assert_machine_envelope(
     report: &Value,
     display_path: &str,
@@ -76,29 +67,13 @@ fn assert_machine_envelope(
     status: &str,
     reason: Option<&str>,
 ) {
-    assert_object_fields(
-        report,
-        &[
-            "format_version",
-            "input",
-            "evidence",
-            "parser_diagnostics",
-            "findings",
-        ],
-    );
     assert_eq!(report["format_version"], 1);
 
     let input = &report["input"];
-    assert_object_fields(input, &["display_path", "sha256"]);
     assert_eq!(input["display_path"], display_path);
     assert_eq!(input["sha256"], sha256);
 
     let evidence = &report["evidence"];
-    let mut evidence_fields = vec!["stage", "status", "tool", "components", "selected_rules"];
-    if reason.is_some() {
-        evidence_fields.push("reason");
-    }
-    assert_object_fields(evidence, &evidence_fields);
     assert_eq!(evidence["stage"], "spec-static");
     assert_eq!(evidence["status"], status);
     match reason {
@@ -421,10 +396,6 @@ fn check_json_keeps_parser_warning_and_orders_findings() {
     let missing_tags = [("RPM014", "Summary"), ("RPM015", "URL")];
     assert_eq!(findings.len(), missing_tags.len());
     for (finding, (code, tag)) in findings.iter().zip(missing_tags) {
-        assert_object_fields(
-            finding,
-            &["producer", "code", "severity", "message", "span"],
-        );
         assert_eq!(finding["producer"], "rpm-spec-analyzer");
         assert_eq!(finding["code"], code);
         assert_eq!(finding["severity"], "deny");

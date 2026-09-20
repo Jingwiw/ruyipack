@@ -35,11 +35,8 @@ struct Index {
 #[serde(deny_unknown_fields)]
 struct Entry {
     source: PathBuf,
-    original: String,
     original_sha256: String,
     fields: Vec<String>,
-    draft: String,
-    schema: String,
 }
 
 pub(super) fn create(
@@ -50,7 +47,7 @@ pub(super) fn create(
         return Err("no sources selected for draft preparation".into());
     }
     let mut index = Index {
-        version: 1,
+        version: 2,
         drafts: Vec::new(),
     };
     let mut contents = Vec::new();
@@ -93,18 +90,15 @@ pub(super) fn create(
         contents.push((document, schema_json));
         index.drafts.push(Entry {
             source,
-            original: format!("originals/{position}.spec"),
             original_sha256: utf8_file::digest(original),
             fields: fields.to_vec(),
-            draft,
-            schema,
         });
     }
     let index_json = serde_json::to_vec_pretty(&index)
         .map_err(|error| format!("cannot serialize draft index: {error}"))?;
     ensure_absent(&dir.join(".state"))?;
     for entry in &index.drafts {
-        ensure_absent(&dir.join(&entry.draft))?;
+        ensure_absent(&dir.join(draft_name(&entry.source)?))?;
     }
     fs::create_dir_all(dir)
         .map_err(|error| format!("cannot create draft directory {}: {error}", dir.display()))?;
@@ -116,12 +110,15 @@ pub(super) fn create(
             .map_err(|error| format!("cannot create draft state {}: {error}", path.display()))?;
     }
     let mut drafts = Vec::new();
-    for ((entry, (document, schema)), (_, original, _, _)) in
-        index.drafts.iter().zip(contents).zip(sources)
+    for (position, ((entry, (document, schema)), (_, original, _, _))) in
+        index.drafts.iter().zip(contents).zip(sources).enumerate()
     {
-        write_new(&state.join(&entry.original), original.as_bytes())?;
-        write_new(&state.join(&entry.schema), &schema)?;
-        let path = dir.join(&entry.draft);
+        write_new(
+            &state.join(format!("originals/{position}.spec")),
+            original.as_bytes(),
+        )?;
+        write_new(&state.join(format!("schema/{position}.json")), &schema)?;
+        let path = dir.join(draft_name(&entry.source)?);
         write_new(&path, document.as_bytes())?;
         drafts.push(path);
     }
@@ -147,9 +144,9 @@ pub(super) fn load(dir: &Path) -> Result<Vec<Draft>, String> {
     let index_path = state.join("index.json");
     let index: Index = serde_json::from_slice(&read_regular(&index_path)?)
         .map_err(|error| format!("invalid draft index {}: {error}", index_path.display()))?;
-    if index.version != 1 {
+    if index.version != 2 {
         return Err(format!(
-            "unsupported draft state version {} (expected 1)",
+            "unsupported draft state version {} (expected 2)",
             index.version
         ));
     }
@@ -163,15 +160,10 @@ pub(super) fn load(dir: &Path) -> Result<Vec<Draft>, String> {
         if !entry.source.is_absolute() || !source_paths.insert(entry.source.clone()) {
             return Err("draft index source paths must be absolute and unique".into());
         }
-        let expected_name = draft_name(&entry.source)?;
-        if entry.draft != expected_name
-            || !names.insert(entry.draft.clone())
-            || entry.original != format!("originals/{position}.spec")
-            || entry.schema != format!("schema/{position}.json")
-        {
-            return Err("draft index contains invalid or duplicate generated paths".into());
+        if !names.insert(draft_name(&entry.source)?) {
+            return Err("draft index contains duplicate generated paths".into());
         }
-        let original_path = state.join(&entry.original);
+        let original_path = state.join(format!("originals/{position}.spec"));
         let original = String::from_utf8(read_regular(&original_path)?).map_err(|error| {
             format!(
                 "invalid saved original {}: {error}",
@@ -185,8 +177,8 @@ pub(super) fn load(dir: &Path) -> Result<Vec<Draft>, String> {
             ));
         }
         // Current source changes are reported per file by the candidate check.
-        open_regular(&state.join(&entry.schema))?;
-        let path = dir.join(&entry.draft);
+        open_regular(&state.join(format!("schema/{position}.json")))?;
+        let path = dir.join(draft_name(&entry.source)?);
         open_regular(&path)?;
         drafts.push(Draft {
             source: entry.source,
@@ -290,11 +282,9 @@ mod tests {
     }
 
     #[test]
-    fn reading_consumes_current_contents_and_rechecks_file_kind() {
+    fn reading_utf8_drafts_rejects_symlinks() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("draft.toml");
-        fs::write(&path, "before").unwrap();
-        drop(open_regular(&path).unwrap());
         fs::write(&path, "after").unwrap();
         assert_eq!(read_text(&path).unwrap(), "after");
         #[cfg(unix)]
@@ -382,16 +372,11 @@ mod tests {
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         let mut invalid = Vec::new();
         let mut value = original.clone();
-        value["version"] = 2.into();
+        value["version"] = 999.into();
         invalid.push(value);
         let mut value = original.clone();
         value["unexpected"] = true.into();
         invalid.push(value);
-        for field in ["original", "schema", "draft"] {
-            let mut value = original.clone();
-            value["drafts"][0][field] = "../outside".into();
-            invalid.push(value);
-        }
         let mut value = original.clone();
         value["drafts"][0]["unexpected"] = true.into();
         invalid.push(value);

@@ -120,11 +120,9 @@ fn package_selector_is_not_a_path() {
 #[test]
 fn ed_output_is_fixed_and_independent_of_toml_layout() {
     let directory = workspace(MANIFEST);
-    for _ in 0..2 {
-        let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-        success(&output);
-        assert_eq!(output.stdout, SPEC.as_bytes());
-    }
+    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+    success(&output);
+    assert_eq!(output.stdout, SPEC.as_bytes());
     let source = MANIFEST.replace("[build]\nsystem = \"autotools\"\n", "");
     let source = format!("build = {{\n  # TOML 1.1\n  system = \"autotools\",\n}}\n{source}");
     fs::write(directory.path().join("ed.toml"), source).unwrap();

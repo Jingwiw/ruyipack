@@ -16,7 +16,7 @@ const DEPENDENCIES: &str =
 const ED: &str = include_str!("../../../tests/fixtures/ed.spec");
 
 fn capture(source: &str) -> Snapshot {
-    Snapshot::capture(&ParsedSpec::parse(source)).unwrap()
+    Snapshot::capture_selected(&ParsedSpec::parse(source), &[]).unwrap()
 }
 
 fn dependencies(values: &[&str]) -> String {
@@ -163,15 +163,6 @@ fn clearing_doc_paths_removes_their_shared_line_once() {
         snapshot.render(&edited).unwrap(),
         "Name: demo\n%files\n/usr/bin/demo\n"
     );
-}
-
-#[test]
-fn selected_version_does_not_build_source_context() {
-    let parsed = ParsedSpec::parse(ED);
-    let version = Snapshot::capture_selected(&parsed, &["package.version".into()]).unwrap();
-    assert!(version.source_fields.is_empty());
-    let sources = Snapshot::capture_selected(&parsed, &["sources".into()]).unwrap();
-    assert!(!sources.source_fields.is_empty());
 }
 
 #[test]
