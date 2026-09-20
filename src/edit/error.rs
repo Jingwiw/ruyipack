@@ -20,8 +20,6 @@ pub(super) enum Kind {
     InvalidAssignment,
     InvalidCandidate,
     StaticCheckFailed,
-    PublicationFailed,
-    PartialPublication,
 }
 
 #[derive(Debug, thiserror::Error, Serialize)]
@@ -33,8 +31,9 @@ pub(crate) struct EditError {
     path: Option<PathBuf>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     selected_fields: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    written: Vec<PathBuf>,
+    #[serde(skip)]
+    #[source]
+    publication: Option<Box<crate::file_output::OutputError>>,
 }
 
 impl EditError {
@@ -44,26 +43,32 @@ impl EditError {
             message,
             path: Some(path.to_owned()),
             selected_fields: fields.to_vec(),
-            written: Vec::new(),
+            publication: None,
         }
     }
 
     pub(super) fn publication(error: crate::file_output::OutputError) -> Self {
-        use crate::file_output::OutputError;
         let mut result = Self::from(error.to_string());
-        result.code = Kind::PublicationFailed;
-        match error {
-            OutputError::Partial { written, .. } => {
-                result.code = Kind::PartialPublication;
-                result.written = written;
-            }
-            OutputError::SourceChanged(path) => {
-                result.code = Kind::SourceChanged;
-                result.path = Some(path);
-            }
-            _ => {}
-        }
+        result.publication = Some(Box::new(error));
         result
+    }
+
+    /// Publication facts take precedence over rereading files that may have changed again.
+    pub(super) fn invalidates_drafts(&self, sources: &[&Path]) -> bool {
+        fn invalidates(error: &crate::file_output::OutputError, sources: &[&Path]) -> bool {
+            use crate::file_output::OutputError;
+            match error {
+                OutputError::Partial { written, source } => {
+                    written.iter().any(|path| sources.contains(&path.as_path()))
+                        || invalidates(source, sources)
+                }
+                OutputError::SourceChanged(_) => true,
+                _ => false,
+            }
+        }
+        self.publication
+            .as_deref()
+            .is_some_and(|error| invalidates(error, sources))
     }
 }
 
@@ -74,7 +79,7 @@ impl From<String> for EditError {
             message,
             path: None,
             selected_fields: Vec::new(),
-            written: Vec::new(),
+            publication: None,
         }
     }
 }

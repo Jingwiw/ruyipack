@@ -31,13 +31,19 @@ pub(super) fn assign(original: &Table, assignments: &[(String, String)]) -> Resu
     Ok(document)
 }
 
-/// Selects fields or complete groups while retaining the original table order.
-pub(super) fn select(original: &Table, selected: &[String]) -> Result<Table, String> {
+/// Validates field names without constructing an editable projection.
+pub(super) fn validate_selection(original: &Table, selected: &[String]) -> Result<(), String> {
     for field in selected {
         if lookup(original, field).is_none() {
             return Err(format!("{field}: unknown field or group"));
         }
     }
+    Ok(())
+}
+
+/// Selects fields or complete groups while retaining the original table order.
+pub(super) fn select(original: &Table, selected: &[String]) -> Result<Table, String> {
+    validate_selection(original, selected)?;
     if selected.is_empty() {
         return Ok(original.clone());
     }

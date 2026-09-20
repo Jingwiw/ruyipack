@@ -999,3 +999,53 @@ fn edit_reports_bind_original_candidate_and_profile_without_inventing_a_path() {
     assert!(file.get("environment").is_none());
     unchanged(directory.path());
 }
+
+#[cfg(unix)]
+#[test]
+fn editor_preview_and_copy_retain_only_actual_candidate_changes() {
+    for changed in [false, true] {
+        for args in [
+            vec!["--diff"],
+            vec!["--stdout"],
+            vec!["--output", "copy.spec"],
+        ] {
+            let directory = fixture();
+            let editor = script(
+                directory.path(),
+                if changed {
+                    "sed 's/1.22.5/1.22.6/' \"$1\" > \"$1.next\"\nmv \"$1.next\" \"$1\""
+                } else {
+                    "true"
+                },
+            );
+            let output = command(directory.path())
+                .args(["ed.spec", "--field", "package.version", "--editor", &editor])
+                .args(&args)
+                .output()
+                .unwrap();
+            success(&output);
+            let retained = String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .find_map(|line| line.strip_prefix("Drafts retained: ").map(PathBuf::from));
+            assert_eq!(retained.is_some(), changed, "{args:?}: {output:?}");
+            if let Some(retained) = retained {
+                assert!(
+                    fs::read_to_string(retained.join("ed.toml"))
+                        .unwrap()
+                        .contains("1.22.6")
+                );
+            }
+            unchanged(directory.path());
+            if args[0] == "--output" {
+                assert_eq!(
+                    fs::read_to_string(directory.path().join("copy.spec")).unwrap(),
+                    if changed {
+                        version_source("1.22.6")
+                    } else {
+                        SOURCE.into()
+                    }
+                );
+            }
+        }
+    }
+}

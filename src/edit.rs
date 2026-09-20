@@ -132,41 +132,31 @@ fn execute(options: &Options) -> Result<bool, EditError> {
             return Err(retain(error.into(), temporary, &inputs));
         }
     }
-    let result = apply(options, &inputs);
+    let result = apply(options, &inputs).and_then(|result| {
+        for outcome in &result.outcomes {
+            outcome
+                .write_human(&mut io::stderr().lock())
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(result)
+    });
     match result {
         Err(error) => Err(retain(error, temporary, &inputs)),
-        Ok(success) => {
+        Ok(result) => {
             // Keep an editor's work when it was only previewed, copied, or declined.
-            if let Some(dir) = temporary {
-                let unapplied = inputs.iter().any(|item| {
-                    let Some(path) = &item.draft else {
-                        return false;
-                    };
-                    let Ok(text) = fs::read_to_string(path) else {
-                        return true;
-                    };
-                    let Ok(table) = toml::from_str::<Table>(&text) else {
-                        return true;
-                    };
-                    let Ok(expected) = fields::select(item.snapshot.document(), &item.fields)
-                    else {
-                        return true;
-                    };
-                    table != expected
-                        && fs::read_to_string(&item.path).is_ok_and(|now| now == item.source)
-                });
-                if unapplied {
-                    let path = dir.keep();
-                    writeln!(
-                        io::stderr().lock(),
-                        "Drafts retained: {}\nResume: ruyipack edit --from={}",
-                        path.display(),
-                        shell_words::quote(&path.to_string_lossy())
-                    )
-                    .map_err(|e| e.to_string())?;
-                }
+            if let Some(dir) = temporary
+                && result.has_unapplied_changes()
+            {
+                let path = dir.keep();
+                writeln!(
+                    io::stderr().lock(),
+                    "Drafts retained: {}\nResume: ruyipack edit --from={}",
+                    path.display(),
+                    shell_words::quote(&path.to_string_lossy())
+                )
+                .map_err(|e| e.to_string())?;
             }
-            Ok(success)
+            Ok(result.success)
         }
     }
 }
@@ -196,7 +186,7 @@ fn input(
         }
         EditError::at(Kind::UnmappableFields, &path, &fields, message)
     })?;
-    fields::select(snapshot.document(), &fields)
+    fields::validate_selection(snapshot.document(), &fields)
         .map_err(|error| EditError::at(Kind::UnmappableFields, &path, &fields, error))?;
     Ok(Input {
         path,
@@ -222,124 +212,193 @@ fn create_drafts(dir: &Path, inputs: &[Input]) -> Result<Vec<drafts::Draft>, Str
     drafts::create(dir, &documents)
 }
 
-fn apply(options: &Options, inputs: &[Input]) -> Result<bool, EditError> {
+// Keep each input attached to its candidate/error; reports and publication consume
+// the same result rather than maintaining parallel, partially populated vectors.
+struct CheckedInput<'a> {
+    input: &'a Input,
+    result: CheckedCandidate,
+}
+
+enum CheckedCandidate {
+    Ready(candidate::Candidate),
+    Invalid(candidate::Candidate, EditError),
+    Failed(EditError),
+}
+
+impl CheckedInput<'_> {
+    fn candidate(&self) -> Option<&candidate::Candidate> {
+        match &self.result {
+            CheckedCandidate::Ready(candidate) | CheckedCandidate::Invalid(candidate, _) => {
+                Some(candidate)
+            }
+            CheckedCandidate::Failed(_) => None,
+        }
+    }
+
+    fn error(&self) -> Option<&EditError> {
+        match &self.result {
+            CheckedCandidate::Ready(_) => None,
+            CheckedCandidate::Invalid(_, error) | CheckedCandidate::Failed(error) => Some(error),
+        }
+    }
+
+    fn record(&self) -> serde_json::Value {
+        let item = self.input;
+        let mut record = if let Some(candidate) = self.candidate() {
+            let review_required: &[&str] = if candidate.review_triggers.is_empty() {
+                &[]
+            } else {
+                &[
+                    "source-content-and-digests",
+                    "patch-applicability",
+                    "native-build",
+                ]
+            };
+            json!({"source": item.path, "draft": item.draft, "valid": self.error().is_none(),
+                "original_sha256": utf8_file::digest(&item.source), "report_subject": "candidate",
+                "profile": crate::profile::identity(), "changed": candidate.contents != item.source,
+                "review_triggers": candidate.review_triggers, "review_required": review_required,
+                "report": candidate.report.structured(&item.path)})
+        } else {
+            json!({"source": item.path, "draft": item.draft, "valid": false})
+        };
+        if let Some(error) = self.error() {
+            record["error"] = serde_json::to_value(error).expect("serializable error");
+        }
+        record
+    }
+}
+
+struct ApplyResult<'a> {
+    success: bool,
+    changed_sources: Vec<&'a Path>,
+    outcomes: Vec<file_output::EditOutcome>,
+}
+
+impl ApplyResult<'_> {
+    fn has_unapplied_changes(&self) -> bool {
+        self.changed_sources.iter().any(|source| !self.outcomes.iter().any(|outcome| {
+            matches!(outcome, file_output::EditOutcome::Written(path) | file_output::EditOutcome::Unchanged(path) if path == source)
+        }))
+    }
+}
+
+fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, EditError> {
     if let Some(output) = &options.output {
         protect_drafts(output, inputs)?;
     }
-    let mut candidates = Vec::with_capacity(inputs.len());
-    let json_output = options.check && matches!(options.format, Some(CheckFormat::Json));
-    let mut records = Vec::new();
-    let mut valid = Vec::with_capacity(inputs.len());
-    let mut errors = Vec::new();
-    for item in inputs {
-        match read_candidate(item, &options.set) {
-            Ok(candidate::Candidate {
-                contents: text,
-                report,
-                review_triggers,
-            }) => {
-                let success = report.is_success();
-                let label = format!("{} (candidate)", item.path.display());
-                valid.push(success);
-                let review_required: &[&str] = if review_triggers.is_empty() {
-                    &[]
-                } else {
-                    &[
-                        "source-content-and-digests",
-                        "patch-applicability",
-                        "native-build",
-                    ]
-                };
-                if json_output {
-                    records.push(
-                        json!({"source": item.path, "draft": item.draft, "valid": success,
-                        "original_sha256": utf8_file::digest(&item.source), "report_subject": "candidate",
-                        "profile": crate::profile::identity(),
-                        "changed": text != item.source, "review_triggers": review_triggers,
-                        "review_required": review_required,
-                        "report": report.structured(&item.path)}),
-                    );
+    let checked = inputs
+        .iter()
+        .map(|item| {
+            let result = match read_candidate(item, &options.set) {
+                Ok(candidate) if candidate.report.is_success() => {
+                    CheckedCandidate::Ready(candidate)
                 }
-                if !matches!(options.format, Some(CheckFormat::Json)) {
-                    if !review_triggers.is_empty() {
-                        writeln!(io::stderr().lock(),
-                            "{} (candidate): review required after changing {}: source content and recorded SHA-256, patch applicability, and native build have not been verified",
-                            item.path.display(), review_triggers.join(", "))
-                            .map_err(|e| e.to_string())?;
-                    }
-                    report
-                        .write_human(Path::new(&label), &mut io::stderr().lock())
-                        .map_err(|e| e.to_string())?;
-                }
-                if !success {
-                    let error = EditError::at(
+                Ok(candidate) => CheckedCandidate::Invalid(
+                    candidate,
+                    EditError::at(
                         Kind::StaticCheckFailed,
                         &item.path,
                         &item.fields,
                         format!("{}: candidate failed static checks", item.path.display()),
-                    );
-                    if json_output {
-                        records.last_mut().expect("candidate record")["error"] =
-                            serde_json::to_value(&error).expect("serializable error");
-                    }
-                    errors.push(error);
-                }
-                candidates.push(text);
+                    ),
+                ),
+                Err(error) => CheckedCandidate::Failed(error),
+            };
+            CheckedInput {
+                input: item,
+                result,
             }
-            Err(error) => {
-                valid.push(false);
-                if json_output {
-                    records.push(
-                        json!({"source":item.path, "draft":item.draft, "valid":false, "error":error}),
-                    );
+        })
+        .collect::<Vec<_>>();
+    let success = checked.iter().all(|item| item.error().is_none());
+    if !matches!(options.format, Some(CheckFormat::Json)) {
+        for item in &checked {
+            if let Some(candidate) = item.candidate() {
+                let path = &item.input.path;
+                if !candidate.review_triggers.is_empty() {
+                    writeln!(io::stderr().lock(),
+                        "{} (candidate): review required after changing {}: source content and recorded SHA-256, patch applicability, and native build have not been verified",
+                        path.display(), candidate.review_triggers.join(", "))
+                        .map_err(|e| e.to_string())?;
                 }
-                errors.push(error);
+                candidate
+                    .report
+                    .write_human(
+                        Path::new(&format!("{} (candidate)", path.display())),
+                        &mut io::stderr().lock(),
+                    )
+                    .map_err(|e| e.to_string())?;
             }
         }
     }
+    let changed_sources = checked
+        .iter()
+        .filter_map(|item| {
+            item.candidate()
+                .filter(|candidate| candidate.contents != item.input.source)
+                .map(|_| item.input.path.as_path())
+        })
+        .collect();
     if options.check {
         if matches!(options.format, Some(CheckFormat::Json)) {
-            write_stdout(
-                &(serde_json::to_string_pretty(
-                    &json!({"format_version": 2, "scope": "selected-edit-static", "valid":errors.is_empty(), "files":records}),
-                )
-                .map_err(|e| e.to_string())?
-                    + "\n"),
-            )?;
+            let records = checked.iter().map(CheckedInput::record).collect::<Vec<_>>();
+            write_stdout(&(serde_json::to_string_pretty(
+                &json!({"format_version": 2, "scope": "selected-edit-static", "valid": success, "files": records})
+            ).map_err(|e| e.to_string())? + "\n"))?;
         } else {
-            for (item, valid) in inputs.iter().zip(&valid) {
+            for item in &checked {
                 writeln!(
                     io::stdout().lock(),
                     "{}: {}",
-                    item.path.display(),
-                    if *valid { "valid" } else { "invalid" }
+                    item.input.path.display(),
+                    if item.error().is_none() {
+                        "valid"
+                    } else {
+                        "invalid"
+                    }
                 )
                 .map_err(|e| e.to_string())?;
             }
-            for error in &errors {
+            for error in checked.iter().filter_map(CheckedInput::error) {
                 writeln!(io::stderr().lock(), "error: {error}").map_err(|e| e.to_string())?;
             }
         }
-        return Ok(errors.is_empty());
+        return Ok(ApplyResult {
+            success,
+            changed_sources,
+            outcomes: Vec::new(),
+        });
     }
-    if !errors.is_empty() {
-        let message = errors
+    if !success {
+        let message = checked
             .iter()
+            .filter_map(CheckedInput::error)
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        let mut error = errors.remove(0);
+        let mut error = checked
+            .into_iter()
+            .find_map(|item| match item.result {
+                CheckedCandidate::Invalid(_, error) | CheckedCandidate::Failed(error) => {
+                    Some(error)
+                }
+                CheckedCandidate::Ready(_) => None,
+            })
+            .expect("failed candidate has an error");
         error.message = message;
         return Err(error);
     }
-    let files = inputs
+    let files = checked
         .iter()
-        .zip(&candidates)
-        .map(|(item, contents)| file_output::EditFile {
-            source_path: &item.path,
-            original: &item.source,
-            target_path: options.output.as_deref().unwrap_or(&item.path),
-            contents,
+        .map(|item| {
+            let candidate = item.candidate().expect("successful check has a candidate");
+            file_output::EditFile {
+                source_path: &item.input.path,
+                original: &item.input.source,
+                target_path: options.output.as_deref().unwrap_or(&item.input.path),
+                contents: &candidate.contents,
+            }
         })
         .collect::<Vec<_>>();
     let mode = if options.diff {
@@ -351,12 +410,12 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, EditError> {
     } else {
         file_output::EditMode::Write
     };
-    for outcome in file_output::run_edits(&files, mode).map_err(EditError::publication)? {
-        outcome
-            .write_human(&mut io::stderr().lock())
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(true)
+    let outcomes = file_output::run_edits(&files, mode).map_err(EditError::publication)?;
+    Ok(ApplyResult {
+        success,
+        changed_sources,
+        outcomes,
+    })
 }
 
 fn read_candidate(
@@ -465,9 +524,14 @@ fn retain(
     error.message = match temporary {
         Some(dir) => {
             let path = dir.keep();
-            if inputs
+            if error.invalidates_drafts(
+                &inputs
+                    .iter()
+                    .map(|item| item.path.as_path())
+                    .collect::<Vec<_>>(),
+            ) || inputs
                 .iter()
-                .any(|item| fs::read_to_string(&item.path).is_ok_and(|now| now != item.source))
+                .any(|item| !utf8_file::is_unchanged(&item.path, &item.source).unwrap_or(false))
             {
                 format!(
                     "{error}\nDrafts retained: {}\nSources changed; review the written files and prepare fresh drafts before retrying.",
@@ -490,4 +554,81 @@ fn write_stdout(text: &str) -> Result<(), String> {
         .lock()
         .write_all(text.as_bytes())
         .map_err(|e| format!("failed to write output to stdout: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use file_output::{EditOutcome, OutputError};
+
+    #[test]
+    fn recovery_uses_changed_sources_and_actual_publication_destinations() {
+        let source = Path::new("source.spec");
+        let copy = Path::new("source.spec.new");
+        for (outcomes, expected) in [
+            (vec![], true), // Read-only preview.
+            (vec![EditOutcome::Skipped(source.into())], true),
+            (vec![EditOutcome::Written(copy.into())], true),
+            (vec![EditOutcome::Unchanged(copy.into())], true),
+            (vec![EditOutcome::Written(source.into())], false),
+            (vec![EditOutcome::Unchanged(source.into())], false),
+        ] {
+            let result = ApplyResult {
+                success: true,
+                changed_sources: vec![source],
+                outcomes,
+            };
+            assert_eq!(result.has_unapplied_changes(), expected);
+        }
+        let unchanged = ApplyResult {
+            success: true,
+            changed_sources: vec![],
+            outcomes: vec![],
+        };
+        assert!(!unchanged.has_unapplied_changes());
+        let batch = ApplyResult {
+            success: true,
+            changed_sources: vec![source, Path::new("second.spec")],
+            outcomes: vec![EditOutcome::Written(source.into())],
+        };
+        assert!(batch.has_unapplied_changes());
+    }
+
+    #[test]
+    fn partial_publication_facts_survive_even_if_source_bytes_are_restored() {
+        let work = tempfile::tempdir().unwrap();
+        let source = work.path().join("first, with spaces.spec");
+        let original = include_str!("../tests/fixtures/ed.spec");
+        fs::write(&source, original).unwrap();
+        let inputs = vec![
+            input(
+                source.clone(),
+                original.into(),
+                vec!["package.version".into()],
+                None,
+            )
+            .unwrap(),
+        ];
+        let temporary = tempfile::tempdir_in(work.path()).unwrap();
+        let retained = temporary.path().to_owned();
+        let error = EditError::publication(OutputError::Partial {
+            written: vec![source],
+            source: Box::new(OutputError::Write {
+                path: work.path().join("second.spec"),
+                source: io::Error::from(io::ErrorKind::PermissionDenied),
+            }),
+        });
+        assert!(std::error::Error::source(&error).is_some());
+        let error = retain(error, Some(temporary), &inputs);
+        assert!(error.message.contains("Sources changed;"));
+        assert!(!error.message.contains("Resume:"));
+        assert!(retained.is_dir());
+        let copy_failure = EditError::publication(OutputError::Partial {
+            written: vec![work.path().join("copy.spec")],
+            source: Box::new(OutputError::EditPrompt),
+        });
+        assert!(!copy_failure.invalidates_drafts(&[inputs[0].path.as_path()]));
+        let stale = EditError::publication(OutputError::SourceChanged(inputs[0].path.clone()));
+        assert!(stale.invalidates_drafts(&[inputs[0].path.as_path()]));
+    }
 }
