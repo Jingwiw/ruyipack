@@ -99,10 +99,14 @@ fn execute(options: &Options) -> Result<bool, String> {
         return Ok(true);
     }
     if let Some(dir) = &options.prepare {
-        create_drafts(dir, &inputs)?;
+        let created = create_drafts(dir, &inputs)?;
+        let dir = created[0]
+            .path
+            .parent()
+            .expect("created drafts have an absolute parent");
         let display = dir.to_string_lossy();
         let quoted = shell_words::quote(&display);
-        writeln!(io::stderr().lock(), "Drafts: {display}\nCheck: ruyipack edit --from {quoted} --check\nPreview: ruyipack edit --from {quoted} --diff").map_err(|e| e.to_string())?;
+        writeln!(io::stderr().lock(), "Drafts: {display}\nCheck: ruyipack edit --from={quoted} --check\nPreview: ruyipack edit --from={quoted} --diff").map_err(|e| e.to_string())?;
         return Ok(true);
     }
     // Saved drafts already contain the edit; reopening them requires --editor.
@@ -156,7 +160,7 @@ fn execute(options: &Options) -> Result<bool, String> {
                     let path = dir.keep();
                     writeln!(
                         io::stderr().lock(),
-                        "Drafts retained: {}\nResume: ruyipack edit --from {}",
+                        "Drafts retained: {}\nResume: ruyipack edit --from={}",
                         path.display(),
                         shell_words::quote(&path.to_string_lossy())
                     )
@@ -451,7 +455,7 @@ fn retain(error: String, temporary: Option<tempfile::TempDir>, inputs: &[Input])
                 )
             } else {
                 format!(
-                    "{error}\nDrafts retained: {}\nResume: ruyipack edit --from {}",
+                    "{error}\nDrafts retained: {}\nResume: ruyipack edit --from={}",
                     path.display(),
                     shell_words::quote(&path.to_string_lossy())
                 )

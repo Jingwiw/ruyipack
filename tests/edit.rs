@@ -662,7 +662,7 @@ fn script(directory: &Path, body: &str) -> String {
 
 #[cfg(unix)]
 #[test]
-fn draft_hints_are_executable_with_shell_special_characters_in_paths() {
+fn draft_hints_handle_hyphen_paths_shell_characters_and_a_changed_directory() {
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().join("author's $workspace");
     fs::create_dir(&directory).unwrap();
@@ -678,7 +678,7 @@ fn draft_hints_are_executable_with_shell_special_characters_in_paths() {
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
         let result = Command::new("/bin/sh")
             .args(["-c", hint])
-            .current_dir(&directory)
+            .current_dir(root.path())
             .env("PATH", std::env::join_paths(paths).unwrap())
             .stdin(Stdio::null())
             .output()
@@ -690,8 +690,7 @@ fn draft_hints_are_executable_with_shell_special_characters_in_paths() {
             "ed.spec",
             "--field",
             "package.version",
-            "--prepare",
-            "draft's $pending",
+            "--prepare=-draft's $pending",
         ])
         .output()
         .unwrap();
