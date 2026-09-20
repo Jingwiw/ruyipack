@@ -370,3 +370,83 @@ fn uncertain_implicit_source_numbers_do_not_block_unrelated_edits() {
         );
     }
 }
+
+#[test]
+fn a_damaged_selected_digest_can_be_repaired_without_changing_other_bytes() {
+    let replacement = "a".repeat(64);
+    for damaged in ["INVALID".to_owned(), "g".repeat(64), "a".repeat(65)] {
+        let source = SPEC.replace(HASH, &damaged);
+        let directory = fixture(&source);
+        let view = selected_view(directory.path(), "sources.0.sha256");
+        success(&view);
+        let document: toml::Table =
+            toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
+        assert_eq!(
+            document["sources"]["0"]["sha256"].as_str(),
+            Some(damaged.as_str())
+        );
+        for invalid in [damaged.as_str(), "still-invalid"] {
+            rejected(
+                &run(
+                    directory.path(),
+                    &["ed.spec", "--set", &format!("sources.0.sha256={invalid}")],
+                ),
+                "expected 64 hexadecimal digits",
+            );
+            assert_eq!(
+                fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+                source
+            );
+        }
+        success(&run(
+            directory.path(),
+            &[
+                "ed.spec",
+                "--field",
+                "sources.0.sha256",
+                "--prepare",
+                "drafts",
+            ],
+        ));
+        fs::write(
+            directory.path().join("drafts/ed.toml"),
+            format!("[sources.0]\nsha256 = '{replacement}'\n"),
+        )
+        .unwrap();
+        let preview = run(directory.path(), &["--from", "drafts", "--stdout"]);
+        success(&preview);
+        assert_eq!(preview.stdout, SPEC.replace(HASH, &replacement).as_bytes());
+        assert_eq!(
+            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+            source
+        );
+        success(&run(directory.path(), &["--from", "drafts"]));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+            SPEC.replace(HASH, &replacement)
+        );
+    }
+}
+
+#[test]
+fn a_source_url_edit_preserves_its_unselected_damaged_digest() {
+    let source = SPEC.replace(HASH, "INVALID");
+    let directory = fixture(&source);
+    let replacement = "https://example.org/replacement.tar.lz";
+    let output = run(
+        directory.path(),
+        &[
+            "ed.spec",
+            "--set",
+            &format!("sources.0.url={replacement}"),
+            "--stdout",
+        ],
+    );
+    success(&output);
+    assert_eq!(output.stdout, source.replace(URL, replacement).as_bytes());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("review required"));
+    assert_eq!(
+        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+        source
+    );
+}

@@ -192,13 +192,13 @@ impl Snapshot {
                                 != Some(profile.remote_asset_bare.as_str())
                             {
                                 let prefix = profile.remote_asset_prefix.as_str();
-                                let hash = asset_text
+                                // Map recognizable old values; validate selected replacements in render.
+                                asset_text
                                     .strip_prefix(prefix)
                                     .and_then(|s| s.strip_suffix('\n'))
                                     .ok_or_else(|| {
                                         format!("{identity}.sha256: unsupported RemoteAsset syntax")
                                     })?;
-                                valid_hash(hash, &format!("{identity}.sha256"))?;
                                 snapshot.scalar(
                                     &format!("{identity}.sha256"),
                                     asset.start + prefix.len()..asset.end - 1,

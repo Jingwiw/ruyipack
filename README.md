@@ -422,7 +422,10 @@ limited to simple SPECs; VCS tags and build scripts require a selected-field vie
 `--field` and `--set` map only the selected fields, so unrelated constructs such
 as VCS tags or build scripts remain untouched.
 A view maps existing values without certifying their validity. An invalid Source
-URL can be replaced, but the final URL must pass validation before writing.
+URL or malformed nonempty single-line SHA-256 value can be repaired when its
+marker and replacement range are unambiguous. The final selected value must pass
+validation; an unselected digest is preserved, not certified. A bare RemoteAsset
+still has no digest field to select or add.
 Ambiguous selected fields and parser errors stop the operation. Deleting keys or
 adding unmapped groups is rejected; supported existing lists can change.
 

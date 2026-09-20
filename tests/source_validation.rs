@@ -359,9 +359,20 @@ fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
             SPEC.replace(HASH, &digest),
         )
         .unwrap();
-        rejected(
-            &run(directory.path(), &["edit", "ed.spec", "--view"]),
-            "64 hexadecimal digits",
+        let view = run(directory.path(), &["edit", "ed.spec", "--view"]);
+        success(&view);
+        let document: toml::Table =
+            toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
+        assert_eq!(
+            document["sources"]["0"]["sha256"].as_str(),
+            Some(digest.as_str())
+        );
+        let checked = run(directory.path(), &["edit", "ed.spec", "--check"]);
+        assert_eq!(checked.status.code(), Some(1), "{checked:?}");
+        assert!(String::from_utf8_lossy(&checked.stderr).contains("64 hexadecimal digits"));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+            SPEC.replace(HASH, &digest)
         );
         fs::write(directory.path().join("ed.spec"), SPEC).unwrap();
         rejected(
