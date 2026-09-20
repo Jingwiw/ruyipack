@@ -44,7 +44,8 @@ pub(crate) fn diagnostics(
                     .filter(|span| consistent_endpoints(source, *span))
                     .map(location),
                 _ => diagnostic.span.map(location),
-            };
+            }
+            .filter(|span| source.get(span.bytes.clone()).is_some());
             Diagnostic {
                 severity: match diagnostic.severity {
                     parse_result::Severity::Warning => Severity::Warning,
@@ -89,7 +90,7 @@ mod tests {
     #[test]
     fn recovery_diagnostics_keep_details_and_only_unambiguous_source_coordinates() {
         let converted = diagnostics(
-            "",
+            "abcd\nxyz",
             vec![
                 parse_result::Diagnostic::error("invalid syntax")
                     .with_code("rpmspec/E001")
@@ -128,35 +129,51 @@ mod tests {
     }
 
     #[test]
-    fn conditional_locations_require_valid_byte_boundaries_and_matching_endpoints() {
+    fn diagnostic_ranges_require_byte_boundaries_and_conditional_endpoints() {
         let source = "é\r\nx";
-        for (span, retained) in [
-            (Span::new(0, 2, 1, 1, 1, 3), true),
-            (Span::new(4, 4, 2, 1, 2, 1), true),
-            (Span::new(4, 5, 2, 1, 2, 2), true),
-            (Span::new(0, 2, 1, 1, 1, 2), false),
-            (Span::new(4, 5, 1, 5, 2, 2), false),
-            (Span::new(1, 2, 1, 2, 1, 3), false),
-            (Span::new(4, 6, 2, 1, 2, 3), false),
+        for (span, bounded, consistent) in [
+            (Span::new(0, 2, 1, 1, 1, 3), true, true),
+            (Span::new(4, 4, 2, 1, 2, 1), true, true),
+            (Span::new(4, 5, 2, 1, 2, 2), true, true),
+            (Span::new(5, 5, 2, 2, 2, 2), true, true),
+            (Span::new(0, 2, 1, 1, 1, 2), true, false),
+            (Span::new(4, 5, 1, 5, 2, 2), true, false),
+            (Span::new(1, 2, 1, 2, 1, 3), false, false),
+            (Span::new(0, 1, 1, 1, 1, 2), false, false),
+            (Span::new(4, 6, 2, 1, 2, 3), false, false),
+            (
+                Span {
+                    start_byte: 5,
+                    end_byte: 4,
+                    ..Span::default()
+                },
+                false,
+                false,
+            ),
         ] {
-            let converted = diagnostics(
-                source,
-                vec![
-                    parse_result::Diagnostic::error("conditional error")
-                        .with_code(parse_result::codes::E_UNTERMINATED_CONDITIONAL)
-                        .with_span(span)
-                        .with_note("original context"),
-                ],
-            );
-            assert_eq!(converted[0].span.is_some(), retained, "{span:?}");
-            let expected_span = retained.then(|| serde_json::to_value(location(span)).unwrap());
-            assert_eq!(
-                serde_json::to_value(&converted).unwrap(),
-                serde_json::json!([{
-                    "severity":"error", "code":"rpmspec/E0002", "span":expected_span,
-                    "message":"conditional error", "notes":["original context"]
-                }])
-            );
+            for (code, retained) in [
+                (parse_result::codes::E_UNTERMINATED_CONDITIONAL, consistent),
+                ("rpmspec/E001", bounded),
+            ] {
+                let converted = diagnostics(
+                    source,
+                    vec![
+                        parse_result::Diagnostic::error("conditional error")
+                            .with_code(code)
+                            .with_span(span)
+                            .with_note("original context"),
+                    ],
+                );
+                assert_eq!(converted[0].span.is_some(), retained, "{span:?}");
+                let expected_span = retained.then(|| serde_json::to_value(location(span)).unwrap());
+                assert_eq!(
+                    serde_json::to_value(&converted).unwrap(),
+                    serde_json::json!([{
+                        "severity":"error", "code":code, "span":expected_span,
+                        "message":"conditional error", "notes":["original context"]
+                    }])
+                );
+            }
         }
     }
 }

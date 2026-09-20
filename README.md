@@ -319,8 +319,10 @@ Human output shows normalized main-package tags and their conditional structure.
 JSON includes the same parser tree, the input path and SHA-256, the parser version
 and revision, and all parser diagnostics. Diagnostics use the same lowercase
 severity names as `check --format json` and stay in JSON rather than stderr.
-Certain macro-parser diagnostics have `null` spans when their source coordinates
-are not reliable; their severity and message are still reported.
+Diagnostic byte ranges are checked for bounds, ordering, and UTF-8 boundaries.
+Invalid ranges and known unreliable macro-parser coordinates become `null` spans;
+severity, messages, and notes remain. This is not a general proof of coordinate
+provenance or semantic accuracy.
 Parser warnings and recoverable errors do not change inspection's success status;
 use `check` to apply the selected static rules.
 
