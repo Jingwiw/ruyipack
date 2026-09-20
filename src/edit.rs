@@ -6,6 +6,7 @@
 
 //! Source-preserving edits through TOML fields and external editors.
 
+mod candidate;
 mod drafts;
 mod editor;
 pub(crate) mod fields;
@@ -13,11 +14,8 @@ mod options;
 
 pub(crate) use options::Options;
 
-use crate::{check, file_output, utf8_file};
-use crate::{
-    check_report::CheckReport,
-    spec::{ParsedSpec, document::Snapshot},
-};
+use crate::spec::{ParsedSpec, document::Snapshot};
+use crate::{file_output, utf8_file};
 use options::CheckFormat;
 use serde_json::json;
 use std::{
@@ -232,8 +230,12 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
     let mut valid = Vec::with_capacity(inputs.len());
     let mut errors = Vec::new();
     for item in inputs {
-        match candidate(item, &options.set) {
-            Ok((text, report, review_triggers)) => {
+        match read_candidate(item, &options.set) {
+            Ok(candidate::Candidate {
+                contents: text,
+                report,
+                review_triggers,
+            }) => {
                 let success = report.is_success();
                 let label = format!("{} (candidate)", item.path.display());
                 valid.push(success);
@@ -335,10 +337,10 @@ fn apply(options: &Options, inputs: &[Input]) -> Result<bool, String> {
     Ok(true)
 }
 
-fn candidate(
+fn read_candidate(
     item: &Input,
     assignments: &[(String, String)],
-) -> Result<(String, CheckReport, Vec<String>), String> {
+) -> Result<candidate::Candidate, String> {
     if !utf8_file::is_unchanged(&item.path, &item.source)
         .map_err(|e| format!("{}: {e}", item.path.display()))?
     {
@@ -361,40 +363,12 @@ fn candidate(
     } else {
         fields::assign(item.snapshot.document(), assignments)?
     };
-    let rendered = item.snapshot.render(&document).map_err(|e| {
+    candidate::prepare(&item.snapshot, &item.fields, &document).map_err(|error| {
         format!(
-            "{}: {e}",
+            "{}: {error}",
             item.draft.as_deref().unwrap_or(&item.path).display()
         )
-    })?;
-    let parsed = ParsedSpec::parse(&rendered);
-    let observed = Snapshot::capture_selected(&parsed, &item.fields).map_err(|e| {
-        format!(
-            "{}: {e}",
-            item.draft.as_deref().unwrap_or(&item.path).display()
-        )
-    })?;
-    if observed.document() != &document {
-        return Err(format!(
-            "{}: edited fields did not survive SPEC parsing",
-            item.path.display()
-        ));
-    }
-    let report = check::analyze(&parsed);
-    let mut review_triggers = Vec::new();
-    let before = item.snapshot.document();
-    if fields::lookup(before, "package.version") != fields::lookup(&document, "package.version") {
-        review_triggers.push("package.version".to_owned());
-    }
-    if let Some(sources) = document.get("sources").and_then(toml::Value::as_table) {
-        for number in sources.keys() {
-            let field = format!("sources.{number}.url");
-            if fields::lookup(before, &field) != fields::lookup(&document, &field) {
-                review_triggers.push(field);
-            }
-        }
-    }
-    Ok((rendered, report, review_triggers))
+    })
 }
 
 /// A destination must not replace the draft or its recovery inputs.
