@@ -164,3 +164,37 @@ fn clearing_doc_paths_removes_their_shared_line_once() {
         "Name: demo\n%files\n/usr/bin/demo\n"
     );
 }
+
+#[test]
+fn selected_version_does_not_build_source_context() {
+    let parsed = ParsedSpec::parse(ED);
+    let version = Snapshot::capture_selected(&parsed, &["package.version".into()]).unwrap();
+    assert!(version.source_fields.is_empty());
+    let sources = Snapshot::capture_selected(&parsed, &["sources".into()]).unwrap();
+    assert!(!sources.source_fields.is_empty());
+}
+
+#[test]
+fn multiple_resized_replacements_preserve_intervening_utf8_bytes() {
+    let source = "Name: demo\n# 中间原文\nVersion: 1\nSummary: old\n\n%description\nunchanged\n";
+    let snapshot = Snapshot::capture_selected(
+        &ParsedSpec::parse(source),
+        &[
+            "package.name".into(),
+            "package.version".into(),
+            "package.summary".into(),
+        ],
+    )
+    .unwrap();
+    let mut edited = snapshot.document().clone();
+    edited["package"]["name"] = "longer-name".into();
+    edited["package"]["version"] = "22.333".into();
+    edited["package"]["summary"] = "新摘要".into();
+    assert_eq!(
+        snapshot.render(&edited).unwrap(),
+        source
+            .replace("Name: demo", "Name: longer-name")
+            .replace("Version: 1", "Version: 22.333")
+            .replace("Summary: old", "Summary: 新摘要")
+    );
+}

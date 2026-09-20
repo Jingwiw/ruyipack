@@ -31,9 +31,7 @@ use toml::Table;
 
 struct Input {
     path: PathBuf,
-    source: String,
     snapshot: Snapshot,
-    fields: Vec<String>,
     draft: Option<PathBuf>,
 }
 
@@ -88,11 +86,11 @@ fn execute(options: &Options) -> Result<bool, EditError> {
         }
     }
     if options.view || options.schema {
-        let view = fields::select(inputs[0].snapshot.document(), &inputs[0].fields)?;
+        let view = inputs[0].snapshot.document();
         let text = if options.schema {
-            serde_json::to_string_pretty(&fields::schema(&view)).map_err(|e| e.to_string())? + "\n"
+            serde_json::to_string_pretty(&fields::schema(view)).map_err(|e| e.to_string())? + "\n"
         } else {
-            toml::to_string_pretty(&view).map_err(|e| e.to_string())?
+            toml::to_string_pretty(view).map_err(|e| e.to_string())?
         };
         write_stdout(&text)?;
         return Ok(true);
@@ -100,7 +98,6 @@ fn execute(options: &Options) -> Result<bool, EditError> {
     if let Some(dir) = &options.prepare {
         let created = create_drafts(dir, &inputs)?;
         let dir = created[0]
-            .path
             .parent()
             .expect("created drafts have an absolute parent");
         let display = dir.to_string_lossy();
@@ -120,7 +117,7 @@ fn execute(options: &Options) -> Result<bool, EditError> {
                 .map_err(|e| e.to_string())?;
             let created = create_drafts(dir.path(), &inputs)?;
             for (item, draft) in inputs.iter_mut().zip(created) {
-                item.draft = Some(draft.path);
+                item.draft = Some(draft);
             }
             temporary = Some(dir);
         }
@@ -190,25 +187,23 @@ fn input(
         .map_err(|error| EditError::at(Kind::UnmappableFields, &path, &fields, error))?;
     Ok(Input {
         path,
-        source,
         snapshot,
-        fields,
         draft,
     })
 }
 
-fn create_drafts(dir: &Path, inputs: &[Input]) -> Result<Vec<drafts::Draft>, String> {
+fn create_drafts(dir: &Path, inputs: &[Input]) -> Result<Vec<PathBuf>, String> {
     let documents = inputs
         .iter()
         .map(|item| {
-            Ok((
-                item.path.clone(),
-                item.source.clone(),
-                item.fields.clone(),
-                fields::select(item.snapshot.document(), &item.fields)?,
-            ))
+            (
+                item.path.as_path(),
+                item.snapshot.source(),
+                item.snapshot.selection(),
+                item.snapshot.document(),
+            )
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Vec<_>>();
     drafts::create(dir, &documents)
 }
 
@@ -235,8 +230,8 @@ impl CheckedInput<'_> {
                 ]
             };
             json!({"source": item.path, "draft": item.draft, "valid": self.error.is_none(),
-                "original_sha256": utf8_file::digest(&item.source), "report_subject": "candidate",
-                "profile": crate::profile::identity(), "changed": candidate.contents != item.source,
+                "original_sha256": utf8_file::digest(item.snapshot.source()), "report_subject": "candidate",
+                "profile": crate::profile::identity(), "changed": candidate.contents != item.snapshot.source(),
                 "review_triggers": candidate.review_triggers, "review_required": review_required,
                 "report": candidate.report.structured(&item.path)})
         } else {
@@ -276,7 +271,7 @@ fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, 
                         EditError::at(
                             Kind::StaticCheckFailed,
                             &item.path,
-                            &item.fields,
+                            item.snapshot.selection(),
                             format!("{}: candidate failed static checks", item.path.display()),
                         )
                     });
@@ -317,7 +312,7 @@ fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, 
         .filter_map(|item| {
             item.candidate
                 .as_ref()
-                .filter(|candidate| candidate.contents != item.input.source)
+                .filter(|candidate| candidate.contents != item.input.snapshot.source())
                 .map(|_| item.input.path.as_path())
         })
         .collect();
@@ -369,7 +364,7 @@ fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, 
                 .expect("successful check has a candidate");
             file_output::EditFile {
                 source_path: &item.input.path,
-                original: &item.input.source,
+                original: item.input.snapshot.source(),
                 target_path: options.output.as_deref().unwrap_or(&item.input.path),
                 contents: &candidate.contents,
             }
@@ -396,13 +391,13 @@ fn read_candidate(
     item: &Input,
     assignments: &[(String, String)],
 ) -> Result<candidate::Candidate, EditError> {
-    if !utf8_file::is_unchanged(&item.path, &item.source)
+    if !utf8_file::is_unchanged(&item.path, item.snapshot.source())
         .map_err(|e| format!("{}: {e}", item.path.display()))?
     {
         return Err(EditError::at(
             Kind::SourceChanged,
             &item.path,
-            &item.fields,
+            item.snapshot.selection(),
             format!(
                 "{}: source changed; prepare a fresh draft",
                 item.path.display()
@@ -410,7 +405,7 @@ fn read_candidate(
         ));
     }
     let document = if let Some(path) = &item.draft {
-        let text = utf8_file::read(path).map_err(|e| e.to_string())?;
+        let text = drafts::read_text(path)?;
         let edited: Table = toml::from_str(&text).map_err(|e: toml::de::Error| {
             let offset = e.span().map_or(0, |span| span.start).min(text.len());
             let before = &text[..offset];
@@ -419,28 +414,35 @@ fn read_candidate(
             EditError::at(
                 Kind::InvalidDraft,
                 path,
-                &item.fields,
+                item.snapshot.selection(),
                 format!("{}:{line}:{column}: {}", path.display(), e.message()),
             )
         })?;
-        fields::merge(item.snapshot.document(), &item.fields, &edited).map_err(|e| {
+        fields::validate_shape(item.snapshot.document(), &edited).map_err(|e| {
             EditError::at(
                 Kind::DraftShape,
                 path,
-                &item.fields,
+                item.snapshot.selection(),
                 format!("{}: {e}", path.display()),
             )
-        })?
+        })?;
+        edited
     } else {
-        fields::assign(item.snapshot.document(), assignments)
-            .map_err(|e| EditError::at(Kind::InvalidAssignment, &item.path, &item.fields, e))?
+        fields::assign(item.snapshot.document(), assignments).map_err(|e| {
+            EditError::at(
+                Kind::InvalidAssignment,
+                &item.path,
+                item.snapshot.selection(),
+                e,
+            )
+        })?
     };
-    candidate::prepare(&item.snapshot, &item.fields, &document).map_err(|error| {
+    candidate::prepare(&item.snapshot, &document).map_err(|error| {
         let path = item.draft.as_deref().unwrap_or(&item.path);
         EditError::at(
             Kind::InvalidCandidate,
             path,
-            &item.fields,
+            item.snapshot.selection(),
             format!("{}: {error}", path.display()),
         )
     })
@@ -503,10 +505,9 @@ fn retain(
                     .iter()
                     .map(|item| item.path.as_path())
                     .collect::<Vec<_>>(),
-            ) || inputs
-                .iter()
-                .any(|item| !utf8_file::is_unchanged(&item.path, &item.source).unwrap_or(false))
-            {
+            ) || inputs.iter().any(|item| {
+                !utf8_file::is_unchanged(&item.path, item.snapshot.source()).unwrap_or(false)
+            }) {
                 format!(
                     "{error}\nDrafts retained: {}\nSources changed; review the written files and prepare fresh drafts before retrying.",
                     path.display()

@@ -9,7 +9,7 @@
 use std::{
     collections::HashSet,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
 };
 
@@ -44,8 +44,8 @@ struct Entry {
 
 pub(super) fn create(
     dir: &Path,
-    sources: &[(PathBuf, String, Vec<String>, toml::Table)],
-) -> Result<Vec<Draft>, String> {
+    sources: &[(&Path, &str, &[String], &toml::Table)],
+) -> Result<Vec<PathBuf>, String> {
     if sources.is_empty() {
         return Err("no sources selected for draft preparation".into());
     }
@@ -95,7 +95,7 @@ pub(super) fn create(
             source,
             original: format!("originals/{position}.spec"),
             original_sha256: utf8_file::digest(original),
-            fields: fields.clone(),
+            fields: fields.to_vec(),
             draft,
             schema,
         });
@@ -123,12 +123,7 @@ pub(super) fn create(
         write_new(&state.join(&entry.schema), &schema)?;
         let path = dir.join(&entry.draft);
         write_new(&path, document.as_bytes())?;
-        drafts.push(Draft {
-            source: entry.source.clone(),
-            original: original.clone(),
-            fields: entry.fields.clone(),
-            path,
-        });
+        drafts.push(path);
     }
     // An interrupted preparation has no complete index and cannot be loaded.
     write_new(&state.join("index.json"), &index_json)?;
@@ -190,9 +185,9 @@ pub(super) fn load(dir: &Path) -> Result<Vec<Draft>, String> {
             ));
         }
         // Current source changes are reported per file by the candidate check.
-        read_regular(&state.join(&entry.schema))?;
+        open_regular(&state.join(&entry.schema))?;
         let path = dir.join(&entry.draft);
-        read_regular(&path)?;
+        open_regular(&path)?;
         drafts.push(Draft {
             source: entry.source,
             original,
@@ -245,7 +240,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("cannot write draft file {}: {error}", path.display()))
 }
 
-fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
+fn open_regular(path: &Path) -> Result<fs::File, String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("cannot inspect draft file {}: {error}", path.display()))?;
     if !metadata.file_type().is_file() {
@@ -254,12 +249,37 @@ fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
             path.display()
         ));
     }
-    fs::read(path).map_err(|error| format!("cannot read draft file {}: {error}", path.display()))
+    fs::File::open(path)
+        .map_err(|error| format!("cannot read draft file {}: {error}", path.display()))
+}
+
+fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    open_regular(path)?
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read draft file {}: {error}", path.display()))?;
+    Ok(bytes)
+}
+
+pub(super) fn read_text(path: &Path) -> Result<String, String> {
+    String::from_utf8(read_regular(path)?)
+        .map_err(|error| format!("cannot read draft file {}: {error}", path.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn create(
+        dir: &Path,
+        sources: &[(PathBuf, String, Vec<String>, toml::Table)],
+    ) -> Result<Vec<PathBuf>, String> {
+        let sources = sources
+            .iter()
+            .map(|(p, s, f, t)| (p.as_path(), s.as_str(), f.as_slice(), t))
+            .collect::<Vec<_>>();
+        super::create(dir, &sources)
+    }
 
     fn source(dir: &Path, name: &str) -> (PathBuf, String, Vec<String>, toml::Table) {
         let path = dir.join(name);
@@ -270,13 +290,31 @@ mod tests {
     }
 
     #[test]
+    fn reading_consumes_current_contents_and_rechecks_file_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("draft.toml");
+        fs::write(&path, "before").unwrap();
+        drop(open_regular(&path).unwrap());
+        fs::write(&path, "after").unwrap();
+        assert_eq!(read_text(&path).unwrap(), "after");
+        #[cfg(unix)]
+        {
+            fs::remove_file(&path).unwrap();
+            let other = dir.path().join("other");
+            fs::write(&other, "external").unwrap();
+            std::os::unix::fs::symlink(&other, &path).unwrap();
+            assert!(read_text(&path).unwrap_err().contains("not a symlink"));
+        }
+    }
+
+    #[test]
     fn roundtrip_keeps_business_fields_separate_from_originals() {
         let temp = tempfile::tempdir().unwrap();
         let input = source(temp.path(), "demo.spec");
         let dir = temp.path().join("drafts");
         let prepared = create(&dir, std::slice::from_ref(&input)).unwrap();
         assert_eq!(prepared.len(), 1);
-        let text = fs::read_to_string(&prepared[0].path).unwrap();
+        let text = fs::read_to_string(&prepared[0]).unwrap();
         assert!(
             text.starts_with(
                 "#:tombi toml-version = \"v1.1.0\"\n#:schema .state/schema/0.json\n\n"
@@ -287,7 +325,7 @@ mod tests {
         assert_eq!(loaded[0].source, fs::canonicalize(&input.0).unwrap());
         assert_eq!(loaded[0].original, input.1);
         assert_eq!(loaded[0].fields, input.2);
-        assert_eq!(loaded[0].path, prepared[0].path);
+        assert_eq!(loaded[0].path, prepared[0]);
         assert_eq!(fs::read_to_string(&input.0).unwrap(), input.1);
         assert_eq!(
             fs::read_to_string(dir.join(".state/originals/0.spec")).unwrap(),

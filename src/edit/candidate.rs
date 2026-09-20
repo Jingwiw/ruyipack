@@ -6,7 +6,7 @@
 
 //! Pure calculation and static validation of selected SPEC edits.
 
-use super::fields;
+use crate::spec::document::fields;
 use crate::{
     check,
     check_report::CheckReport,
@@ -20,14 +20,10 @@ pub(super) struct Candidate {
     pub review_triggers: Vec<String>,
 }
 
-pub(super) fn prepare(
-    snapshot: &Snapshot,
-    selection: &[String],
-    document: &Table,
-) -> Result<Candidate, String> {
+pub(super) fn prepare(snapshot: &Snapshot, document: &Table) -> Result<Candidate, String> {
     let contents = snapshot.render(document)?;
     let parsed = ParsedSpec::parse(&contents);
-    let observed = Snapshot::capture_selected(&parsed, selection)?;
+    let observed = Snapshot::capture_selected(&parsed, snapshot.selection())?;
     if observed.document() != document {
         return Err("edited fields did not survive SPEC parsing".into());
     }
@@ -62,16 +58,16 @@ mod tests {
         let parsed = ParsedSpec::parse(source);
         let selection = vec!["package.version".to_owned()];
         let snapshot = Snapshot::capture_selected(&parsed, &selection).unwrap();
-        let unchanged = prepare(&snapshot, &selection, snapshot.document()).unwrap();
+        let unchanged = prepare(&snapshot, snapshot.document()).unwrap();
         assert_eq!(unchanged.contents, source);
         assert!(unchanged.review_triggers.is_empty());
-        let document = fields::assign(
+        let document = super::super::fields::assign(
             snapshot.document(),
             &[("package.version".into(), "2".into())],
         )
         .unwrap();
-        let first = prepare(&snapshot, &selection, &document).unwrap();
-        let second = prepare(&snapshot, &selection, &document).unwrap();
+        let first = prepare(&snapshot, &document).unwrap();
+        let second = prepare(&snapshot, &document).unwrap();
         assert_eq!(
             first.contents,
             source.replace("Version:        1.22.5", "Version:        2")

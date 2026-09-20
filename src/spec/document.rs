@@ -14,7 +14,8 @@ use std::{collections::BTreeMap, ops::Range};
 use toml::{Table, Value};
 
 use super::ParsedSpec;
-use crate::edit::fields::{lookup, lookup_mut, validate_shape};
+pub(crate) mod fields;
+use fields::{lookup, lookup_mut, validate_shape};
 
 struct Scalar {
     field: String,
@@ -68,11 +69,16 @@ impl Snapshot {
         {
             return Err("source: parser errors prevent a complete mapping".into());
         }
+        let needs_sources = selected(selection, "sources");
         let mut snapshot = Self {
             source: source.to_owned(),
             document: Table::new(),
             selection: selection.to_vec(),
-            source_fields: source_fields(source, parsed),
+            source_fields: if needs_sources {
+                source_fields(source, parsed)
+            } else {
+                BTreeMap::new()
+            },
             scalars: Vec::new(),
             lists: BTreeMap::new(),
             copyright: None,
@@ -91,7 +97,10 @@ impl Snapshot {
         // Native examples are shared with scripts/check-native-sources.
         let mut next_source = Some(0_u32);
         for (index, item) in parsed.spec.items.iter().enumerate() {
-            if !matches!(item, SpecItem::Preamble(_)) && may_declare_sources(source, item) {
+            if needs_sources
+                && !matches!(item, SpecItem::Preamble(_))
+                && may_declare_sources(source, item)
+            {
                 next_source = None;
             }
             match item {
@@ -103,7 +112,9 @@ impl Snapshot {
                 }
                 SpecItem::Preamble(item) => {
                     // Number every declaration before filtering the selected fields.
-                    let number = if let Tag::Source(explicit) = item.tag {
+                    let number = if let Tag::Source(explicit) = item.tag
+                        && needs_sources
+                    {
                         let number = explicit.or(next_source);
                         next_source = next_source.and_then(|next| {
                             number.and_then(|number| number.checked_add(1).map(|n| next.max(n)))
@@ -121,7 +132,9 @@ impl Snapshot {
                         .get(item.data.start_byte..item.data.end_byte)
                         .and_then(|raw| raw.split_once(':'))
                         .map(|(_, value)| value.trim());
-                    if let Some(value) = raw_value.filter(|value| value.contains('%')) {
+                    if let Some(value) =
+                        raw_value.filter(|value| needs_sources && value.contains('%'))
+                    {
                         let fields = snapshot
                             .source_fields
                             .iter()
@@ -290,6 +303,14 @@ impl Snapshot {
         Ok(snapshot)
     }
 
+    pub(crate) fn source(&self) -> &str {
+        &self.source
+    }
+
+    pub(crate) fn selection(&self) -> &[String] {
+        &self.selection
+    }
+
     pub(crate) fn document(&self) -> &Table {
         &self.document
     }
@@ -387,10 +408,14 @@ impl Snapshot {
         {
             return Err("edit: overlapping replacements".into());
         }
-        let mut output = self.source.clone();
-        for (range, value) in changes.into_iter().rev() {
-            output.replace_range(range, &value);
+        let mut output = String::with_capacity(self.source.len());
+        let mut cursor = 0;
+        for (range, value) in changes {
+            output.push_str(&self.source[cursor..range.start]);
+            output.push_str(&value);
+            cursor = range.end;
         }
+        output.push_str(&self.source[cursor..]);
         Ok(output)
     }
 

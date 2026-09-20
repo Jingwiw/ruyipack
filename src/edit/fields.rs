@@ -11,6 +11,9 @@ use std::collections::BTreeSet;
 use serde_json::{Value as Json, json};
 use toml::{Table, Value};
 
+pub(crate) use crate::spec::document::fields::validate_shape;
+use crate::spec::document::fields::{lookup, lookup_mut, path};
+
 /// Replaces existing string fields without inferring types from their spelling.
 pub(super) fn assign(original: &Table, assignments: &[(String, String)]) -> Result<Table, String> {
     let mut document = original.clone();
@@ -41,28 +44,6 @@ pub(super) fn validate_selection(original: &Table, selected: &[String]) -> Resul
     Ok(())
 }
 
-/// Selects fields or complete groups while retaining the original table order.
-pub(super) fn select(original: &Table, selected: &[String]) -> Result<Table, String> {
-    validate_selection(original, selected)?;
-    if selected.is_empty() {
-        return Ok(original.clone());
-    }
-    Ok(select_table(original, selected, ""))
-}
-
-/// Merges only the selected shape; unselected or unknown input is an error.
-pub(super) fn merge(
-    original: &Table,
-    selected: &[String],
-    edited: &Table,
-) -> Result<Table, String> {
-    let projection = select(original, selected)?;
-    validate_shape(&projection, edited)?;
-    let mut result = original.clone();
-    merge_table(&mut result, edited);
-    Ok(result)
-}
-
 /// Describes the current draft, not fields unsupported by the source mapping.
 pub(super) fn schema(document: &Table) -> Json {
     let mut schema = table_schema(document, "");
@@ -70,97 +51,6 @@ pub(super) fn schema(document: &Table) -> Json {
     schema["title"] = "SPEC edit draft".into();
     schema["description"] = "Editable fields from the current SPEC. Source expressions are not macro-expanded; SPEC validation runs after editing.".into();
     schema
-}
-
-pub(crate) fn lookup<'a>(table: &'a Table, field: &str) -> Option<&'a Value> {
-    let (head, tail) = field
-        .split_once('.')
-        .map_or((field, None), |(head, tail)| (head, Some(tail)));
-    if head.is_empty() {
-        return None;
-    }
-    let value = table.get(head)?;
-    match tail {
-        Some(tail) => lookup(value.as_table()?, tail),
-        None => Some(value),
-    }
-}
-
-pub(crate) fn lookup_mut<'a>(table: &'a mut Table, field: &str) -> Option<&'a mut Value> {
-    let (head, tail) = field
-        .split_once('.')
-        .map_or((field, None), |(head, tail)| (head, Some(tail)));
-    if head.is_empty() {
-        return None;
-    }
-    let value = table.get_mut(head)?;
-    match tail {
-        Some(tail) => lookup_mut(value.as_table_mut()?, tail),
-        None => Some(value),
-    }
-}
-
-pub(crate) fn validate_shape(original: &Table, edited: &Table) -> Result<(), String> {
-    check_table(original, edited, "")
-}
-
-fn select_table(original: &Table, selected: &[String], parent: &str) -> Table {
-    let mut result = Table::new();
-    for (key, value) in original {
-        let field = path(parent, key);
-        if selected.iter().any(|selected| selected == &field) {
-            result.insert(key.clone(), value.clone());
-        } else if selected
-            .iter()
-            .any(|selected| selected.starts_with(&format!("{field}.")))
-            && let Value::Table(table) = value
-        {
-            result.insert(
-                key.clone(),
-                Value::Table(select_table(table, selected, &field)),
-            );
-        }
-    }
-    result
-}
-
-fn merge_table(original: &mut Table, edited: &Table) {
-    for (key, changed) in edited {
-        let value = original.get_mut(key).expect("validated field shape");
-        match (value, changed) {
-            (Value::Table(original), Value::Table(edited)) => merge_table(original, edited),
-            (value, changed) => *value = changed.clone(),
-        }
-    }
-}
-
-fn check_table(original: &Table, edited: &Table, parent: &str) -> Result<(), String> {
-    for (key, value) in original {
-        let field = path(parent, key);
-        let changed = edited.get(key).ok_or_else(|| {
-            format!("{field}: deleting an existing field or table is unsupported")
-        })?;
-        match (value, changed) {
-            (Value::Table(original), Value::Table(edited)) => {
-                check_table(original, edited, &field)?
-            }
-            (Value::Array(_), Value::Array(edited)) if edited.iter().all(Value::is_str) => {}
-            (Value::String(_), Value::String(_)) => {}
-            (Value::Array(_), _) => return Err(format!("{field}: expected a string array")),
-            (Value::Table(_), _) => return Err(format!("{field}: expected a table")),
-            (Value::String(_), _) => return Err(format!("{field}: expected a string")),
-            _ => return Err(format!("{field}: unsupported draft value type")),
-        }
-    }
-    for key in edited.keys() {
-        if !original.contains_key(key) {
-            return Err(format!(
-                "{}: new, unknown or unselected field",
-                path(parent, key)
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn table_schema(table: &Table, parent: &str) -> Json {
@@ -185,14 +75,6 @@ fn table_schema(table: &Table, parent: &str) -> Json {
         "required": table.keys().collect::<Vec<_>>(),
         "additionalProperties": false,
     })
-}
-
-fn path(parent: &str, key: &str) -> String {
-    if parent.is_empty() {
-        key.to_owned()
-    } else {
-        format!("{parent}.{key}")
-    }
 }
 
 fn description(field: &str) -> &'static str {
