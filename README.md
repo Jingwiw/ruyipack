@@ -500,6 +500,9 @@ The configured editor is a trusted executable, not a sandboxed program.
 
 ## Validation and contributing
 
+Read [ownership and validation boundaries](docs/design.md) for the current
+module responsibilities and regression contracts.
+
 Run the repository checks before submitting a change:
 
 ```sh

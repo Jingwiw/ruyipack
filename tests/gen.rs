@@ -1125,3 +1125,35 @@ fn generation_input_failures_do_not_claim_a_candidate_report() {
     assert!(!result.stderr.is_empty());
     assert!(!directory.path().join("ed.spec").exists());
 }
+
+#[test]
+fn generation_and_editing_use_only_their_selected_authority() {
+    let directory = workspace("invalid neighboring TOML!");
+    let target = directory.path().join("ed.spec");
+    fs::write(&target, SPEC).unwrap();
+    let edit = run(
+        directory.path(),
+        &["edit", "ed.spec", "--set", "package.version=2"],
+    );
+    assert!(edit.status.success(), "{edit:?}");
+    let edited = fs::read_to_string(&target).unwrap();
+    assert_eq!(
+        edited,
+        SPEC.replace("Version:        1.22.5", "Version:        2")
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("ed.toml")).unwrap(),
+        "invalid neighboring TOML!"
+    );
+    fs::write(directory.path().join("ed.toml"), MANIFEST).unwrap();
+    let generated = run(directory.path(), &["gen", "ed", "--stdout"]);
+    success(&generated);
+    assert_eq!(generated.stdout, SPEC.as_bytes());
+    let conflict = run(directory.path(), &["gen", "ed"]);
+    assert_eq!(conflict.status.code(), Some(1));
+    assert_eq!(fs::read_to_string(&target).unwrap(), edited);
+    assert_eq!(
+        fs::read_to_string(directory.path().join("ed.toml")).unwrap(),
+        MANIFEST
+    );
+}
