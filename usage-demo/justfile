@@ -1,0 +1,14 @@
+OPENRUYI_SPEC_DIR := env("OPENRUYI_SPEC_DIR")
+
+init name:
+    mkdir -p {{ name }}
+    cargo run -- init --dir {{ name }} {{ name }}
+    cp {{ name }}/{{ name }}.toml {{ name }}/{{ name }}_initial.toml
+
+gen name:
+    cargo run -- gen --manifest {{ name }}/{{ name }}.toml {{ name }}
+
+diff name:
+    -diff -d {{ OPENRUYI_SPEC_DIR }}/{{ name }}/{{ name }}.spec {{ name }}/{{ name }}.spec > {{ name }}/diff-from-repo.diff
+
+gen-and-diff name: (gen name) (diff name)

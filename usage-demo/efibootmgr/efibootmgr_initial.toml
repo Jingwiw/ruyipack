@@ -1,0 +1,85 @@
+# SPEC authorship --------------------------------------------------------------
+[spec]
+# Year or year range for the packaging work, for example "2026" or "2024-2026".
+copyright-years = "2026"
+# People maintaining this SPEC, in "Name <email>" form; edit the Git default as needed.
+contributors = []
+
+# Upstream package -------------------------------------------------------------
+[package]
+name = "efibootmgr"
+# Upstream version. Use RPM version characters: letters, digits, . _ + ~ ^.
+version = ""
+# Write a concise English summary; do not end it with a period.
+# https://openruyi.cn/docs/guide/packaging-guidelines/#summary
+summary = ""
+# SPDX expression for the upstream software, for example "MIT" or "MIT AND BSD-2-Clause".
+license = ""
+# HTTPS project homepage; source archive URLs belong in sources below.
+url = ""
+# Describe what the software does. Write plain text, without SPEC section headers.
+description = '''
+'''
+# Runtime dependencies of the installed package (not build tools); one RPM
+# expression per string. Uncomment when the package needs them.
+# requires = ["coreutils", "%{name}-libs = %{version}-%{release}"]
+# Extra capabilities this package provides, beyond its own name.
+# provides = ["%{name}-devel = %{version}-%{release}"]
+# Set only for architecture-independent packages; renders BuildArch: noarch.
+# noarch = true
+
+[package.vcs]
+# Choose exactly one: a public Git clone URL, homepage is that repository, or no public repository.
+# git = "https://example.org/owner/project.git"
+# same-as-url = true
+# no-public-repository = true
+
+# Source archives --------------------------------------------------------------
+[sources.0]
+# HTTPS archive URL; %{name}, %{version}, and %{url} refer to the package fields above.
+url = ""
+# SHA-256 of the downloaded archive: 64 hexadecimal digits.
+# Delete this line to record no digest (renders a bare #!RemoteAsset); an empty value is rejected.
+sha256 = ""
+# Add sources.1, sources.2, ... for additional remote archives.
+
+# Build dependencies -----------------------------------------------------------
+[build-requires]
+# Direct build requirements, one RPM expression per string; examples: "make", "pkgconfig(zlib)".
+rpm = []
+
+# Build stages -----------------------------------------------------------------
+# Write complete scripts for the stages you need. No build system or default action is selected.
+# Bodies use shell/RPM syntax, without a %stage header. Triple single quotes keep backslashes literal.
+# [build.stages.prep]
+# replace = '''
+# '''
+
+# [build.stages.conf]
+# replace = '''
+# '''
+
+# [build.stages.build]
+# replace = '''
+# '''
+
+# [build.stages.install]
+# replace = '''
+# '''
+
+# [build.stages.check]
+# replace = '''
+# '''
+# Optional for each stage: prepend/append run before/after the main script.
+# prepend = '''
+# '''
+# append = '''
+# '''
+
+# Packaged files ---------------------------------------------------------------
+[package.files]
+# Paths relative to the build directory, copied as license/documentation files.
+# license = ["COPYING"]
+# doc = ["README"]
+# Installed paths, without %{buildroot}; for example "%{_bindir}/%{name}".
+entries = []
