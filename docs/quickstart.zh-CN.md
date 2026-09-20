@@ -50,4 +50,4 @@ Version/Source URL 变化会产生复核提醒；JSON 的 `review_required` 是�
 不是已经执行的检查。也不要把空复核列表理解成原生构建已通过。
 仅应用自己可信工作区内的草稿。批次不是整体原子事务，失败后先查看已写文件。
 
-更多字段、输出和边界见 [README](../README.md)。
+更多字段、输出和边界见 [命令与 manifest 参考](reference.md)。

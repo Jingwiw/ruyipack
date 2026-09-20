@@ -60,17 +60,32 @@ a package builds. Build evidence needs the actual source, environment, command,
 and resulting artifacts; absent evidence is not success. No universal success
 flag spans these stages.
 
+## openRuyi policy sources
+
+The embedded profile is a supported authoring subset, not a full implementation of
+all distribution policy. Its defaults come from the pinned
+[packaging specification](https://github.com/openRuyi-Project/homepage/blob/9862c6a93a0068a30d5b29cad74d14a281ca2e66/docs/packaging-guidelines/rpmspecification.md).
+
+| Convention | Owner and implementation |
+| --- | --- |
+| SPEC header license vs package License | `profile.toml` supplies the former; manifest `package.license` supplies the latter. Do not apply MulanPSL to upstream software by default. |
+| `%autorelease` / `%autochangelog` | Profile output remains literal; release/history handling belongs to target macros, not the renderer. |
+| RemoteAsset | openRuyi fetch metadata in a comment attached to a Source; `profile` owns spelling, `spec::document` owns safe adjacency/ranges, `source` validates selected values. |
+| BuildSystem / BuildOption and stage hooks | RPM declarative build syntax; actual actions come from target macros. `render::spec` emits declarations, not copies of default scripts. |
+| Autotools tool requirements | `check::build` enforces the profile declaration contract, not a dependency solver. CMake/Meson empty lists do not assert dependency-free builds. |
+
+The [build-system TOMLs](../profiles/openruyi-v1/buildsystems) record macro-file
+paths and revisions beside their copied stage guidance. Consult those sources
+before changing defaults; verify actual macros in the target environment.
+[Native RPM semantics](https://rpm.org/docs/6.0.x/manual/spec.html) and openRuyi
+policy are separate: implicit Source numbering is RPM behavior, whereas
+RemoteAsset association is a distribution convention.
+
 ## Publication and recovery
 
-All batch candidates are validated before publication. Publication is atomic per
-file, not per batch. Typed results preserve exact paths rather than a comma-joined
-list. A later I/O failure retains already-written paths; callers must inspect
-those files before retrying. Human notices are emitted after a successful batch,
-and a notice-write failure cannot roll back publication.
-
-Source identity checks detect common concurrent edits, not arbitrary races.
-Draft hashes establish consistency, not trust in an imported draft. See the
-README for overwrite, permissions, and durability limits.
+`file_output` keeps exact paths in typed outcomes and partial failures. The
+[output contract](reference.md#output-and-file-safety) defines per-file atomicity,
+permission handling, stale-source checks, and their limits.
 
 ## Regression contracts
 
@@ -83,7 +98,3 @@ README for overwrite, permissions, and durability limits.
 - `tests/edit.rs` checks draft identity/shape failures and structured error codes.
 - `tests/source_validation.rs` and `tests/edit_source_selection.rs` distinguish
   safely locating an old invalid value from validating its replacement.
-
-Extend these current consumers when a new operation needs them. Do not introduce
-an adapter registry, universal package snapshot, or execution state machine before
-an actual producer and consumer require that boundary.
