@@ -1,0 +1,22 @@
+9,10d8
+< %global LOADER grub.efi
+< 
+17,18c15,16
+< #!RemoteAsset
+< Source:         https://github.com/rhboot/efibootmgr/archive/refs/tags/%{version}.tar.gz#/%{name}-%{version}.tar.bz2
+---
+> #!RemoteAsset:  sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+> Source0:        https://github.com/rhboot/efibootmgr/archive/refs/tags/%{version}.tar.gz#/%{name}-%{version}.tar.bz2
+34a33,36
+> BuildRequires:  autoconf
+> BuildRequires:  automake
+> BuildRequires:  libtool
+> BuildRequires:  make
+47d48
+< # no configure
+50d50
+< # no tests.
+60c60
+< %{?autochangelog}
+---
+> %autochangelog

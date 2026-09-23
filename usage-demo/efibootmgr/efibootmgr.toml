@@ -1,0 +1,126 @@
+# SPEC authorship --------------------------------------------------------------
+[spec]
+# Year or year range for the packaging work, for example "2026" or "2024-2026".
+copyright-years = "2025"
+# People maintaining this SPEC, in "Name <email>" form; edit the Git default as needed.
+contributors = [
+  "Zheng Junjie <zhengjunjie@iscas.ac.cn>",
+  "jchzhou <zhoujiacheng@iscas.ac.cn>",
+  "misaka00251 <liuxin@iscas.ac.cn>",
+]
+
+# Upstream package -------------------------------------------------------------
+[package]
+name = "efibootmgr"
+# Upstream version. Use RPM version characters: letters, digits, . _ + ~ ^.
+version = "18"
+# Write a concise English summary; do not end it with a period.
+# https://openruyi.cn/docs/guide/packaging-guidelines/#summary
+summary = "EFI Boot Manager"
+# SPDX expression for the upstream software, for example "MIT" or "MIT AND BSD-2-Clause".
+license = "GPL-2.0-or-later"
+# HTTPS project homepage; source archive URLs belong in sources below.
+url = "https://github.com/rhboot/efibootmgr"
+# Describe what the software does. Write plain text, without SPEC section headers.
+description = '''
+The EFI Boot Manager allows the user to edit the Intel Extensible
+Firmware Interface (EFI) Boot Manager variables.  Additional
+information about the EFI can be found at
+<http://developer.intel.com/technology/efi/efi.htm>.
+'''
+# Runtime dependencies of the installed package (not build tools); one RPM
+# expression per string. Uncomment when the package needs them.
+# requires = ["coreutils", "%{name}-libs = %{version}-%{release}"]
+# Extra capabilities this package provides, beyond its own name.
+# provides = ["%{name}-devel = %{version}-%{release}"]
+# Set only for architecture-independent packages; renders BuildArch: noarch.
+# noarch = true
+
+[package.vcs]
+# Choose exactly one: a public Git clone URL, homepage is that repository, or no public repository.
+# git = "https://example.org/owner/project.git"
+same-as-url = true
+# no-public-repository = true
+
+# Packaged files ---------------------------------------------------------------
+[package.files]
+# Paths relative to the build directory, copied as license/documentation files.
+license = ["COPYING"]
+doc = ["README"]
+# Installed paths, without %{buildroot}; for example "%{_bindir}/%{name}".
+entries = [
+  "%{_sbindir}/efiboot*",
+  "%{_mandir}/man8/*.gz",
+]
+
+# Source archives --------------------------------------------------------------
+[sources.0]
+# HTTPS archive URL; %{name}, %{version}, and %{url} refer to the package fields above.
+url = "https://github.com/rhboot/efibootmgr/archive/refs/tags/%{version}.tar.gz#/%{name}-%{version}.tar.bz2"
+# SHA-256 of the downloaded archive: 64 hexadecimal digits.
+# Delete this line to record no digest (renders a bare #!RemoteAsset); an empty value is rejected.
+sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+# Add sources.1, sources.2, ... for additional remote archives.
+
+# Build dependencies -----------------------------------------------------------
+[build-requires]
+# Direct build requirements, one RPM expression per string; examples: "make", "pkgconfig(zlib)".
+rpm = [
+  "pkgconfig",
+  "pkgconfig(efiboot) >= 31",
+  "pkgconfig(efivar) >= 31",
+  "pkgconfig(libpci)",
+  "pkgconfig(popt)",
+  "pkgconfig(zlib)",
+  "autoconf",
+  "automake",
+  "libtool",
+  "make",
+]
+
+# Build stages -----------------------------------------------------------------
+[build]
+system = "autotools"
+
+# Write complete scripts for the stages you need. No build system or default action is selected.
+# Bodies use shell/RPM syntax, without a %stage header. Triple single quotes keep backslashes literal.
+[build.stages.prep]
+# replace = '''
+# '''
+append = '''
+# removing hotfix function declaration:
+# https://github.com/rhboot/efibootmgr/issues/128
+sed -e '/extern int efi_set_verbose/d' -i "src/efibootmgr.c"
+'''
+
+[build.stages.conf]
+replace = '''
+'''
+
+[build.stages.build]
+options = [
+  'CFLAGS="%{optflags} -flto -fPIE -pie"',
+  'OS_VENDOR="%{_vendor}"',
+  'EFI_LOADER="%{LOADER}"',
+  'EFIDIR="%{_vendor}"',
+]
+# replace = '''
+# '''
+
+[build.stages.install]
+options = [
+  "DESTDIR=%{buildroot}",
+  "sbindir=%{_sbindir}",
+  'EFIDIR="%{_vendor}"',
+]
+# replace = '''
+# '''
+
+[build.stages.check]
+replace = '''
+'''
+# Optional for each stage: prepend/append run before/after the main script.
+# prepend = '''
+# '''
+# append = '''
+# '''
