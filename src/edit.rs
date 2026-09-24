@@ -38,20 +38,32 @@ struct Input {
 
 /// Builds and checks every candidate before publishing any file.
 pub(crate) fn run(options: &Options) -> Result<bool, EditError> {
-    match execute(options) {
-        Err(error) if options.check && matches!(options.format, Some(CheckFormat::Json)) => {
-            let text =
-                serde_json::to_string_pretty(&json!({"format_version": 2, "scope": "selected-edit-static", "valid": false, "files": [], "error": error}))
-                    .map_err(|e| EditError::from(e.to_string()))?;
-            write_stdout(&(text + "\n")).map_err(EditError::from)?;
-            Ok(false)
-        }
-        result => result,
+    if !(options.check && matches!(options.format, Some(CheckFormat::Json))) {
+        return execute(options);
     }
+    let (success, report) = match load_inputs(options) {
+        Ok(inputs) => {
+            let checked = check_candidates(&inputs, &options.set);
+            let success = checked.iter().all(|item| item.error.is_none());
+            let records = checked.iter().map(CheckedInput::record).collect::<Vec<_>>();
+            (
+                success,
+                json!({"format_version": 2, "scope": "selected-edit-static", "valid": success, "files": records}),
+            )
+        }
+        Err(error) => (
+            false,
+            json!({"format_version": 2, "scope": "selected-edit-static", "valid": false, "files": [], "error": error}),
+        ),
+    };
+    // A failed report write is an I/O error, not a new business result to serialize.
+    let text = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+    write_stdout(&(text + "\n"))?;
+    Ok(success)
 }
 
-fn execute(options: &Options) -> Result<bool, EditError> {
-    let mut inputs = if let Some(dir) = &options.from {
+fn load_inputs(options: &Options) -> Result<Vec<Input>, EditError> {
+    let inputs = if let Some(dir) = &options.from {
         drafts::load(dir)?
             .into_iter()
             .map(|draft| input(draft.source, draft.original, draft.fields, Some(draft.path)))
@@ -86,6 +98,11 @@ fn execute(options: &Options) -> Result<bool, EditError> {
             return Err(format!("{}: SPEC selected more than once", item.path.display()).into());
         }
     }
+    Ok(inputs)
+}
+
+fn execute(options: &Options) -> Result<bool, EditError> {
+    let mut inputs = load_inputs(options)?;
     if options.view || options.schema {
         let view = inputs[0].snapshot.document();
         let text = if options.schema {
@@ -252,18 +269,14 @@ impl ApplyResult<'_> {
     }
 }
 
-fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, EditError> {
-    if let Some(output) = &options.output {
-        let paths = inputs
-            .iter()
-            .filter_map(|item| item.draft.as_deref())
-            .collect::<Vec<_>>();
-        drafts::protect_output(output, &paths)?;
-    }
-    let checked = inputs
+fn check_candidates<'a>(
+    inputs: &'a [Input],
+    assignments: &[(String, String)],
+) -> Vec<CheckedInput<'a>> {
+    inputs
         .iter()
         .map(|item| {
-            let (candidate, error) = match read_candidate(item, &options.set) {
+            let (candidate, error) = match read_candidate(item, assignments) {
                 Ok(candidate) => {
                     let error = (!candidate.report.is_success()).then(|| {
                         EditError::at(
@@ -283,26 +296,35 @@ fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, 
                 error,
             }
         })
-        .collect::<Vec<_>>();
+        .collect()
+}
+
+fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, EditError> {
+    if let Some(output) = &options.output {
+        let paths = inputs
+            .iter()
+            .filter_map(|item| item.draft.as_deref())
+            .collect::<Vec<_>>();
+        drafts::protect_output(output, &paths)?;
+    }
+    let checked = check_candidates(inputs, &options.set);
     let success = checked.iter().all(|item| item.error.is_none());
-    if !matches!(options.format, Some(CheckFormat::Json)) {
-        for item in &checked {
-            if let Some(candidate) = item.candidate.as_ref() {
-                let path = &item.input.path;
-                if !candidate.review_triggers.is_empty() {
-                    writeln!(io::stderr().lock(),
-                        "{} (candidate): review required after changing {}: source content and recorded SHA-256, patch applicability, and native build have not been verified",
-                        path.display(), candidate.review_triggers.join(", "))
-                        .map_err(|e| e.to_string())?;
-                }
-                candidate
-                    .report
-                    .write_human(
-                        Path::new(&format!("{} (candidate)", path.display())),
-                        &mut io::stderr().lock(),
-                    )
+    for item in &checked {
+        if let Some(candidate) = item.candidate.as_ref() {
+            let path = &item.input.path;
+            if !candidate.review_triggers.is_empty() {
+                writeln!(io::stderr().lock(),
+                    "{} (candidate): review required after changing {}: source content and recorded SHA-256, patch applicability, and native build have not been verified",
+                    path.display(), candidate.review_triggers.join(", "))
                     .map_err(|e| e.to_string())?;
             }
+            candidate
+                .report
+                .write_human(
+                    Path::new(&format!("{} (candidate)", path.display())),
+                    &mut io::stderr().lock(),
+                )
+                .map_err(|e| e.to_string())?;
         }
     }
     let changed_sources = checked
@@ -315,28 +337,21 @@ fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, 
         })
         .collect();
     if options.check {
-        if matches!(options.format, Some(CheckFormat::Json)) {
-            let records = checked.iter().map(CheckedInput::record).collect::<Vec<_>>();
-            write_stdout(&(serde_json::to_string_pretty(
-                &json!({"format_version": 2, "scope": "selected-edit-static", "valid": success, "files": records})
-            ).map_err(|e| e.to_string())? + "\n"))?;
-        } else {
-            for item in &checked {
-                writeln!(
-                    io::stdout().lock(),
-                    "{}: {}",
-                    item.input.path.display(),
-                    if item.error.is_none() {
-                        "valid"
-                    } else {
-                        "invalid"
-                    }
-                )
-                .map_err(|e| e.to_string())?;
-            }
-            for error in checked.iter().filter_map(|item| item.error.as_ref()) {
-                writeln!(io::stderr().lock(), "error: {error}").map_err(|e| e.to_string())?;
-            }
+        for item in &checked {
+            writeln!(
+                io::stdout().lock(),
+                "{}: {}",
+                item.input.path.display(),
+                if item.error.is_none() {
+                    "valid"
+                } else {
+                    "invalid"
+                }
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        for error in checked.iter().filter_map(|item| item.error.as_ref()) {
+            writeln!(io::stderr().lock(), "error: {error}").map_err(|e| e.to_string())?;
         }
         return Ok(ApplyResult {
             success,
