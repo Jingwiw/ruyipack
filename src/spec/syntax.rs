@@ -9,10 +9,14 @@
 use rpm_spec::ast::{PreambleItem, Span, SpecFile, SpecItem, Tag, TagValue};
 use rpm_spec_analyzer::visit::Visit;
 
-use crate::check::{RuleResult, license};
+use crate::check::{RuleResult, build::BuildRequirements, license};
 
-pub(super) fn license(spec: &SpecFile<Span>, source: &str) -> RuleResult {
-    let mut visitor = LicenseVisitor(RuleResult::default());
+pub(super) fn check(spec: &SpecFile<Span>, source: &str) -> RuleResult {
+    let mut visitor = CheckVisitor {
+        result: RuleResult::default(),
+        build: BuildRequirements::default(),
+        conditional: false,
+    };
     visitor.visit_spec(spec);
     // Match the top-level comments exposed as spec.license by header editing,
     // not declaration-like text inside descriptions or shell bodies.
@@ -23,78 +27,29 @@ pub(super) fn license(spec: &SpecFile<Span>, source: &str) -> RuleResult {
                 crate::spec_metadata::license_declaration(raw.strip_suffix('\n').unwrap_or(raw))
         {
             license::check(
-                &mut visitor.0,
+                &mut visitor.result,
                 "spec.license",
                 Some(value),
                 super::diagnostic::location(comment.data),
             );
         }
     }
-    visitor.0
+    let build = visitor.build.check();
+    visitor.result.findings.extend(build.findings);
+    visitor
+        .result
+        .incomplete_reasons
+        .extend(build.incomplete_reasons);
+    visitor.result
 }
 
-struct LicenseVisitor(RuleResult);
-
-impl<'ast> Visit<'ast> for LicenseVisitor {
-    fn visit_preamble(&mut self, item: &'ast PreambleItem<Span>) {
-        if item.tag == Tag::License {
-            let literal = match &item.value {
-                TagValue::Text(text) => text.literal_str(),
-                _ => None,
-            };
-            license::check(
-                &mut self.0,
-                "package.license",
-                literal,
-                super::diagnostic::location(item.data),
-            );
-        }
-    }
-}
-
-pub(super) fn metadata(spec: &SpecFile<Span>) -> Vec<crate::check_report::Finding> {
-    let mut visitor = MetadataVisitor(Vec::new());
-    visitor.visit_spec(spec);
-    visitor.0
-}
-
-struct MetadataVisitor(Vec<crate::check_report::Finding>);
-
-impl<'ast> Visit<'ast> for MetadataVisitor {
-    fn visit_preamble(&mut self, item: &'ast PreambleItem<Span>) {
-        use crate::check::metadata::Field;
-        let field = match item.tag {
-            Tag::Name => Field::Name,
-            Tag::Version => Field::Version,
-            Tag::Release => Field::Release,
-            Tag::URL => Field::Url,
-            _ => return,
-        };
-        let literal = match &item.value {
-            TagValue::Text(text) => text.literal_str(),
-            _ => None,
-        };
-        if let Some(finding) = field.finding(literal, super::diagnostic::location(item.data)) {
-            self.0.push(finding);
-        }
-    }
-}
-
-pub(super) fn build_requirements(spec: &SpecFile<Span>) -> crate::check::build::BuildRequirements {
-    let mut visitor = BuildVisitor {
-        facts: Default::default(),
-        conditional: false,
-    };
-    visitor.visit_spec(spec);
-    visitor.facts
-}
-
-struct BuildVisitor {
-    facts: crate::check::build::BuildRequirements,
+struct CheckVisitor {
+    result: RuleResult,
+    build: BuildRequirements,
     conditional: bool,
 }
 
-impl<'ast> Visit<'ast> for BuildVisitor {
+impl<'ast> Visit<'ast> for CheckVisitor {
     fn visit_item(&mut self, item: &'ast rpm_spec::ast::SpecItem<Span>) {
         use rpm_spec::ast::SpecItem;
         match item {
@@ -105,7 +60,7 @@ impl<'ast> Visit<'ast> for BuildVisitor {
                 self.conditional = previous;
             }
             // These constructs can supply tags absent from the static tree.
-            SpecItem::Include(_) | SpecItem::Statement(_) => self.facts.uncertain = true,
+            SpecItem::Include(_) | SpecItem::Statement(_) => self.build.uncertain = true,
             _ => rpm_spec_analyzer::visit::walk_item(self, item),
         }
     }
@@ -121,27 +76,44 @@ impl<'ast> Visit<'ast> for BuildVisitor {
     }
 
     fn visit_preamble(&mut self, item: &'ast PreambleItem<Span>) {
+        use crate::check::metadata::Field;
         use rpm_spec::ast::DepExpr;
-        if matches!(&item.tag, Tag::Other(name) if name.eq_ignore_ascii_case("BuildSystem")) {
-            let system = match &item.value {
-                TagValue::Text(text) if !self.conditional => {
-                    text.literal_str().map(|s| s.trim().to_owned())
+        let literal = match &item.value {
+            TagValue::Text(text) => text.literal_str(),
+            _ => None,
+        };
+        let span = super::diagnostic::location(item.data);
+        match &item.tag {
+            Tag::License => license::check(&mut self.result, "package.license", literal, span),
+            Tag::Other(name) if name.eq_ignore_ascii_case("BuildSystem") => {
+                let system = literal
+                    .filter(|_| !self.conditional)
+                    .map(|s| s.trim().to_owned());
+                self.build.systems.push((system, span));
+            }
+            Tag::BuildRequires => {
+                if !self.conditional
+                    && item.qualifiers.is_empty()
+                    && let TagValue::Dep(DepExpr::Atom(atom)) = &item.value
+                    && atom.arch.is_none()
+                    && let Some(name) = atom.name.literal_str()
+                {
+                    self.build.direct.push(name.to_owned());
+                } else {
+                    self.build.uncertain = true;
                 }
-                _ => None,
-            };
-            self.facts
-                .systems
-                .push((system, super::diagnostic::location(item.data)));
-        } else if item.tag == Tag::BuildRequires {
-            if !self.conditional
-                && item.qualifiers.is_empty()
-                && let TagValue::Dep(DepExpr::Atom(atom)) = &item.value
-                && atom.arch.is_none()
-                && let Some(name) = atom.name.literal_str()
-            {
-                self.facts.direct.push(name.to_owned());
-            } else {
-                self.facts.uncertain = true;
+            }
+            tag => {
+                let field = match tag {
+                    Tag::Name => Field::Name,
+                    Tag::Version => Field::Version,
+                    Tag::Release => Field::Release,
+                    Tag::URL => Field::Url,
+                    _ => return,
+                };
+                if let Some(finding) = field.finding(literal, span) {
+                    self.result.findings.push(finding);
+                }
             }
         }
     }

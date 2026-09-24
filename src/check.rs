@@ -53,17 +53,13 @@ pub(crate) fn analyze(spec: &ParsedSpec<'_>) -> CheckReport {
     if parser_error {
         return CheckReport::incomplete(source, selected_rules, diagnostics);
     }
-    let mut incomplete_reasons = Vec::new();
-    for result in [spec.licenses(), spec.build_requirements().check()] {
-        findings.extend(result.findings);
-        incomplete_reasons.extend(result.incomplete_reasons);
-    }
-    findings.extend(spec.metadata_findings());
+    let local = spec.local_checks();
+    findings.extend(local.findings);
     CheckReport::analyzed(
         source,
         selected_rules,
         diagnostics,
         findings,
-        incomplete_reasons,
+        local.incomplete_reasons,
     )
 }
