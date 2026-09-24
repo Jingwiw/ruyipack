@@ -12,7 +12,11 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use crate::{check_command::CheckFormat, file_output, output_cli, render, utf8_file};
+use crate::{
+    file_output,
+    output_cli::{self, ReportFormat},
+    render, utf8_file,
+};
 
 /// Generates the SPEC owned by one manifest.
 pub(crate) fn run(
@@ -20,7 +24,7 @@ pub(crate) fn run(
     manifest_path: Option<&Path>,
     output: &output_cli::OutputOptions,
     check_only: bool,
-    format: Option<CheckFormat>,
+    format: Option<ReportFormat>,
 ) -> Result<bool, GenerateError> {
     // NAME selects a package; it never acts as an implicit manifest path.
     let mut name_components = Path::new(requested_name).components();
@@ -68,7 +72,7 @@ pub(crate) fn run(
 
     let default_target = manifest_path.with_file_name(format!("{}.spec", rendered.name));
     let target = output.path.as_deref().unwrap_or(&default_target);
-    if check_only && matches!(format, Some(CheckFormat::Json)) {
+    if check_only && matches!(format, Some(ReportFormat::Json)) {
         let report = serde_json::json!({
             "format_version": 1,
             "scope": "manifest-generation-static",

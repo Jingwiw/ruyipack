@@ -6,7 +6,8 @@
 
 //! Editing arguments and output selection.
 
-use clap::{ArgGroup, Args, ValueEnum};
+use crate::output_cli::ReportFormat;
+use clap::{ArgGroup, Args};
 use std::path::PathBuf;
 
 #[derive(Args)]
@@ -48,7 +49,7 @@ pub(crate) struct Options {
     /// Selects the check report format.
     // Conflicts can waive `requires`, so reject non-check modes on this option too.
     #[arg(long, value_enum, requires = "check", conflicts_with_all = ["prepare", "view", "schema", "diff", "stdout", "output", "editor", "force"])]
-    pub format: Option<CheckFormat>,
+    pub format: Option<ReportFormat>,
     /// Prints source-to-candidate diffs without writing SPEC files.
     #[arg(long)]
     pub diff: bool,
@@ -65,12 +66,6 @@ pub(crate) struct Options {
     /// Overrides the editor command; GUI editors must wait until files close.
     #[arg(long, value_name = "COMMAND")]
     pub editor: Option<String>,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-pub(crate) enum CheckFormat {
-    Human,
-    Json,
 }
 
 fn assignment(text: &str) -> Result<(String, String), String> {

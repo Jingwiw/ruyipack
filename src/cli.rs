@@ -10,7 +10,10 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::{check_command, edit, init, inspect, output_cli};
+use crate::{
+    edit, init,
+    output_cli::{self, ReportFormat},
+};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -32,8 +35,8 @@ pub(crate) enum Command {
         #[arg(value_name = "SPEC")]
         spec: PathBuf,
         /// Selects human or JSON output.
-        #[arg(long, value_enum, default_value_t = check_command::CheckFormat::Human)]
-        format: check_command::CheckFormat,
+        #[arg(long, value_enum, default_value_t = ReportFormat::Human)]
+        format: ReportFormat,
     },
     /// Prints the normalized main-package tags from an RPM SPEC file.
     Inspect {
@@ -41,8 +44,8 @@ pub(crate) enum Command {
         #[arg(value_name = "SPEC")]
         spec: PathBuf,
         /// Selects human or JSON output.
-        #[arg(long, value_enum, default_value_t = inspect::InspectFormat::Human)]
-        format: inspect::InspectFormat,
+        #[arg(long, value_enum, default_value_t = ReportFormat::Human)]
+        format: ReportFormat,
     },
     /// Generates an openRuyi SPEC from a package manifest.
     #[command(
@@ -63,7 +66,7 @@ Without a usable terminal or an explicit action, conflicting output is an error.
         /// Selects the generation check report format.
         // Conflicts can waive `requires`, so reject non-check modes on this option too.
         #[arg(long, value_enum, requires = "check", conflicts_with_all = ["path", "stdout", "diff", "force", "skip_existing"])]
-        format: Option<check_command::CheckFormat>,
+        format: Option<ReportFormat>,
         #[command(flatten, next_help_heading = "Output options")]
         output: output_cli::OutputOptions,
     },

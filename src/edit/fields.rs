@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Field selection and shape checks for an existing editable document.
+//! String assignments, field selection and JSON Schema for source-mapped drafts.
 
 use std::{borrow::Cow, collections::BTreeSet};
 

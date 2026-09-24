@@ -4,16 +4,34 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Command-line output options and terminal-only conflict selection.
+//! Command-line presentation and terminal-only conflict selection.
 
 use std::{
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
 };
 
-use clap::Args;
+use clap::{Args, ValueEnum};
 
 use crate::file_output::{self, ConflictAction, OutputError, OutputMode};
+
+/// Presentation choice shared by check, inspect, generation and edit reports.
+#[derive(Clone, Copy, ValueEnum)]
+pub(crate) enum ReportFormat {
+    Human,
+    Json,
+}
+
+/// File input and output failures shared by the read-only report commands.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ReportError {
+    #[error("{0}")]
+    Input(#[from] crate::utf8_file::Utf8FileError),
+    #[error("failed to write output to stdout: {0}")]
+    Stdout(#[source] io::Error),
+    #[error("failed to write diagnostics to stderr: {0}")]
+    Stderr(#[source] io::Error),
+}
 
 #[derive(Args)]
 pub(crate) struct OutputOptions {

@@ -13,14 +13,14 @@ mod error;
 
 pub(crate) use error::EditError;
 use error::Kind;
-pub(crate) mod fields;
+mod fields;
 mod options;
 
 pub(crate) use options::Options;
 
+use crate::output_cli::ReportFormat;
 use crate::spec::{ParsedSpec, document::Snapshot};
 use crate::{file_output, utf8_file};
-use options::CheckFormat;
 use serde_json::json;
 use std::{
     borrow::Cow,
@@ -38,7 +38,7 @@ struct Input {
 
 /// Builds and checks every candidate before publishing any file.
 pub(crate) fn run(options: &Options) -> Result<bool, EditError> {
-    if !(options.check && matches!(options.format, Some(CheckFormat::Json))) {
+    if !(options.check && matches!(options.format, Some(ReportFormat::Json))) {
         return execute(options);
     }
     let (success, report) = match load_inputs(options) {
