@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix="ruyipack-native-") as directory:
         spec += "\n%files\n"
         path = pathlib.Path(directory) / "numbering.spec"
         path.write_text(spec)
-        result = subprocess.run(["rpmspec", "-P", str(path)], check=True, capture_output=True, text=True)
+        result = subprocess.run(["rpmspec", "-P", str(path)], check=True, stdout=subprocess.PIPE, text=True)
         observed = {}
         for line in result.stdout.splitlines():
             if line.startswith("NATIVE_SOURCE"):
