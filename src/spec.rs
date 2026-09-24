@@ -15,7 +15,7 @@ mod syntax;
 pub(crate) mod verify;
 
 use crate::{
-    check::license::LicenseCheck,
+    check::RuleResult,
     check_report::{Finding, SelectedRule},
     parser_diagnostic::Diagnostic,
 };
@@ -55,7 +55,7 @@ impl<'src> ParsedSpec<'src> {
         syntax::build_requirements(&self.parsed.spec)
     }
 
-    pub(crate) fn licenses(&self) -> LicenseCheck {
+    pub(crate) fn licenses(&self) -> RuleResult {
         syntax::license(&self.parsed.spec, self.source)
     }
 }

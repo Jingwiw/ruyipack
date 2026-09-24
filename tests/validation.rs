@@ -165,29 +165,29 @@ fn invalid_license_is_rejected_by_check_gen_and_edit_without_writes() {
 #[test]
 fn license_checks_visit_subpackages_and_conditions_without_expanding_macros() {
     let dir = tempfile::tempdir().unwrap();
-    for (extra, status, reason, severities) in [
+    for (extra, status, reasons, severities) in [
         (
             "%if 0\nLicense: Definitely-Not-A-License\n%endif\n",
             "fail",
-            None,
+            &[][..],
             &["deny"][..],
         ),
         (
             "%package tools\nSummary: Tools\nLicense: Definitely-Not-A-License\n",
             "fail",
-            None,
+            &[][..],
             &["deny"][..],
         ),
         (
             "License: %{package_license}\n",
             "incomplete",
-            Some("unresolved-license"),
+            &["unresolved-license"][..],
             &["warn"][..],
         ),
         (
             "%if 0\nLicense: Definitely-Not-A-License\n%else\nLicense: %{package_license}\n%endif\n",
             "fail",
-            None,
+            &["unresolved-license"][..],
             &["deny", "warn"][..],
         ),
     ] {
@@ -207,7 +207,11 @@ fn license_checks_visit_subpackages_and_conditions_without_expanding_macros() {
         assert!(output.stderr.is_empty());
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(report["evidence"]["status"], status, "{report}");
-        assert_eq!(report["evidence"]["reason"].as_str(), reason, "{report}");
+        assert_eq!(
+            report["evidence"]["incomplete_reasons"],
+            serde_json::json!(reasons),
+            "{report}"
+        );
         let findings: Vec<_> = report["findings"]
             .as_array()
             .unwrap()
@@ -463,19 +467,82 @@ fn build_requirements_do_not_guess_conditions_macros_or_unknown_systems() {
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(report["evidence"]["status"], "incomplete", "{report}");
         assert_eq!(
-            report["evidence"]["reason"],
-            "unresolved-build-requirements"
+            report["evidence"]["incomplete_reasons"],
+            serde_json::json!(["unresolved-build-requirements"])
         );
         assert_eq!(report["findings"][0]["severity"], "warn");
         assert_eq!(output.status.code(), Some(1));
     }
-    let source = SPEC
-        .replace("BuildSystem:    autotools", "BuildSystem:    meson")
-        .replace("BuildRequires:  autoconf\n", "");
-    fs::write(directory.path().join("ed.spec"), source).unwrap();
-    assert!(
-        run(directory.path(), &["check", "ed.spec"])
-            .status
-            .success()
-    );
+    for system in ["meson", "custom-system", "%{build_system}"] {
+        let source = SPEC
+            .replace(
+                "BuildSystem:    autotools",
+                &format!("BuildSystem: {system}"),
+            )
+            .replace("BuildRequires:  autoconf\n", "");
+        fs::write(directory.path().join("ed.spec"), source).unwrap();
+        let output = run(directory.path(), &["check", "ed.spec", "--format", "json"]);
+        assert!(output.status.success());
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            report["evidence"]["incomplete_reasons"],
+            serde_json::json!([])
+        );
+    }
+}
+
+#[test]
+fn independent_incomplete_reasons_survive_each_other_and_confirmed_failures() {
+    let directory = tempfile::tempdir().unwrap();
+    let incomplete = SPEC
+        .replace(LICENSE, "%{package_license}")
+        .replace(
+            "BuildRequires:  autoconf",
+            "%if 0\nBuildRequires: autoconf\n%endif",
+        )
+        .replace(
+            "%description",
+            "%if 0\nLicense: %{secondary_license}\n%endif\n%description",
+        );
+    for (source, status) in [
+        (incomplete.clone(), "incomplete"),
+        (
+            incomplete.replace(
+                "%description",
+                "License: Definitely-Not-A-License\n%description",
+            ),
+            "fail",
+        ),
+    ] {
+        let path = directory.path().join("ed.spec");
+        fs::write(&path, &source).unwrap();
+        let output = run(directory.path(), &["check", "ed.spec", "--format", "json"]);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stderr.is_empty());
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["format_version"], 2);
+        assert_eq!(report["evidence"]["status"], status);
+        assert_eq!(
+            report["evidence"]["incomplete_reasons"],
+            serde_json::json!(["unresolved-license", "unresolved-build-requirements"])
+        );
+        let findings = report["findings"].as_array().unwrap();
+        for rule in ["RPK001", "RPK004"] {
+            assert!(
+                findings
+                    .iter()
+                    .any(|f| f["code"] == rule && f["severity"] == "warn")
+            );
+        }
+        assert_eq!(
+            findings.iter().any(|f| f["severity"] == "deny"),
+            status == "fail"
+        );
+        let human = run(directory.path(), &["check", "ed.spec"]);
+        assert_eq!(human.status.code(), Some(1));
+        let diagnostics = String::from_utf8(human.stderr).unwrap();
+        assert!(diagnostics.contains("license expressions require RPM evaluation"));
+        assert!(diagnostics.contains("build requirements require RPM evaluation"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), source);
+    }
 }

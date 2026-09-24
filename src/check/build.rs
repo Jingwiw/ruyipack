@@ -13,8 +13,9 @@
 //! Each TOML records its policy/macro source. An empty requirement list means
 //! this tool has no common requirement contract, not that the system needs no tools.
 
+use super::RuleResult;
 use crate::{
-    check_report::{Finding, SelectedRule, Severity},
+    check_report::{Finding, IncompleteReason, SelectedRule, Severity},
     source_location::SourceLocation,
 };
 use serde::{Deserialize, Serialize};
@@ -113,14 +114,14 @@ pub(crate) struct BuildRequirements {
 }
 
 impl BuildRequirements {
-    pub(crate) fn findings(&self) -> Vec<Finding> {
+    pub(crate) fn check(&self) -> RuleResult {
         let [(Some(system), span)] = self.systems.as_slice() else {
-            return Vec::new();
+            return RuleResult::default();
         };
         let Some(contract) = contract(system) else {
-            return Vec::new();
+            return RuleResult::default();
         };
-        contract.build_requires.iter().filter(|required| !self.direct.contains(required))
+        let findings: Vec<_> = contract.build_requires.iter().filter(|required| !self.direct.contains(required))
             .map(|required| Finding {
                 producer: "ruyipack",
                 code: RULE.code,
@@ -131,6 +132,15 @@ impl BuildRequirements {
                     format!("build-requires.rpm: declare {required:?} required by {system}")
                 },
                 span: span.clone(),
-            }).collect()
+            }).collect();
+        let incomplete_reasons = if self.uncertain && !findings.is_empty() {
+            vec![IncompleteReason::UnresolvedBuildRequirements]
+        } else {
+            Vec::new()
+        };
+        RuleResult {
+            findings,
+            incomplete_reasons,
+        }
     }
 }

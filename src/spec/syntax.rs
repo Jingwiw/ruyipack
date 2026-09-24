@@ -9,10 +9,10 @@
 use rpm_spec::ast::{PreambleItem, Span, SpecFile, SpecItem, Tag, TagValue};
 use rpm_spec_analyzer::visit::Visit;
 
-use crate::check::license::LicenseCheck;
+use crate::check::{RuleResult, license};
 
-pub(super) fn license(spec: &SpecFile<Span>, source: &str) -> LicenseCheck {
-    let mut visitor = LicenseVisitor(LicenseCheck::default());
+pub(super) fn license(spec: &SpecFile<Span>, source: &str) -> RuleResult {
+    let mut visitor = LicenseVisitor(RuleResult::default());
     visitor.visit_spec(spec);
     // Match the top-level comments exposed as spec.license by header editing,
     // not declaration-like text inside descriptions or shell bodies.
@@ -22,7 +22,8 @@ pub(super) fn license(spec: &SpecFile<Span>, source: &str) -> LicenseCheck {
             && let Some(value) =
                 crate::spec_metadata::license_declaration(raw.strip_suffix('\n').unwrap_or(raw))
         {
-            visitor.0.check(
+            license::check(
+                &mut visitor.0,
                 "spec.license",
                 Some(value),
                 super::diagnostic::location(comment.data),
@@ -32,7 +33,7 @@ pub(super) fn license(spec: &SpecFile<Span>, source: &str) -> LicenseCheck {
     visitor.0
 }
 
-struct LicenseVisitor(LicenseCheck);
+struct LicenseVisitor(RuleResult);
 
 impl<'ast> Visit<'ast> for LicenseVisitor {
     fn visit_preamble(&mut self, item: &'ast PreambleItem<Span>) {
@@ -41,7 +42,8 @@ impl<'ast> Visit<'ast> for LicenseVisitor {
                 TagValue::Text(text) => text.literal_str(),
                 _ => None,
             };
-            self.0.check(
+            license::check(
+                &mut self.0,
                 "package.license",
                 literal,
                 super::diagnostic::location(item.data),

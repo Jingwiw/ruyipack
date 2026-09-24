@@ -6,8 +6,9 @@
 
 //! SPDX expression checks for package and SPEC file licenses.
 
+use super::RuleResult;
 use crate::{
-    check_report::{Finding, SelectedRule, Severity},
+    check_report::{Finding, IncompleteReason, SelectedRule, Severity},
     source_location::SourceLocation,
 };
 
@@ -16,39 +17,38 @@ pub(super) const RULE: SelectedRule = SelectedRule {
     severity: Severity::Deny,
 };
 
-#[derive(Default)]
-pub(crate) struct LicenseCheck {
-    pub(super) findings: Vec<Finding>,
-    pub(super) unresolved: bool,
-}
-
-impl LicenseCheck {
-    /// Checks a literal value, or records that syntax requires RPM evaluation.
-    pub(crate) fn check(&mut self, field: &str, literal: Option<&str>, span: SourceLocation) {
-        let (severity, message) = match literal {
-            Some(value) => match validate_expression(value) {
-                Ok(_) => return,
-                Err(error) => (
-                    RULE.severity,
-                    format!("{field}: invalid or unrecognized SPDX expression: {error}"),
-                ),
-            },
-            None => {
-                self.unresolved = true;
-                (
-                    Severity::Warn,
-                    format!("{field}: SPDX validation requires an evaluated License value"),
-                )
-            }
-        };
-        self.findings.push(Finding {
-            producer: "ruyipack",
-            code: RULE.code,
-            severity,
-            message,
-            span,
-        });
-    }
+/// Checks a literal value, or records that syntax requires RPM evaluation.
+pub(crate) fn check(
+    result: &mut RuleResult,
+    field: &str,
+    literal: Option<&str>,
+    span: SourceLocation,
+) {
+    let (severity, message) = match literal {
+        Some(value) => match validate_expression(value) {
+            Ok(_) => return,
+            Err(error) => (
+                RULE.severity,
+                format!("{field}: invalid or unrecognized SPDX expression: {error}"),
+            ),
+        },
+        None => {
+            result
+                .incomplete_reasons
+                .push(IncompleteReason::UnresolvedLicense);
+            (
+                Severity::Warn,
+                format!("{field}: SPDX validation requires an evaluated License value"),
+            )
+        }
+    };
+    result.findings.push(Finding {
+        producer: "ruyipack",
+        code: RULE.code,
+        severity,
+        message,
+        span,
+    });
 }
 
 /// Applies SPDX identifier and operator rules without changing the input text.

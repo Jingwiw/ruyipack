@@ -1057,6 +1057,7 @@ fn generation_reports_identify_real_inputs_and_never_publish() {
         report["report"]["input"]["sha256"],
         format!("{:x}", Sha256::digest(SPEC.as_bytes()))
     );
+    assert_eq!(report["report"]["format_version"], 2);
     assert_eq!(report["report"]["evidence"]["stage"], "spec-static");
     assert!(report.get("environment").is_none());
     assert_eq!(

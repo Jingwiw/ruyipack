@@ -39,7 +39,10 @@ fn inconsistent_conditional_location_does_not_hide_the_error() {
         );
         if command == "check" {
             assert_eq!(report["evidence"]["status"], "incomplete");
-            assert_eq!(report["evidence"]["reason"], "parser-error");
+            assert_eq!(
+                report["evidence"]["incomplete_reasons"],
+                json!(["parser-error"])
+            );
         }
     }
     assert_eq!(fs::read_to_string(&path).unwrap(), source);

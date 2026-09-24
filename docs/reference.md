@@ -221,7 +221,7 @@ SPDX covers main/subpackages and conditional branches, not upstream license
 correctness. IDs are case-insensitive, operators uppercase, deprecated IDs valid;
 unknown IDs use bundled SPDX data. Missing file-license comments are not rejected
 by this expression check; script comments are not declarations. Unresolved
-license expressions make checks incomplete unless a finding already proves failure.
+license expressions leave checks incomplete even when a finding also proves failure.
 Unchanged invalid literal metadata also fails candidate checks; macro values are
 not evaluated or certified.
 
@@ -251,9 +251,16 @@ spans without hiding messages. This does not establish general semantic accuracy
 
 | Report | Contract |
 | --- | --- |
-| `check --format json` | Input identity, parser, selected rules, `spec-static` evidence, findings and `parser_diagnostics` |
+| `check --format json` | Report v2: input identity, parser, selected rules, `spec-static` evidence, findings and `parser_diagnostics` |
 | `gen NAME --check --format json` | Envelope v1, `manifest-generation-static`: manifest/profile/selected build-contract hashes, warnings, candidate report |
 | `edit ... --check --format json` | Envelope v2, `selected-edit-static`: per-file original hash, candidate report, review lists and structured errors |
+
+Static reports carry `evidence.incomplete_reasons` as a deterministic, deduplicated
+list, including when `status` is `fail`. Reasons distinguish `parser-error`,
+`unresolved-license`, and `unresolved-build-requirements`; an empty list does not
+expand the selected rule scope. Parser errors stop rule execution. Ordinary parser
+warnings do not imply incomplete checks. Both generation and editing embed this
+same versioned report, independently of their outer envelope version.
 
 `gen --check` never writes or consults output conflicts; `--format` requires
 `--check`, which conflicts with output/preview/overwrite flags. Its input path is

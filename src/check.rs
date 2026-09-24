@@ -11,10 +11,17 @@ pub(crate) mod license;
 pub(crate) mod metadata;
 
 use crate::{
-    check_report::{CheckReport, SelectedRule, Severity},
+    check_report::{CheckReport, Finding, IncompleteReason, SelectedRule, Severity},
     parser_diagnostic,
     spec::ParsedSpec,
 };
+
+/// Findings and unfinished checks are independent facts, not severity conventions.
+#[derive(Default)]
+pub(crate) struct RuleResult {
+    pub(crate) findings: Vec<Finding>,
+    pub(crate) incomplete_reasons: Vec<IncompleteReason>,
+}
 
 // Required main-package tags for this profile.
 const REQUIRED_TAG_LINT_IDS: [&str; 6] =
@@ -46,22 +53,17 @@ pub(crate) fn analyze(spec: &ParsedSpec<'_>) -> CheckReport {
     if parser_error {
         return CheckReport::incomplete(source, selected_rules, diagnostics);
     }
-    let license = spec.licenses();
-    findings.extend(license.findings);
+    let mut incomplete_reasons = Vec::new();
+    for result in [spec.licenses(), spec.build_requirements().check()] {
+        findings.extend(result.findings);
+        incomplete_reasons.extend(result.incomplete_reasons);
+    }
     findings.extend(spec.metadata_findings());
-    let build = spec.build_requirements().findings();
-    let unresolved_build = build
-        .iter()
-        .any(|finding| finding.severity == Severity::Warn);
-    findings.extend(build);
     CheckReport::analyzed(
         source,
         selected_rules,
         diagnostics,
         findings,
-        license
-            .unresolved
-            .then_some("unresolved-license")
-            .or(unresolved_build.then_some("unresolved-build-requirements")),
+        incomplete_reasons,
     )
 }

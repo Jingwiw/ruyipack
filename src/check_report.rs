@@ -28,8 +28,26 @@ pub(crate) enum Severity {
     Deny,
 }
 
-const FORMAT_VERSION: u32 = 1;
-const INCOMPLETE_PARSER_ERROR: &str = "parser-error";
+const FORMAT_VERSION: u32 = 2;
+
+/// A check left unfinished, independent of any confirmed failure.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum IncompleteReason {
+    ParserError,
+    UnresolvedLicense,
+    UnresolvedBuildRequirements,
+}
+
+impl IncompleteReason {
+    fn explanation(self) -> &'static str {
+        match self {
+            Self::ParserError => "the SPEC parser reported an error",
+            Self::UnresolvedLicense => "license expressions require RPM evaluation",
+            Self::UnresolvedBuildRequirements => "build requirements require RPM evaluation",
+        }
+    }
+}
 
 /// One selected static rule and its severity for confirmed violations.
 #[derive(Serialize)]
@@ -41,13 +59,14 @@ pub(crate) struct SelectedRule {
 enum CheckStatus {
     Pass,
     Fail,
-    Incomplete(&'static str),
+    Incomplete,
 }
 
 /// Results produced by one execution of the static SPEC check.
 pub(crate) struct CheckReport {
     sha256: String,
     status: CheckStatus,
+    incomplete_reasons: Vec<IncompleteReason>,
     selected_rules: Vec<SelectedRule>,
     parser_diagnostics: Vec<ParserDiagnostic>,
     findings: Vec<Finding>,
@@ -62,7 +81,8 @@ impl CheckReport {
     ) -> Self {
         Self {
             sha256: crate::utf8_file::digest(source),
-            status: CheckStatus::Incomplete(INCOMPLETE_PARSER_ERROR),
+            status: CheckStatus::Incomplete,
+            incomplete_reasons: vec![IncompleteReason::ParserError],
             selected_rules,
             parser_diagnostics,
             findings: Vec::new(),
@@ -75,7 +95,7 @@ impl CheckReport {
         selected_rules: Vec<SelectedRule>,
         parser_diagnostics: Vec<ParserDiagnostic>,
         mut findings: Vec<Finding>,
-        incomplete_reason: Option<&'static str>,
+        mut incomplete_reasons: Vec<IncompleteReason>,
     ) -> Self {
         findings.sort_by(|left, right| {
             left.span
@@ -85,19 +105,22 @@ impl CheckReport {
                 .then_with(|| left.code.cmp(right.code))
                 .then_with(|| left.message.cmp(&right.message))
         });
+        incomplete_reasons.sort_unstable();
+        incomplete_reasons.dedup();
         let status = if findings
             .iter()
             .any(|finding| finding.severity == Severity::Deny)
         {
             CheckStatus::Fail
-        } else if let Some(reason) = incomplete_reason {
-            CheckStatus::Incomplete(reason)
+        } else if !incomplete_reasons.is_empty() {
+            CheckStatus::Incomplete
         } else {
             CheckStatus::Pass
         };
         Self {
             sha256: crate::utf8_file::digest(source),
             status,
+            incomplete_reasons,
             selected_rules,
             parser_diagnostics,
             findings,
@@ -129,13 +152,12 @@ impl CheckReport {
                 finding.message
             )?;
         }
-        if let CheckStatus::Incomplete(reason) = self.status {
-            let explanation = if reason == INCOMPLETE_PARSER_ERROR {
-                "the SPEC parser reported an error"
-            } else {
-                "some field values require RPM evaluation"
-            };
-            writeln!(writer, "error: check incomplete because {explanation}")?;
+        for reason in &self.incomplete_reasons {
+            writeln!(
+                writer,
+                "error: check incomplete because {}",
+                reason.explanation()
+            )?;
         }
         Ok(())
     }
@@ -151,7 +173,7 @@ impl CheckReport {
             evidence: Evidence {
                 stage: "spec-static",
                 status: self.status.name(),
-                reason: self.status.reason(),
+                incomplete_reasons: &self.incomplete_reasons,
                 tool: ToolIdentity {
                     name: "ruyipack",
                     version: env!("CARGO_PKG_VERSION"),
@@ -191,14 +213,7 @@ impl CheckStatus {
         match self {
             Self::Pass => "pass",
             Self::Fail => "fail",
-            Self::Incomplete(_) => "incomplete",
-        }
-    }
-
-    fn reason(&self) -> Option<&'static str> {
-        match self {
-            Self::Incomplete(reason) => Some(reason),
-            Self::Pass | Self::Fail => None,
+            Self::Incomplete => "incomplete",
         }
     }
 }
@@ -222,8 +237,7 @@ struct InputIdentity<'a> {
 struct Evidence<'a> {
     stage: &'static str,
     status: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<&'static str>,
+    incomplete_reasons: &'a [IncompleteReason],
     tool: ToolIdentity,
     components: [ComponentIdentity; 2],
     selected_rules: &'a [SelectedRule],

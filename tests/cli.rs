@@ -65,9 +65,9 @@ fn assert_machine_envelope(
     display_path: &str,
     sha256: &str,
     status: &str,
-    reason: Option<&str>,
+    incomplete_reasons: &[&str],
 ) {
-    assert_eq!(report["format_version"], 1);
+    assert_eq!(report["format_version"], 2);
 
     let input = &report["input"];
     assert_eq!(input["display_path"], display_path);
@@ -76,10 +76,10 @@ fn assert_machine_envelope(
     let evidence = &report["evidence"];
     assert_eq!(evidence["stage"], "spec-static");
     assert_eq!(evidence["status"], status);
-    match reason {
-        Some(reason) => assert_eq!(evidence["reason"], reason),
-        None => assert!(evidence.get("reason").is_none()),
-    }
+    assert_eq!(
+        evidence["incomplete_reasons"],
+        serde_json::json!(incomplete_reasons)
+    );
 
     assert_eq!(
         evidence["tool"],
@@ -348,7 +348,7 @@ fn check_json_reports_pass_deterministically() {
         "demo.spec",
         COMPLETE_REQUIRED_TAGS_SHA256,
         "pass",
-        None,
+        &[],
     );
     assert_eq!(first_report["parser_diagnostics"], serde_json::json!([]));
     assert_eq!(first_report["findings"], serde_json::json!([]));
@@ -372,7 +372,7 @@ fn check_json_keeps_parser_warning_and_orders_findings() {
         "warning.spec",
         PARSER_WARNING_SPEC_SHA256,
         "fail",
-        None,
+        &[],
     );
     assert_eq!(
         report["parser_diagnostics"],
@@ -431,7 +431,7 @@ fn check_json_reports_parser_error_as_incomplete() {
         "parser-error.spec",
         PARSER_ERROR_SPEC_SHA256,
         "incomplete",
-        Some("parser-error"),
+        &["parser-error"],
     );
     assert_eq!(report["findings"], serde_json::json!([]));
     assert_eq!(

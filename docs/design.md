@@ -34,7 +34,7 @@ regenerating. No filename heuristic chooses an authority or synchronizes files.
 | `spec::document::Snapshot` | Original bytes, selected fields and replacement ranges | `edit::candidate` calculates and validates an edit |
 | `edit::candidate` | Candidate contents, static report, review triggers | `edit` checks, previews, or publishes |
 | `file_output` | Written/unchanged/skipped paths, typed partial failures | `edit` formats results and retains recovery information |
-| `check` | Selected static rule results and parser diagnostics | `check`, `gen`, and `edit` reports |
+| `check` | Findings and explicit incomplete reasons | `check`, `gen`, and `edit` reports |
 
 Read `generate.rs` and `edit.rs` for orchestration, then `render.rs`,
 `edit/candidate.rs`, and `spec/document.rs` for calculation. `file_output.rs` owns
@@ -58,7 +58,9 @@ The `spec-static` stage only proves selected static checks. Native Source-number
 checks in `scripts/check-native-sources` are separate evidence, and neither proves
 a package builds. Build evidence needs the actual source, environment, command,
 and resulting artifacts; absent evidence is not success. No universal success
-flag spans these stages.
+flag spans these stages. Rule warnings do not imply incompleteness: each rule
+reports unresolved checks explicitly. All incomplete reasons remain visible even
+when a confirmed violation makes the overall result fail.
 
 ## openRuyi policy sources
 
