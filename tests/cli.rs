@@ -324,7 +324,7 @@ fn check_stops_tag_checks_when_the_parser_reports_an_error() {
     assert_eq!(
         output_text(&output.stderr),
         format!(
-            "{}:7:9: error[rpmspec/E0007]: %package requires a subpackage name argument\nerror: check incomplete because the SPEC parser reported an error\n",
+            "{0}:7:9: error[rpmspec/E0007]: %package requires a subpackage name argument\n{0}: error: check incomplete because the SPEC parser reported an error\n",
             spec.display()
         )
     );

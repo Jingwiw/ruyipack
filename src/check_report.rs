@@ -155,7 +155,8 @@ impl CheckReport {
         for reason in &self.incomplete_reasons {
             writeln!(
                 writer,
-                "error: check incomplete because {}",
+                "{}: error: check incomplete because {}",
+                path.display(),
                 reason.explanation()
             )?;
         }

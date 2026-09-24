@@ -390,6 +390,40 @@ fn all_prepared_files_are_checked_before_any_source_is_written() {
 }
 
 #[test]
+fn incomplete_batch_diagnostics_identify_each_candidate_without_publishing() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = SOURCE.replace(
+        "GPL-3.0-or-later AND LGPL-2.1-or-later",
+        "%{package_license}",
+    );
+    assert_ne!(source, SOURCE);
+    let names = ["first.spec", "second.spec"];
+    for name in names {
+        fs::write(directory.path().join(name), &source).unwrap();
+    }
+    let output = command(directory.path())
+        .args(names)
+        .args(["--set", "package.summary=Updated summary"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let diagnostics = String::from_utf8(output.stderr).unwrap();
+    for name in names {
+        let path = fs::canonicalize(directory.path().join(name)).unwrap();
+        let expected = format!(
+            "{} (candidate): error: check incomplete because license expressions require RPM evaluation",
+            path.display()
+        );
+        assert!(
+            diagnostics.lines().any(|line| line == expected),
+            "{diagnostics}"
+        );
+        assert_eq!(fs::read_to_string(path).unwrap(), source);
+    }
+}
+
+#[test]
 fn static_check_failure_blocks_even_forced_publication() {
     let directory = fixture();
     let source = SOURCE.replace("URL:            https://www.gnu.org/software/ed/\n", "");
