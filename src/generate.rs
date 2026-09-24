@@ -12,13 +12,13 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use crate::{check_command::CheckFormat, file_output, render, utf8_file};
+use crate::{check_command::CheckFormat, file_output, output_cli, render, utf8_file};
 
 /// Generates the SPEC owned by one manifest.
 pub(crate) fn run(
     requested_name: &str,
     manifest_path: Option<&Path>,
-    output: &file_output::OutputOptions,
+    output: &output_cli::OutputOptions,
     check_only: bool,
     format: Option<CheckFormat>,
 ) -> Result<bool, GenerateError> {
@@ -117,14 +117,15 @@ pub(crate) fn run(
             }
         }
     }
-    file_output::run(
-        target,
-        &rendered.contents,
-        &output.action,
-        file_output::ConflictHint::WithOutputPath,
-    )
-    .map(|()| true)
-    .map_err(GenerateError::Output)
+    output
+        .action
+        .publish(
+            target,
+            &rendered.contents,
+            output_cli::ConflictHint::WithOutputPath,
+        )
+        .map(|()| true)
+        .map_err(GenerateError::Output)
 }
 
 /// Rejects an existing target that resolves to the manifest itself.

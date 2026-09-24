@@ -6,7 +6,7 @@
 
 //! Package scaffold creation and local source-directory checks.
 
-use crate::{check::metadata::Field, file_output, spec_metadata};
+use crate::{check::metadata::Field, file_output, output_cli, spec_metadata};
 use clap::{Args, ValueEnum};
 use minijinja::{Environment, UndefinedBehavior, context};
 use std::{
@@ -34,7 +34,7 @@ pub(crate) struct Options {
     #[arg(long, value_enum, default_value = "standard")]
     comments: Comments,
     #[command(flatten, next_help_heading = "Output options")]
-    output: file_output::OutputActionOptions,
+    output: output_cli::OutputActionOptions,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -108,13 +108,14 @@ pub(crate) fn run(options: &Options) -> Result<(), InitError> {
         options.comments,
         options.build_system.as_deref(),
     )?;
-    file_output::run(
-        &directory.join(format!("{}.toml", options.name)),
-        &contents,
-        &options.output,
-        file_output::ConflictHint::WithoutOutputPath,
-    )
-    .map_err(InitError::Output)
+    options
+        .output
+        .publish(
+            &directory.join(format!("{}.toml", options.name)),
+            &contents,
+            output_cli::ConflictHint::WithoutOutputPath,
+        )
+        .map_err(InitError::Output)
 }
 
 fn require_directory(path: &Path) -> Result<(), InitError> {

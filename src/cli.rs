@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::{check_command, edit, file_output, init, inspect};
+use crate::{check_command, edit, init, inspect, output_cli};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -63,6 +63,6 @@ Without a usable terminal or an explicit action, conflicting output is an error.
         #[arg(long, value_enum, requires = "check")]
         format: Option<check_command::CheckFormat>,
         #[command(flatten, next_help_heading = "Output options")]
-        output: file_output::OutputOptions,
+        output: output_cli::OutputOptions,
     },
 }

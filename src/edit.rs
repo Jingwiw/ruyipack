@@ -378,8 +378,13 @@ fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, 
     } else {
         file_output::EditMode::Write
     };
-    let outcomes = file_output::run_edits(&files, options.output.as_deref(), mode)
-        .map_err(EditError::publication)?;
+    let outcomes = file_output::run_edits(
+        &files,
+        options.output.as_deref(),
+        mode,
+        crate::output_cli::select_edit_action,
+    )
+    .map_err(EditError::publication)?;
     Ok(ApplyResult {
         success,
         changed_sources,
@@ -548,7 +553,9 @@ mod tests {
         assert!(retained.is_dir());
         let copy_failure = EditError::publication(OutputError::Partial {
             written: vec![work.path().join("copy.spec")],
-            source: Box::new(OutputError::EditPrompt),
+            source: Box::new(OutputError::Selection(Box::new(io::Error::from(
+                io::ErrorKind::Interrupted,
+            )))),
         });
         assert!(!copy_failure.invalidates_drafts(&[inputs[0].path.as_path()]));
         let stale = EditError::publication(OutputError::SourceChanged(inputs[0].path.clone()));

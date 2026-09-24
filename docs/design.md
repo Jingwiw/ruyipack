@@ -40,8 +40,9 @@ regenerating. No filename heuristic chooses an authority or synchronizes files.
 
 Read `generate.rs` and `edit.rs` for orchestration, then `render.rs`,
 `edit/candidate.rs`, and `spec/document.rs` for calculation. `file_output.rs` owns
-conflict handling and publication. CLI/editor interactions stay outside candidate
-calculation. These are private modules, not a promised Rust library API.
+conflict handling and publication. `output_cli` owns argument translation and
+terminal conflict selection; publication retains the checks around that selection.
+CLI/editor interactions stay outside candidate calculation. These are private modules, not a promised Rust library API.
 
 ## Facts, decisions, and evidence
 

@@ -15,6 +15,7 @@ mod file_output;
 mod generate;
 mod init;
 mod inspect;
+mod output_cli;
 mod parser_diagnostic;
 mod profile;
 mod render;

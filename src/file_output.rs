@@ -4,95 +4,50 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! File publication, conflict actions, and terminal selection.
+//! File publication and conflict-time source and destination checks.
 
 use std::{
     fs,
-    io::{self, IsTerminal, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-use clap::Args;
-
 use crate::utf8_file;
 
-#[derive(Args)]
-pub(crate) struct OutputOptions {
-    /// Selects the output file, or the comparison target with --diff.
-    #[arg(
-        short = 'o',
-        long = "output",
-        value_name = "FILE",
-        conflicts_with = "stdout"
-    )]
-    pub(crate) path: Option<PathBuf>,
-    #[command(flatten)]
-    pub(crate) action: OutputActionOptions,
-}
-
-#[derive(Args)]
-pub(crate) struct OutputActionOptions {
-    /// Prints the complete candidate without reading or writing the target.
-    #[arg(long, conflicts_with_all = ["diff", "force", "skip_existing"])]
-    pub(crate) stdout: bool,
-    /// Prints a unified diff without writing files, including for a new target.
-    ///
-    /// Successful comparisons exit with status 0, even when the files differ.
-    #[arg(long, conflicts_with_all = ["force", "skip_existing"])]
-    pub(crate) diff: bool,
-    /// Replaces an existing target with different content.
-    #[arg(short, long, conflicts_with = "skip_existing")]
-    force: bool,
-    /// Skips existing files without prompting.
-    #[arg(long)]
-    skip_existing: bool,
-}
-
-/// Which relocation options the calling command actually accepts.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum ConflictHint {
-    /// The command has `--output FILE`.
-    WithOutputPath,
-    /// The command derives the file name from NAME and has no `--output`.
-    WithoutOutputPath,
-}
-
-impl ConflictHint {
-    /// Extra help line, absent when the command has no such option.
-    fn help_line(self) -> &'static str {
-        match self {
-            Self::WithOutputPath => "\n      --output FILE        write to another file",
-            Self::WithoutOutputPath => "",
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
-enum ConflictAction {
+pub(crate) enum ConflictAction {
     Overwrite,
     Diff,
     Copy,
     Skip,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum OutputMode {
+    Write,
+    Diff,
+    Stdout,
+}
+
 /// Outputs validated text without silently replacing different content.
+/// A selection authorizes an action, not stale bytes: revalidation stays here.
 pub(crate) fn run(
     path: &Path,
     contents: &str,
-    options: &OutputActionOptions,
-    hint: ConflictHint,
+    mode: OutputMode,
+    mut choose: impl FnMut(&Path) -> Result<ConflictAction, OutputError>,
 ) -> Result<(), OutputError> {
-    if options.stdout {
+    if matches!(mode, OutputMode::Stdout) {
         return io::stdout()
             .lock()
             .write_all(contents.as_bytes())
             .map_err(OutputError::Stdout);
     }
 
-    if options.diff {
+    if matches!(mode, OutputMode::Diff) {
         return match fs::read(path) {
             Ok(existing) => show_diff(path, Some(&existing), contents),
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
@@ -105,25 +60,14 @@ pub(crate) fn run(
         };
     }
 
-    let action = if options.force {
-        Some(ConflictAction::Overwrite)
-    } else if options.skip_existing {
-        Some(ConflictAction::Skip)
-    } else {
-        None
-    };
     loop {
         match fs::read(path) {
             Ok(existing) if existing == contents.as_bytes() => return Ok(()),
             Ok(existing) => {
                 loop {
-                    let selected = match action {
-                        Some(action) => action,
-                        None => select_action(path, hint)?,
-                    };
+                    let selected = choose(path)?;
                     // Every selection still refers to the bytes seen before the first menu.
-                    if action.is_none()
-                        && matches!(selected, ConflictAction::Overwrite | ConflictAction::Diff)
+                    if matches!(selected, ConflictAction::Overwrite | ConflictAction::Diff)
                         && read_target(path)? != existing
                     {
                         return Err(OutputError::Changed(path.to_path_buf()));
@@ -213,9 +157,10 @@ pub(crate) fn run_edits(
     files: &[EditFile<'_>],
     output: Option<&Path>,
     mode: EditMode,
+    mut choose: impl FnMut(&Path) -> Result<ConflictAction, OutputError>,
 ) -> Result<Vec<EditOutcome>, OutputError> {
     let mut outcomes = Vec::new();
-    match run_edit_batch(files, output, mode, &mut outcomes) {
+    match run_edit_batch(files, output, mode, &mut choose, &mut outcomes) {
         Ok(()) => Ok(outcomes),
         Err(source) => {
             let written = outcomes
@@ -241,6 +186,7 @@ fn run_edit_batch(
     files: &[EditFile<'_>],
     output: Option<&Path>,
     mode: EditMode,
+    choose: &mut impl FnMut(&Path) -> Result<ConflictAction, OutputError>,
     outcomes: &mut Vec<EditOutcome>,
 ) -> Result<(), OutputError> {
     let mut overwritten = vec![false; files.len()];
@@ -293,7 +239,8 @@ fn run_edit_batch(
         EditMode::Overwrite => ConflictAction::Overwrite,
         EditMode::Write => loop {
             check_sources(files, &overwritten)?;
-            let selected = select_edit_action(files, &targets, &existing)?;
+            // Only a single explicit output can conflict; in-place writes need no menu.
+            let selected = choose(&targets[0])?;
             check_sources(files, &overwritten)?;
             if matches!(selected, ConflictAction::Diff) {
                 for ((file, target), existing) in files.iter().zip(&targets).zip(&existing) {
@@ -392,41 +339,6 @@ fn show_edit_diffs(files: &[EditFile<'_>]) -> Result<(), OutputError> {
         )?;
     }
     Ok(())
-}
-
-fn select_edit_action(
-    files: &[EditFile<'_>],
-    targets: &[PathBuf],
-    existing: &[Option<Vec<u8>>],
-) -> Result<ConflictAction, OutputError> {
-    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
-        return Err(OutputError::EditPrompt);
-    }
-    writeln!(io::stderr().lock(), "These files will change:").map_err(OutputError::Stderr)?;
-    for ((file, target), existing) in files.iter().zip(targets).zip(existing) {
-        if existing
-            .as_deref()
-            .is_some_and(|bytes| bytes != file.contents.as_bytes())
-        {
-            writeln!(io::stderr().lock(), "  {}", target.display()).map_err(OutputError::Stderr)?;
-        }
-    }
-    let choices = [
-        (ConflictAction::Skip, "Keep the current files"),
-        (ConflictAction::Diff, "Show the diff"),
-        (ConflictAction::Copy, "Write copies"),
-        (ConflictAction::Overwrite, "Overwrite the target files"),
-    ];
-    let selected = dialoguer::Select::new()
-        .with_prompt(format!("Choose an action for {} file(s)", files.len()))
-        .items(choices.iter().map(|(_, label)| label))
-        .default(0)
-        .report(false)
-        .interact_opt()
-        .map_err(OutputError::Prompt)?;
-    selected
-        .map(|index| choices[index].0)
-        .ok_or_else(|| OutputError::Cancelled(targets[0].clone()))
 }
 
 /// Resolves destination parents while keeping the final path entry explicit.
@@ -545,34 +457,6 @@ fn read_target(path: &Path) -> Result<Vec<u8>, OutputError> {
     })
 }
 
-/// Keeps prompts off redirected input and machine-readable stdout.
-fn select_action(path: &Path, hint: ConflictHint) -> Result<ConflictAction, OutputError> {
-    let conflict = || OutputError::Conflict {
-        path: path.to_path_buf(),
-        hint,
-    };
-    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
-        return Err(conflict());
-    }
-    writeln!(io::stderr().lock(), "warning: {}", conflict()).map_err(OutputError::Stderr)?;
-    let choices = [
-        (ConflictAction::Skip, "Keep the current file"),
-        (ConflictAction::Diff, "Show the diff"),
-        (ConflictAction::Copy, "Write a copy"),
-        (ConflictAction::Overwrite, "Overwrite the current file"),
-    ];
-    let selected = dialoguer::Select::new()
-        .with_prompt("Choose an action")
-        .items(choices.iter().map(|(_, label)| label))
-        .default(0)
-        .report(false)
-        .interact_opt()
-        .map_err(OutputError::Prompt)?;
-    selected
-        .map(|index| choices[index].0)
-        .ok_or_else(|| OutputError::Cancelled(path.to_path_buf()))
-}
-
 fn show_diff(path: &Path, existing: Option<&[u8]>, contents: &str) -> Result<(), OutputError> {
     let name = path
         .to_str()
@@ -678,20 +562,14 @@ pub(crate) enum OutputError {
     Stdout(#[source] io::Error),
     #[error("failed to write diagnostics to stderr: {0}")]
     Stderr(#[source] io::Error),
-    #[error("{} already exists with different content\nhelp: --force              overwrite the file\n      --diff               show the differences{}\n      --skip-existing      keep the current file\n      --stdout             preview the complete candidate", .path.display(), .hint.help_line())]
-    Conflict { path: PathBuf, hint: ConflictHint },
-    #[error("no action selected; kept {}", .0.display())]
-    Cancelled(PathBuf),
+    #[error("{0}")]
+    Selection(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("{} changed while awaiting confirmation; run the command again", .0.display())]
     Changed(PathBuf),
     #[error("source {} changed since the edit draft was prepared; no further files were written", .0.display())]
     SourceChanged(PathBuf),
     #[error("cannot publish edit batch: {0}")]
     EditLayout(String),
-    #[error(
-        "output already exists with different content; confirmation requires a terminal\nhelp: use --force to replace it, --output FILE for another path, or --diff to preview the source edit"
-    )]
-    EditPrompt,
     #[error(
         "batch stopped after writing {written:?}; remaining files were not published: {source}"
     )]
@@ -700,8 +578,6 @@ pub(crate) enum OutputError {
         #[source]
         source: Box<OutputError>,
     },
-    #[error("failed to read the conflict selection: {0}")]
-    Prompt(#[source] dialoguer::Error),
     #[error("cannot represent {} in a unified diff header; use a UTF-8 path without tabs or line breaks", .0.display())]
     DiffPath(PathBuf),
     #[error("cannot show a text diff for {}: {source}", .path.display())]
@@ -715,10 +591,101 @@ pub(crate) enum OutputError {
 mod tests {
     use super::*;
 
+    fn no_prompt(_: &Path) -> Result<ConflictAction, OutputError> {
+        panic!("this operation must not ask for a conflict selection")
+    }
+
     fn source(directory: &Path, name: &str, contents: &str) -> PathBuf {
         let path = directory.join(name);
         fs::write(&path, contents).unwrap();
         path.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn edit_selection_cannot_authorize_a_changed_source_or_destination() {
+        for change_source in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let input = source(directory.path(), "input.spec", "original\n");
+            let target = source(directory.path(), "output.spec", "other\n");
+            let changed = if change_source { &input } else { &target };
+            let result = run_edits(
+                &[EditFile {
+                    source_path: &input,
+                    original: "original\n",
+                    contents: "candidate\n",
+                }],
+                Some(&target),
+                EditMode::Write,
+                |path| {
+                    assert_eq!(path, target);
+                    fs::write(changed, "external change\n").unwrap();
+                    Ok(ConflictAction::Overwrite)
+                },
+            );
+            if change_source {
+                assert!(matches!(result, Err(OutputError::SourceChanged(path)) if path == input));
+                assert_eq!(fs::read_to_string(&target).unwrap(), "other\n");
+            } else {
+                assert!(matches!(result, Err(OutputError::Changed(path)) if path == target));
+                assert_eq!(fs::read_to_string(&input).unwrap(), "original\n");
+            }
+            assert_eq!(fs::read_to_string(changed).unwrap(), "external change\n");
+        }
+    }
+
+    #[test]
+    fn edit_diff_returns_to_selection_and_cancellation_does_not_publish() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = source(directory.path(), "input.spec", "original\n");
+        let target = source(directory.path(), "output.spec", "other\n");
+        let mut selections = 0;
+        let result = run_edits(
+            &[EditFile {
+                source_path: &input,
+                original: "original\n",
+                contents: "candidate\n",
+            }],
+            Some(&target),
+            EditMode::Write,
+            |_| {
+                selections += 1;
+                if selections == 1 {
+                    Ok(ConflictAction::Diff)
+                } else {
+                    Err(OutputError::Selection(Box::new(io::Error::other(
+                        "cancelled",
+                    ))))
+                }
+            },
+        );
+        let error = result.unwrap_err();
+        assert_eq!(selections, 2);
+        assert_eq!(
+            std::error::Error::source(&error).unwrap().to_string(),
+            "cancelled"
+        );
+        assert_eq!(fs::read_to_string(input).unwrap(), "original\n");
+        assert_eq!(fs::read_to_string(target).unwrap(), "other\n");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn generated_diff_returns_to_selection_and_rechecks_the_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = source(directory.path(), "output.spec", "other\n");
+        let mut selections = 0;
+        let result = run(&target, "candidate\n", OutputMode::Write, |path| {
+            selections += 1;
+            if selections == 1 {
+                Ok(ConflictAction::Diff)
+            } else {
+                fs::write(path, "external change\n").unwrap();
+                Ok(ConflictAction::Overwrite)
+            }
+        });
+        assert!(matches!(result, Err(OutputError::Changed(path)) if path == target));
+        assert_eq!(selections, 2);
+        assert_eq!(fs::read_to_string(target).unwrap(), "external change\n");
     }
 
     #[test]
@@ -741,7 +708,7 @@ mod tests {
             },
         ];
         assert!(
-            matches!(run_edits(&files, None, EditMode::Overwrite), Err(OutputError::SourceChanged(path)) if path == second)
+            matches!(run_edits(&files, None, EditMode::Overwrite, no_prompt), Err(OutputError::SourceChanged(path)) if path == second)
         );
         assert_eq!(fs::read_to_string(first).unwrap(), "first\n");
         assert_eq!(fs::read_to_string(second).unwrap(), "changed externally\n");
@@ -790,7 +757,7 @@ mod tests {
             },
         ];
         assert_eq!(
-            run_edits(&files, None, EditMode::Overwrite).unwrap(),
+            run_edits(&files, None, EditMode::Overwrite, no_prompt).unwrap(),
             vec![
                 EditOutcome::Written(first.clone()),
                 EditOutcome::Written(second.clone())
@@ -815,7 +782,7 @@ mod tests {
             contents: "edited\n",
         }];
         assert!(matches!(
-            run_edits(&own_alias, Some(&alias), EditMode::Overwrite),
+            run_edits(&own_alias, Some(&alias), EditMode::Overwrite, no_prompt),
             Err(OutputError::EditLayout(_))
         ));
         let duplicate_sources = [
@@ -833,7 +800,7 @@ mod tests {
             },
         ];
         assert!(matches!(
-            run_edits(&duplicate_sources, None, EditMode::Overwrite),
+            run_edits(&duplicate_sources, None, EditMode::Overwrite, no_prompt),
             Err(OutputError::EditLayout(_))
         ));
         assert_eq!(fs::read_to_string(first).unwrap(), "first\n");
@@ -855,6 +822,7 @@ mod tests {
             }],
             Some(&target),
             EditMode::Overwrite,
+            no_prompt,
         )
         .unwrap();
         assert_eq!(
@@ -870,6 +838,7 @@ mod tests {
             }],
             None,
             EditMode::Overwrite,
+            no_prompt,
         )
         .unwrap();
         assert_eq!(
@@ -889,7 +858,7 @@ mod tests {
             contents: "same\n",
         }];
         assert_eq!(
-            run_edits(&files, None, EditMode::Overwrite).unwrap(),
+            run_edits(&files, None, EditMode::Overwrite, no_prompt).unwrap(),
             vec![EditOutcome::Unchanged(input.clone())]
         );
         let after = fs::metadata(&input).unwrap();
@@ -922,7 +891,7 @@ mod tests {
             },
         ];
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
-        let result = run_edits(&files, None, EditMode::Overwrite);
+        let result = run_edits(&files, None, EditMode::Overwrite, no_prompt);
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         let Err(OutputError::Partial { written, source }) = result else {
             panic!("expected a partial permission failure: {result:?}")
