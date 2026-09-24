@@ -102,22 +102,7 @@ fn select_action(path: &Path, hint: ConflictHint) -> Result<ConflictAction, Outp
         return Err(conflict().into());
     }
     writeln!(io::stderr().lock(), "warning: {}", conflict()).map_err(OutputError::Stderr)?;
-    let choices = [
-        (ConflictAction::Skip, "Keep the current file"),
-        (ConflictAction::Diff, "Show the diff"),
-        (ConflictAction::Copy, "Write a copy"),
-        (ConflictAction::Overwrite, "Overwrite the current file"),
-    ];
-    let selected = dialoguer::Select::new()
-        .with_prompt("Choose an action")
-        .items(choices.iter().map(|(_, label)| label))
-        .default(0)
-        .report(false)
-        .interact_opt()
-        .map_err(SelectionError::Prompt)?;
-    selected
-        .map(|index| choices[index].0)
-        .ok_or_else(|| SelectionError::Cancelled(path.to_path_buf()).into())
+    choose_conflict_action(path)
 }
 
 /// Edit conflicts can only involve a single explicit --output destination.
@@ -127,18 +112,22 @@ pub(crate) fn select_edit_action(path: &Path) -> Result<ConflictAction, OutputEr
     }
     writeln!(
         io::stderr().lock(),
-        "These files will change:\n  {}",
+        "This file will change:\n  {}",
         path.display()
     )
     .map_err(OutputError::Stderr)?;
+    choose_conflict_action(path)
+}
+
+fn choose_conflict_action(path: &Path) -> Result<ConflictAction, OutputError> {
     let choices = [
-        (ConflictAction::Skip, "Keep the current files"),
+        (ConflictAction::Skip, "Keep the current file"),
         (ConflictAction::Diff, "Show the diff"),
-        (ConflictAction::Copy, "Write copies"),
-        (ConflictAction::Overwrite, "Overwrite the target files"),
+        (ConflictAction::Copy, "Write a copy"),
+        (ConflictAction::Overwrite, "Overwrite the current file"),
     ];
     let selected = dialoguer::Select::new()
-        .with_prompt("Choose an action for 1 file(s)")
+        .with_prompt("Choose an action")
         .items(choices.iter().map(|(_, label)| label))
         .default(0)
         .report(false)
