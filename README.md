@@ -17,7 +17,7 @@ report formats may change; platform support is experimental.
 
 ## Install
 
-From this checkout, with Rust 1.91.0, a C linker, and network access for the locked
+From this checkout, with Rust 1.98.1, a C linker, and network access for the locked
 registry and Git dependencies:
 
 ```sh

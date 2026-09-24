@@ -212,12 +212,9 @@ impl Snapshot {
                             {
                                 let prefix = profile.remote_asset_prefix.as_str();
                                 // Map recognizable old values; validate selected replacements in render.
-                                asset_text
-                                    .strip_prefix(prefix)
-                                    .and_then(|s| s.strip_suffix('\n'))
-                                    .ok_or_else(|| {
-                                        format!("{identity}.sha256: unsupported RemoteAsset syntax")
-                                    })?;
+                                asset_text.strip_circumfix(prefix, '\n').ok_or_else(|| {
+                                    format!("{identity}.sha256: unsupported RemoteAsset syntax")
+                                })?;
                                 snapshot.scalar(
                                     &format!("{identity}.sha256"),
                                     asset.start + prefix.len()..asset.end - 1,
@@ -398,8 +395,8 @@ impl Snapshot {
         }
         changes.sort_by_key(|(range, _)| range.start);
         if changes
-            .windows(2)
-            .any(|pair| pair[0].0.end > pair[1].0.start)
+            .array_windows::<2>()
+            .any(|[(left, _), (right, _)]| left.end > right.start)
         {
             return Err("edit: overlapping replacements".into());
         }
@@ -513,8 +510,7 @@ impl Snapshot {
                     let range = checked_range(&self.source, entry.data)?;
                     coverage.push(range.clone());
                     let raw = line(&self.source, &range)?;
-                    let leading = raw.len() - raw.trim_start_matches([' ', '\t']).len();
-                    let text = &raw[leading..];
+                    let text = raw.trim_start_matches([' ', '\t']);
                     let (field, prefix) = match entry.directives.as_slice() {
                         [] => ("package.files.entries", ""),
                         [FileDirective::Doc] => ("package.files.doc", "%doc"),
@@ -528,7 +524,6 @@ impl Snapshot {
                     if !prefix.is_empty() && !remainder.starts_with([' ', '\t']) {
                         return Err("package.files: unsupported directive separator".into());
                     }
-                    let start = range.start + leading + prefix.len();
                     if path.path.literal_str().is_none()
                         && remainder.split_whitespace().count() != 1
                     {
@@ -537,15 +532,14 @@ impl Snapshot {
                         ));
                     }
                     let mut tokens = Vec::new();
-                    let mut offset = 0;
                     for token in remainder.split_whitespace() {
                         valid_path(token, field)?;
-                        let relative = remainder[offset..]
-                            .find(token)
-                            .ok_or("package.files: missing token")?
-                            + offset;
-                        tokens.push(start + relative..start + relative + token.len());
-                        offset = relative + token.len();
+                        tokens.push(
+                            self.source
+                                .substr_range(token)
+                                .expect("split tokens borrow the source")
+                                .into(),
+                        );
                     }
                     if tokens.is_empty() || (prefix.is_empty() && tokens.len() != 1) {
                         return Err(format!("{field}: unsupported path list"));
@@ -701,8 +695,8 @@ impl Snapshot {
                 .ok_or_else(|| format!("{field}: missing group"))?;
             if list
                 .lines
-                .windows(2)
-                .any(|pair| pair[0].end != pair[1].start)
+                .array_windows::<2>()
+                .any(|[left, right]| left.end != right.start)
             {
                 return Err(format!(
                     "{field}: resizing across separate source groups is unsupported"

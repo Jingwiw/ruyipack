@@ -167,6 +167,21 @@ fn clearing_doc_paths_removes_their_shared_line_once() {
 }
 
 #[test]
+fn repeated_utf8_paths_keep_their_own_ranges() {
+    let source = "Name: demo\n%files\n\t%doc\t说明\t说明\n# 保留\n/usr/bin/demo\n";
+    let snapshot =
+        Snapshot::capture_selected(&ParsedSpec::parse(source), &["package.files.doc".into()])
+            .unwrap();
+    assert_eq!(snapshot.render(snapshot.document()).unwrap(), source);
+    let mut edited = snapshot.document().clone();
+    edited["package"]["files"]["doc"] = Value::Array(vec!["新说明".into(), "second".into()]);
+    assert_eq!(
+        snapshot.render(&edited).unwrap(),
+        "Name: demo\n%files\n\t%doc\t新说明\tsecond\n# 保留\n/usr/bin/demo\n"
+    );
+}
+
+#[test]
 fn multiple_resized_replacements_preserve_intervening_utf8_bytes() {
     let source = "Name: demo\n# 中间原文\nVersion: 1\nSummary: old\n\n%description\nunchanged\n";
     let snapshot = Snapshot::capture_selected(

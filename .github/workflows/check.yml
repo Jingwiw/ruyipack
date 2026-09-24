@@ -16,13 +16,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      RUSTUP_TOOLCHAIN: 1.91.0
+      RUSTUP_TOOLCHAIN: 1.98.1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install Rust toolchain
-        run: rustup toolchain install 1.91.0 --profile minimal --component rustfmt --component clippy
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
       - name: Install gate tools
         run: |
           python3 -m venv "$RUNNER_TEMP/reuse"
