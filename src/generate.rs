@@ -85,8 +85,7 @@ pub(crate) fn run(
         return Ok(rendered.report.is_success());
     }
 
-    // Non-fatal: a source without a digest is a valid openRuyi form. Report it
-    // and keep the success exit code.
+    // Missing digests are an authoring warning, not a policy-compliance claim.
     for warning in &rendered.warnings {
         writeln!(io::stderr().lock(), "warning: {warning}").map_err(GenerateError::Stderr)?;
     }

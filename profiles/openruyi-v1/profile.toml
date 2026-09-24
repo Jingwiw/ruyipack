@@ -13,7 +13,7 @@ copyright-holders = [
 release = "%autorelease"
 changelog = "%autochangelog"
 no-public-vcs-comment = "# VCS: No VCS link available"
-# Use the bare RemoteAsset marker when no digest is recorded.
+# Missing digests render a bare marker with a policy warning.
 remote-asset-prefix = "#!RemoteAsset:  sha256:"
 remote-asset-bare = "#!RemoteAsset"
 preamble-value-column = 16

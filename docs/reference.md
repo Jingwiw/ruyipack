@@ -55,8 +55,9 @@ Addresses are checked locally, not contacted. Empty/conflicting choices fail.
 Each `[sources.N]` has `url` and optional `sha256`. Generation writes explicit
 Source numbers in numeric order. `sources.0` is the primary archive used by the
 Autotools default unpacking step. A missing digest produces a bare `#!RemoteAsset`
-and warning; an empty digest fails. Digests must be 64 hexadecimal digits; case
-is preserved.
+and warning, not an error. This output does not meet openRuyi's SHA-256 requirement
+for HTTP(S) sources. An empty digest fails. Digests must be 64 hexadecimal digits;
+case is preserved. Archive contents are not downloaded or verified.
 
 Source expressions may use `%{name}`, `%{version}`, and `%{url}` only when the
 referenced package values are unambiguous static literals. Expressions and

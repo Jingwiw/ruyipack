@@ -77,6 +77,7 @@ all distribution policy. Its defaults come from the pinned
 | SPEC header license vs package License | `profile.toml` supplies the former; manifest `package.license` supplies the latter. Do not apply MulanPSL to upstream software by default. |
 | `%autorelease` / `%autochangelog` | Profile output remains literal; release/history handling belongs to target macros, not the renderer. |
 | RemoteAsset | openRuyi fetch metadata in a comment attached to a Source; `profile` owns spelling, `spec::document` owns safe adjacency/ranges, `source` validates selected values. |
+| Source SHA-256 | openRuyi requires digests for HTTP(S) sources. Generation warns when absent and rejects malformed values; successful generation is not policy certification. |
 | BuildSystem / BuildOption and stage hooks | RPM declarative build syntax; actual actions come from target macros. `render::spec` emits declarations, not copies of default scripts. |
 | Autotools tool requirements | `check::build` enforces the profile declaration contract, not a dependency solver. CMake/Meson empty lists do not assert dependency-free builds. |
 

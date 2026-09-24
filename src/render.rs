@@ -23,14 +23,14 @@ pub(crate) fn run(source: &str) -> Result<RenderedSpec, RenderError> {
     let parsed = ParsedSpec::parse(&contents);
     verify::run(&parsed, &manifest, profile)?;
     let report = check::analyze(&parsed);
-    // A source without a digest is valid but weaker provenance, so gen surfaces
-    // it as a warning rather than silently emitting a bare marker.
+    // openRuyi requires SHA-256 for HTTP(S) sources. Allow incomplete authoring
+    // output, but report the missing policy requirement rather than certify it.
     let warnings = manifest
         .sources
         .iter()
         .filter(|(_, source)| source.sha256.is_none())
         .map(|(number, _)| {
-            format!("sources.{number}: no sha256; rendered a bare #!RemoteAsset without a digest")
+            format!("sources.{number}: no sha256; openRuyi requires SHA-256 for HTTP(S) sources; rendered a bare #!RemoteAsset")
         })
         .collect();
     let build_contract = manifest

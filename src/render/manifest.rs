@@ -150,7 +150,7 @@ fn resolve_vcs(input: &VcsInput) -> Result<Vcs, String> {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Source {
     pub(crate) url: String,
-    // Absent means a bare #!RemoteAsset with no digest, which openRuyi accepts.
+    // Absent renders a bare #!RemoteAsset with an openRuyi policy warning.
     // An empty string is still rejected, so a blank scaffold field is not a
     // silent opt-in to the bare form.
     #[serde(default)]
