@@ -836,6 +836,62 @@ fn successful_editor_saves_checked_changes_and_cleans_temporary_drafts() {
 
 #[cfg(unix)]
 #[test]
+fn notification_failure_keeps_only_unapplied_editor_changes() {
+    use std::os::{fd::OwnedFd, unix::net::UnixStream};
+
+    for args in [&[][..], &["--stdout"][..], &["--output", "copy.spec"][..]] {
+        let directory = fixture();
+        let editor = script(
+            directory.path(),
+            "sed 's/^summary = .*/summary = \"Updated summary\"/' \"$1\" > \"$1.next\"\nmv \"$1.next\" \"$1\"",
+        );
+        let (writer, reader) = UnixStream::pair().unwrap();
+        drop(reader);
+        let output = command(directory.path())
+            .args(["ed.spec", "--field", "package.summary", "--editor", &editor])
+            .args(args)
+            .stderr(Stdio::from(OwnedFd::from(writer)))
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        let expected = SOURCE.replace("A line-oriented text editor", "Updated summary");
+        let in_place = args.is_empty();
+        assert_eq!(
+            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+            if in_place { &expected } else { SOURCE }
+        );
+        if args == ["--stdout"] {
+            assert_eq!(output.stdout, expected.as_bytes());
+        } else if !in_place {
+            assert_eq!(
+                fs::read_to_string(directory.path().join("copy.spec")).unwrap(),
+                expected
+            );
+        }
+        let retained = fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("ruyipack-edit-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(retained.len(), usize::from(!in_place), "{args:?}");
+        for draft in retained {
+            let document: toml::Table =
+                toml::from_str(&fs::read_to_string(draft.join("ed.toml")).unwrap()).unwrap();
+            assert_eq!(
+                document["package"]["summary"].as_str(),
+                Some("Updated summary")
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn source_changed_while_editor_runs_is_not_overwritten() {
     let directory = fixture();
     let editor = script(

@@ -130,22 +130,19 @@ fn execute(options: &Options) -> Result<bool, EditError> {
             return Err(retain(error.into(), temporary, &inputs));
         }
     }
-    let result = apply(options, &inputs).and_then(|result| {
-        for outcome in &result.outcomes {
-            outcome
-                .write_human(&mut io::stderr().lock())
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(result)
-    });
-    match result {
+    match apply(options, &inputs) {
         Err(error) => Err(retain(error, temporary, &inputs)),
         Ok(result) => {
-            // Keep an editor's work when it was only previewed, copied, or declined.
-            if let Some(dir) = temporary
-                && result.has_unapplied_changes()
-            {
-                let path = dir.keep();
+            // Finalize drafts from publication facts before fallible notifications.
+            let retained = temporary
+                .filter(|_| result.has_unapplied_changes())
+                .map(tempfile::TempDir::keep);
+            for outcome in &result.outcomes {
+                outcome
+                    .write_human(&mut io::stderr().lock())
+                    .map_err(|e| e.to_string())?;
+            }
+            if let Some(path) = retained {
                 writeln!(
                     io::stderr().lock(),
                     "Drafts retained: {}\nResume: ruyipack edit --from={}",
