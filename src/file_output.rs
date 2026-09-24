@@ -499,12 +499,11 @@ fn write_copy(path: &Path, contents: &[u8]) -> Result<(), OutputError> {
 }
 
 fn copy_path(path: &Path, number: u64) -> PathBuf {
-    let mut name = path.as_os_str().to_owned();
-    name.push(".new");
-    if number != 0 {
-        name.push(format!(".{number}"));
+    if number == 0 {
+        path.with_added_extension("new")
+    } else {
+        path.with_added_extension(format!("new.{number}"))
     }
-    PathBuf::from(name)
 }
 
 /// Publishes staged bytes with explicit overwrite permission.
@@ -599,6 +598,83 @@ mod tests {
         let path = directory.join(name);
         fs::write(&path, contents).unwrap();
         path.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn copy_selection_is_unreachable_for_directories_or_nameless_targets() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = source(directory.path(), "input.spec", "original\n");
+        let files = [EditFile {
+            source_path: &input,
+            original: "original\n",
+            contents: "candidate\n",
+        }];
+        for target in [directory.path(), Path::new(""), Path::new("/")] {
+            assert!(run(target, "candidate\n", OutputMode::Write, no_prompt).is_err());
+            assert!(run_edits(&files, Some(target), EditMode::Write, no_prompt).is_err());
+        }
+        assert_eq!(fs::read_to_string(input).unwrap(), "original\n");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_path_preserves_non_utf8_names() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+        let path = PathBuf::from(OsString::from_vec(b"output\xff.spec".to_vec()));
+        for (number, expected) in [
+            (0, b"output\xff.spec.new".as_slice()),
+            (1, b"output\xff.spec.new.1".as_slice()),
+        ] {
+            assert_eq!(
+                copy_path(&path, number).into_os_string().into_vec(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn copy_selection_preserves_extensions_and_existing_sidecars() {
+        for edit in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let input = source(directory.path(), "input.spec", "original\n");
+            let target = directory.path().join("output.review.spec");
+            let occupied = directory.path().join("output.review.spec.new");
+            let copy = directory.path().join("output.review.spec.new.1");
+            fs::write(&target, "other\n").unwrap();
+            fs::write(&occupied, "keep\n").unwrap();
+            if edit {
+                let outcomes = run_edits(
+                    &[EditFile {
+                        source_path: &input,
+                        original: "original\n",
+                        contents: "candidate\n",
+                    }],
+                    Some(&target),
+                    EditMode::Write,
+                    |_| Ok(ConflictAction::Copy),
+                )
+                .unwrap();
+                assert_eq!(
+                    outcomes,
+                    [EditOutcome::Written(copy.canonicalize().unwrap())]
+                );
+            } else {
+                run(&target, "candidate\n", OutputMode::Write, |_| {
+                    Ok(ConflictAction::Copy)
+                })
+                .unwrap();
+            }
+            for (path, expected) in [
+                (&input, "original\n"),
+                (&target, "other\n"),
+                (&occupied, "keep\n"),
+                (&copy, "candidate\n"),
+            ] {
+                assert_eq!(fs::read_to_string(path).unwrap(), expected);
+            }
+        }
     }
 
     #[test]
