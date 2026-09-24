@@ -7,6 +7,7 @@
 //! Source-local field changes through the complete document boundary.
 
 use crate::spec::ParsedSpec;
+use proptest::prelude::*;
 use toml::Value;
 
 use super::Snapshot;
@@ -188,4 +189,33 @@ fn multiple_resized_replacements_preserve_intervening_utf8_bytes() {
             .replace("Version: 1", "Version: 22.333")
             .replace("Summary: old", "Summary: 新摘要")
     );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn selected_edits_preserve_unselected_bytes(
+        old_version in "[0-9]{1,3}(\\.[0-9]{1,3}){0,2}",
+        new_version in "[0-9]{1,3}(\\.[0-9]{1,3}){0,2}",
+        old_summary in "[a-z中🙂]{1,24}",
+        new_summary in "[a-z中🙂]{1,48}",
+        spacing in "[ \\t]{1,4}",
+        comment in "[a-z 中🙂]{0,32}",
+    ) {
+        // Build valid input directly; the oracle never uses captured ranges.
+        let spec = |version: &str, summary: &str| format!(
+            "Name: demo\n# 保留 {comment}\nVersion:{spacing}{version}\nSummary:{spacing}{summary}\n\n%description\nunchanged\n"
+        );
+        let source = spec(&old_version, &old_summary);
+        let snapshot = Snapshot::capture_selected(
+            &ParsedSpec::parse(&source),
+            &["package.version".into(), "package.summary".into()],
+        ).unwrap();
+        prop_assert_eq!(snapshot.render(snapshot.document()).unwrap(), source);
+        let mut edited = snapshot.document().clone();
+        edited["package"]["version"] = new_version.clone().into();
+        edited["package"]["summary"] = new_summary.clone().into();
+        prop_assert_eq!(snapshot.render(&edited).unwrap(), spec(&new_version, &new_summary));
+    }
 }
