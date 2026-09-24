@@ -62,10 +62,14 @@ fn only_source_url(output: &Output, expected: &str) {
 }
 
 #[test]
-fn a_conditional_context_field_blocks_only_sources_that_reference_it() {
+fn unavailable_context_blocks_only_sources_that_reference_it() {
     for version in [
         "Version: 1\n%if 0\nVersion: 2\n%endif",
         "Version: 1\n%if 0\n%if 1\nVersion: 2\n%endif\n%endif",
+        "%if 0\nVersion: 2\n%endif\nVersion: 1",
+        "Version: 1\nVersion: 2\nVersion: 3",
+        "%global version 9\nVersion: 1",
+        "Version: 1\n%global version 9",
     ] {
         let source = SPEC.replace("Version:        1.22.5", version);
         let directory = fixture(&source);
@@ -104,8 +108,15 @@ fn a_conditional_context_field_blocks_only_sources_that_reference_it() {
 
 #[test]
 fn unknown_include_and_statement_invalidate_context_not_literal_source_urls() {
-    for directive in ["%include absent-context.inc\n", "%{unresolved_statement}\n"] {
-        let source = format!("{directive}{SPEC}");
+    for source in ["%include absent-context.inc\n", "%{unresolved_statement}\n"]
+        .into_iter()
+        .flat_map(|directive| {
+            [
+                format!("{directive}{SPEC}"),
+                SPEC.replace("#!RemoteAsset:", &format!("{directive}#!RemoteAsset:")),
+            ]
+        })
+    {
         let directory = fixture(&source);
         only_source_url(&selected_view(directory.path(), "sources.0.url"), URL);
         rejected(

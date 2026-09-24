@@ -947,27 +947,26 @@ fn source_fields(source: &str, parsed: &ParseResult<Span>) -> BTreeMap<String, S
         source: &str,
         items: &[SpecItem<Span>],
         conditional: bool,
-        fields: &mut BTreeMap<String, String>,
-        unavailable: &mut Vec<String>,
+        fields: &mut BTreeMap<String, Option<String>>,
     ) {
         for item in items {
             let item = match item {
                 SpecItem::Preamble(item) => item,
                 SpecItem::Conditional(condition) => {
                     for branch in &condition.branches {
-                        collect(source, &branch.body, true, fields, unavailable);
+                        collect(source, &branch.body, true, fields);
                     }
                     if let Some(items) = &condition.otherwise {
-                        collect(source, items, true, fields, unavailable);
+                        collect(source, items, true, fields);
                     }
                     continue;
                 }
                 SpecItem::MacroDef(definition) => {
-                    unavailable.push(definition.name.clone());
+                    fields.insert(definition.name.clone(), None);
                     continue;
                 }
                 SpecItem::Include(_) | SpecItem::Statement(_) => {
-                    unavailable.extend(["name", "version", "url"].map(str::to_owned));
+                    fields.extend(["name", "version", "url"].map(|name| (name.to_owned(), None)));
                     continue;
                 }
                 _ => continue,
@@ -979,7 +978,7 @@ fn source_fields(source: &str, parsed: &ParseResult<Span>) -> BTreeMap<String, S
                 _ => continue,
             };
             if conditional || !item.qualifiers.is_empty() || item.lang.is_some() {
-                unavailable.push(name.to_owned());
+                fields.insert(name.to_owned(), None);
                 continue;
             }
             let Some(raw) = source.get(item.data.start_byte..item.data.end_byte) else {
@@ -988,27 +987,19 @@ fn source_fields(source: &str, parsed: &ParseResult<Span>) -> BTreeMap<String, S
             let Some((_, value)) = raw.split_once(':') else {
                 continue;
             };
-            if fields
-                .insert(name.to_owned(), value.trim().to_owned())
-                .is_some()
-            {
-                unavailable.push(name.to_owned());
-            }
+            // Only a first, unconditional declaration is usable. None stays unavailable.
+            fields
+                .entry(name.to_owned())
+                .and_modify(|value| *value = None)
+                .or_insert_with(|| Some(value.trim().to_owned()));
         }
     }
     let mut fields = BTreeMap::new();
-    let mut unavailable = Vec::new();
-    collect(
-        source,
-        &parsed.spec.items,
-        false,
-        &mut fields,
-        &mut unavailable,
-    );
-    for name in unavailable {
-        fields.remove(&name);
-    }
+    collect(source, &parsed.spec.items, false, &mut fields);
     fields
+        .into_iter()
+        .filter_map(|(name, value)| value.map(|value| (name, value)))
+        .collect()
 }
 
 fn valid_source_url(
