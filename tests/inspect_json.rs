@@ -94,12 +94,12 @@ fn ed_inspection_preserves_syntax_locations_and_input_identity() {
 fn conditions_and_repeated_tags_are_not_resolved_or_collapsed() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("conditional.spec");
-    let source = "Name: demo\nSummary(fr): Démonstration à 100%%\n%if 0\nVersion: 1\n%elif 1\nVersion: 2\n%else\nVersion: %{upstream_version}\n%endif\nVersion: 3\n%build\ncat <<EOF\nName: not-a-tag\nEOF\n";
+    let source = "Name: demo\nSummary(fr): Démonstration à 100%%\n%if 0\nVersion: 1\n%elif 1\n# filter this branch too\nVersion: 2\n%else\n# and the otherwise branch\nVersion: %{upstream_version}\n%endif\n%if 0\n# empty after filtering\n%else\n%if 1\nRelease: 1\n%else\n# nested empty branch\n%endif\n%endif\n%if 0\n# entirely tagless\n%endif\nVersion: 3\n%build\ncat <<EOF\nName: not-a-tag\nEOF\n";
     fs::write(&path, source).unwrap();
     let output = command(&path).output().unwrap();
     let result = report(&output);
     let items = result["preamble"].as_array().unwrap();
-    assert_eq!(items.len(), 4);
+    assert_eq!(items.len(), 5);
     let summary = &items[1]["Preamble"];
     assert_eq!(summary["lang"], "fr");
     assert_eq!(
@@ -122,8 +122,16 @@ fn conditions_and_repeated_tags_are_not_resolved_or_collapsed() {
         conditional["otherwise"][0]["Preamble"]["value"]["Text"]["segments"][0]["Macro"]["name"],
         "upstream_version"
     );
+    let nested = &items[3]["Conditional"];
+    assert_eq!(nested["branches"][0]["body"], json!([]));
+    let nested = &nested["otherwise"][0]["Conditional"];
     assert_eq!(
-        items[3]["Preamble"]["value"]["Text"]["segments"][0]["Literal"],
+        nested["branches"][0]["body"][0]["Preamble"]["tag"],
+        "Release"
+    );
+    assert_eq!(nested["otherwise"], json!([]));
+    assert_eq!(
+        items[4]["Preamble"]["value"]["Text"]["segments"][0]["Literal"],
         "3"
     );
     assert_eq!(fs::read_to_string(&path).unwrap(), source);

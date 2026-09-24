@@ -26,9 +26,11 @@ pub(crate) struct Inspection<'src> {
 
 impl<'src> Inspection<'src> {
     pub(crate) fn new(spec: ParsedSpec<'src>) -> Self {
+        let mut view = spec.parsed.spec;
+        retain_tag_items(&mut view.items);
         Self {
             source: spec.source,
-            view: main_package_tag_view(spec.parsed.spec),
+            view,
             diagnostics: diagnostic::diagnostics(spec.source, spec.parsed.diagnostics),
         }
     }
@@ -53,34 +55,23 @@ impl<'src> Inspection<'src> {
 }
 
 /// Keeps every main-package tag and the conditional structure around it.
-fn main_package_tag_view(mut spec: SpecFile<Span>) -> SpecFile<Span> {
-    spec.items = retain_tag_items(spec.items);
-    spec
-}
-
-/// Filters one AST item list while preserving source order.
-fn retain_tag_items(items: Vec<SpecItem<Span>>) -> Vec<SpecItem<Span>> {
-    items.into_iter().filter_map(retain_tag_item).collect()
-}
-
-/// Keeps one tag or one conditional containing tags.
-fn retain_tag_item(item: SpecItem<Span>) -> Option<SpecItem<Span>> {
-    match item {
-        item @ SpecItem::Preamble(_) => Some(item),
-        SpecItem::Conditional(mut conditional) => {
+fn retain_tag_items(items: &mut Vec<SpecItem<Span>>) {
+    items.retain_mut(|item| match item {
+        SpecItem::Preamble(_) => true,
+        SpecItem::Conditional(conditional) => {
             let mut contains_tags = false;
 
             for branch in &mut conditional.branches {
-                branch.body = retain_tag_items(std::mem::take(&mut branch.body));
+                retain_tag_items(&mut branch.body);
                 contains_tags |= !branch.body.is_empty();
             }
             if let Some(otherwise) = conditional.otherwise.as_mut() {
-                *otherwise = retain_tag_items(std::mem::take(otherwise));
+                retain_tag_items(otherwise);
                 contains_tags |= !otherwise.is_empty();
             }
 
-            contains_tags.then_some(SpecItem::Conditional(conditional))
+            contains_tags
         }
-        _ => None,
-    }
+        _ => false,
+    });
 }
