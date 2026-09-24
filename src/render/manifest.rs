@@ -132,7 +132,7 @@ struct VcsInput {
 }
 
 /// Resolves the repository declaration; the caller aggregates any error.
-fn resolve_vcs(input: &VcsInput) -> Result<Vcs, RenderError> {
+fn resolve_vcs(input: &VcsInput) -> Result<Vcs, String> {
     match (input.git.as_deref(), input.same_as_url, input.no_public_repository) {
         (Some(url), false, false) => {
             https_url("package.vcs.git", url)?;
@@ -140,10 +140,10 @@ fn resolve_vcs(input: &VcsInput) -> Result<Vcs, RenderError> {
         }
         (None, true, false) => Ok(Vcs::SameAsUrl),
         (None, false, true) => Ok(Vcs::NoPublicRepository),
-        _ => Err(RenderError::Invalid(
+        _ => Err(
             "package.vcs: choose exactly one of git, same-as-url = true, or no-public-repository = true"
                 .into(),
-        )),
+        ),
     }
 }
 #[derive(Deserialize)]
@@ -232,7 +232,7 @@ fn validate_body(
     let invalid = |field: &str, reason: &str| format!("{field}: {reason}");
     let mut messages = Vec::new();
     if let Err(error) = single_line(&format!("{prefix}.summary"), summary) {
-        messages.push(error.to_string());
+        messages.push(error);
     }
     if description.trim().is_empty()
         || description.chars().any(|c| c.is_control() && c != '\n')
@@ -247,12 +247,12 @@ fn validate_body(
     }
     for require in requires {
         if let Err(error) = single_line(&format!("{prefix}.requires"), require) {
-            messages.push(error.to_string());
+            messages.push(error);
         }
     }
     for provide in provides {
         if let Err(error) = single_line(&format!("{prefix}.provides"), provide) {
-            messages.push(error.to_string());
+            messages.push(error);
         }
     }
     if files_required
@@ -273,7 +273,7 @@ fn validate_body(
         let field = format!("{prefix}.{suffix}");
         for value in values {
             if let Err(error) = single_line(&field, value) {
-                messages.push(error.to_string());
+                messages.push(error);
             }
             if value.chars().any(char::is_whitespace) {
                 messages.push(invalid(
@@ -299,18 +299,17 @@ fn validate_body(
 pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
     let input: ManifestInput = toml::from_str(source)?;
     let package = &input.package;
-    let invalid = |field: &str, reason: &str| RenderError::Invalid(format!("{field}: {reason}"));
+    let invalid = |field: &str, reason: &str| format!("{field}: {reason}");
 
     let mut errors = Vec::new();
-    let mut record = |result: Result<(), RenderError>| {
+    let mut record = |result: Result<(), String>| {
         if let Err(error) = result {
-            errors.push(error.to_string());
+            errors.push(error);
         }
     };
 
     record(
-        crate::spec_metadata::validate_years(&input.spec.copyright_years)
-            .map_err(|error| RenderError::Invalid(error.into())),
+        crate::spec_metadata::validate_years(&input.spec.copyright_years).map_err(str::to_owned),
     );
     if input.spec.contributors.is_empty() {
         record(Err(invalid(
@@ -324,16 +323,8 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
                 .map_err(|reason| invalid("spec.contributors", reason)),
         );
     }
-    record(
-        crate::check::metadata::Field::Name
-            .validate(&package.name)
-            .map_err(RenderError::Invalid),
-    );
-    record(
-        crate::check::metadata::Field::Version
-            .validate(&package.version)
-            .map_err(RenderError::Invalid),
-    );
+    record(crate::check::metadata::Field::Name.validate(&package.name));
+    record(crate::check::metadata::Field::Version.validate(&package.version));
     record(single_line("package.license", &package.license));
     record(https_url("package.url", &package.url));
     // Deferred from deserialization so an empty [package.vcs] table joins the
@@ -432,13 +423,10 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
         };
         // Distinct table keys can still designate the same RPM package.
         if !package_names.insert(effective_name.clone()) {
-            errors.push(
-                invalid(
-                    &field,
-                    &format!("duplicate package name {effective_name:?}"),
-                )
-                .to_string(),
-            );
+            errors.push(invalid(
+                &field,
+                &format!("duplicate package name {effective_name:?}"),
+            ));
         }
         errors.extend(validate_body(
             &field,
@@ -519,13 +507,12 @@ where
     Ok(sources)
 }
 
-fn single_line(field: &str, value: &str) -> Result<(), RenderError> {
-    crate::spec_metadata::validate_single_line(value)
-        .map_err(|reason| RenderError::Invalid(format!("{field}: {reason}")))
+fn single_line(field: &str, value: &str) -> Result<(), String> {
+    crate::spec_metadata::validate_single_line(value).map_err(|reason| format!("{field}: {reason}"))
 }
 
 /// Generation has an HTTPS-only policy; editing existing HTTP sources is supported.
-fn source_url(field: &str, value: &str, package: &PackageInput) -> Result<(), RenderError> {
+fn source_url(field: &str, value: &str, package: &PackageInput) -> Result<(), String> {
     single_line(field, value)?;
     let scheme = crate::source::validate_expression(
         value,
@@ -535,24 +522,21 @@ fn source_url(field: &str, value: &str, package: &PackageInput) -> Result<(), Re
             ("url", &package.url),
         ],
     )
-    .map_err(|reason| RenderError::Invalid(format!("{field}: {reason}")))?;
+    .map_err(|reason| format!("{field}: {reason}"))?;
     require_https(field, scheme)
 }
 
-fn https_url(field: &str, value: &str) -> Result<(), RenderError> {
+fn https_url(field: &str, value: &str) -> Result<(), String> {
     single_line(field, value)?;
-    crate::source::reject_credentials(value)
-        .map_err(|reason| RenderError::Invalid(format!("{field}: {reason}")))?;
-    let scheme = crate::source::validate_url(value)
-        .map_err(|reason| RenderError::Invalid(format!("{field}: {reason}")))?;
+    crate::source::reject_credentials(value).map_err(|reason| format!("{field}: {reason}"))?;
+    let scheme =
+        crate::source::validate_url(value).map_err(|reason| format!("{field}: {reason}"))?;
     require_https(field, scheme)
 }
 
-fn require_https(field: &str, scheme: crate::source::Scheme) -> Result<(), RenderError> {
+fn require_https(field: &str, scheme: crate::source::Scheme) -> Result<(), String> {
     if scheme != crate::source::Scheme::Https {
-        return Err(RenderError::Invalid(format!(
-            "{field}: expected an HTTPS URL"
-        )));
+        return Err(format!("{field}: expected an HTTPS URL"));
     }
     Ok(())
 }
