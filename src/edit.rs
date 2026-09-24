@@ -23,6 +23,7 @@ use crate::{file_output, utf8_file};
 use options::CheckFormat;
 use serde_json::json;
 use std::{
+    borrow::Cow,
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
@@ -423,7 +424,7 @@ fn read_candidate(
                 format!("{}:{line}:{column}: {}", path.display(), e.message()),
             )
         })?;
-        edited
+        Cow::Owned(edited)
     } else {
         fields::assign(item.snapshot.document(), assignments).map_err(|e| {
             EditError::at(

@@ -6,7 +6,7 @@
 
 //! Field selection and shape checks for an existing editable document.
 
-use std::collections::BTreeSet;
+use std::{borrow::Cow, collections::BTreeSet};
 
 use serde_json::{Value as Json, json};
 use toml::{Table, Value};
@@ -14,15 +14,18 @@ use toml::{Table, Value};
 use crate::spec::document::fields::{lookup, lookup_mut, path};
 
 /// Replaces existing string fields without inferring types from their spelling.
-pub(super) fn assign(original: &Table, assignments: &[(String, String)]) -> Result<Table, String> {
-    let mut document = original.clone();
+pub(super) fn assign<'a>(
+    original: &'a Table,
+    assignments: &[(String, String)],
+) -> Result<Cow<'a, Table>, String> {
+    let mut document = Cow::Borrowed(original);
     let mut seen = BTreeSet::new();
     for (field, value) in assignments {
         if !seen.insert(field) {
             return Err(format!("{field}: repeated assignment"));
         }
-        let target =
-            lookup_mut(&mut document, field).ok_or_else(|| format!("{field}: unknown field"))?;
+        let target = lookup_mut(document.to_mut(), field)
+            .ok_or_else(|| format!("{field}: unknown field"))?;
         if !target.is_str() {
             return Err(format!(
                 "{field}: direct assignment requires a string field; use the editor for arrays or groups"
