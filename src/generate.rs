@@ -73,7 +73,7 @@ pub(crate) fn run(
             "format_version": 1,
             "scope": "manifest-generation-static",
             "valid": rendered.report.is_success(),
-            "manifest": {"display_path": manifest_path, "sha256": utf8_file::digest(&manifest_source)},
+            "manifest": {"display_path": manifest_path.to_string_lossy(), "sha256": utf8_file::digest(&manifest_source)},
             "profile": crate::profile::identity(),
             "build_contract": rendered.build_contract,
             "report_subject": "candidate",

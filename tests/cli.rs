@@ -55,6 +55,72 @@ fn run_json_check(current_dir: &Path, spec: &OsStr) -> Output {
         .expect("run ruyipack JSON check")
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn json_reports_accept_non_utf8_paths_in_success_and_failure() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let spec = temp.path().join(OsStr::from_bytes(b"ed-\xff.spec"));
+    let manifest = temp.path().join(OsStr::from_bytes(b"ed-\xff.toml"));
+    let original = include_str!("fixtures/ed.spec");
+    fs::write(&spec, original).unwrap();
+    fs::write(&manifest, include_str!("../examples/ed/ed.toml")).unwrap();
+    for (prefix, input, suffix, exit, pointer) in [
+        (&["check"][..], &spec, &[][..], 0, "/input/display_path"),
+        (&["inspect"][..], &spec, &[][..], 0, "/input/display_path"),
+        (
+            &["gen", "ed", "--manifest"][..],
+            &manifest,
+            &["--check"][..],
+            0,
+            "/manifest/display_path",
+        ),
+        (
+            &["edit"][..],
+            &spec,
+            &["--check", "--set", "package.version=2"][..],
+            0,
+            "/files/0/source",
+        ),
+        (
+            &["edit"][..],
+            &spec,
+            &["--check", "--set", "package.version="][..],
+            1,
+            "/files/0/error/path",
+        ),
+        (
+            &["edit"][..],
+            &spec,
+            &["--check", "--field", "missing"][..],
+            1,
+            "/error/path",
+        ),
+    ] {
+        let output = command()
+            .args(prefix)
+            .arg(input)
+            .args(suffix)
+            .args(["--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(exit),
+            "{prefix:?} {suffix:?}: {output:?}"
+        );
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            report.pointer(pointer).and_then(Value::as_str),
+            Some(input.to_string_lossy().as_ref())
+        );
+    }
+    assert_eq!(fs::read_to_string(spec).unwrap(), original);
+    assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
+}
+
 fn machine_report(output: &Output) -> Value {
     assert!(output.stderr.is_empty(), "{}", output_text(&output.stderr));
     json_line(output)

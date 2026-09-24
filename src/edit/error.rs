@@ -7,7 +7,7 @@
 //! Stable categories for failures that change how an edit can proceed.
 
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -27,7 +27,7 @@ pub(crate) struct EditError {
     code: Kind,
     pub(super) message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    path: Option<PathBuf>,
+    path: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     selected_fields: Vec<String>,
     #[serde(skip)]
@@ -40,7 +40,7 @@ impl EditError {
         Self {
             code,
             message,
-            path: Some(path.to_owned()),
+            path: Some(path.display().to_string()),
             selected_fields: fields.to_vec(),
             publication: None,
         }

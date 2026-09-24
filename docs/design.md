@@ -54,8 +54,9 @@ code and embedded profile contracts, not in an upstream parser's data model.
 JSON identifies exact inputs and the actual parser. `gen --check` additionally
 identifies its manifest and selected profile/build contract; `edit --check`
 distinguishes original and candidate hashes. Profile hashes cover embedded TOML,
-not every validation rule or a target environment. Paths identify sources or
-intended destinations; hashes identify the bytes actually checked.
+not every validation rule or a target environment. Report paths are display text
+(lossy for non-UTF-8 paths), not replayable file identities; hashes identify the
+bytes actually checked. File operations retain native paths.
 
 The `spec-static` stage only proves selected static checks. Native Source-numbering
 checks in `scripts/check-native-sources` are separate evidence, and neither proves

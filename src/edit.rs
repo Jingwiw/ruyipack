@@ -230,6 +230,8 @@ struct CheckedInput<'a> {
 impl CheckedInput<'_> {
     fn record(&self) -> serde_json::Value {
         let item = self.input;
+        let source = item.path.to_string_lossy();
+        let draft = item.draft.as_deref().map(Path::to_string_lossy);
         let mut record = if let Some(candidate) = self.candidate.as_ref() {
             let review_required: &[&str] = if candidate.review_triggers.is_empty() {
                 &[]
@@ -240,13 +242,13 @@ impl CheckedInput<'_> {
                     "native-build",
                 ]
             };
-            json!({"source": item.path, "draft": item.draft, "valid": self.error.is_none(),
+            json!({"source": source, "draft": draft, "valid": self.error.is_none(),
                 "original_sha256": utf8_file::digest(item.snapshot.source()), "report_subject": "candidate",
                 "profile": crate::profile::identity(), "changed": candidate.contents != item.snapshot.source(),
                 "review_triggers": candidate.review_triggers, "review_required": review_required,
                 "report": candidate.report.structured(&item.path)})
         } else {
-            json!({"source": item.path, "draft": item.draft, "valid": false})
+            json!({"source": source, "draft": draft, "valid": false})
         };
         if let Some(error) = self.error.as_ref() {
             record["error"] = serde_json::to_value(error).expect("serializable error");
