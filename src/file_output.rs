@@ -589,6 +589,7 @@ pub(crate) enum OutputError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn no_prompt(_: &Path) -> Result<ConflictAction, OutputError> {
         panic!("this operation must not ask for a conflict selection")
@@ -699,10 +700,10 @@ mod tests {
                 },
             );
             if change_source {
-                assert!(matches!(result, Err(OutputError::SourceChanged(path)) if path == input));
+                assert_matches!(result, Err(OutputError::SourceChanged(path)) if path == input);
                 assert_eq!(fs::read_to_string(&target).unwrap(), "other\n");
             } else {
-                assert!(matches!(result, Err(OutputError::Changed(path)) if path == target));
+                assert_matches!(result, Err(OutputError::Changed(path)) if path == target);
                 assert_eq!(fs::read_to_string(&input).unwrap(), "original\n");
             }
             assert_eq!(fs::read_to_string(changed).unwrap(), "external change\n");
@@ -759,7 +760,7 @@ mod tests {
                 Ok(ConflictAction::Overwrite)
             }
         });
-        assert!(matches!(result, Err(OutputError::Changed(path)) if path == target));
+        assert_matches!(result, Err(OutputError::Changed(path)) if path == target);
         assert_eq!(selections, 2);
         assert_eq!(fs::read_to_string(target).unwrap(), "external change\n");
     }
@@ -807,10 +808,10 @@ mod tests {
         check_sources(&files, &[false]).unwrap();
         fs::remove_file(&input).unwrap();
         symlink(&replacement, &input).unwrap();
-        assert!(matches!(
+        assert_matches!(
             check_sources(&files, &[false]),
             Err(OutputError::SourceChanged(path)) if path == input
-        ));
+        );
     }
 
     #[test]
@@ -857,10 +858,10 @@ mod tests {
 
             contents: "edited\n",
         }];
-        assert!(matches!(
+        assert_matches!(
             run_edits(&own_alias, Some(&alias), EditMode::Overwrite, no_prompt),
             Err(OutputError::EditLayout(_))
-        ));
+        );
         let duplicate_sources = [
             EditFile {
                 source_path: &first,
@@ -875,10 +876,10 @@ mod tests {
                 contents: "edited\n",
             },
         ];
-        assert!(matches!(
+        assert_matches!(
             run_edits(&duplicate_sources, None, EditMode::Overwrite, no_prompt),
             Err(OutputError::EditLayout(_))
-        ));
+        );
         assert_eq!(fs::read_to_string(first).unwrap(), "first\n");
     }
 
@@ -973,7 +974,7 @@ mod tests {
             panic!("expected a partial permission failure: {result:?}")
         };
         assert_eq!(written, vec![first.clone()]);
-        assert!(matches!(*source, OutputError::Write { .. }));
+        assert_matches!(*source, OutputError::Write { .. });
         assert_eq!(fs::read_to_string(first).unwrap(), "changed first\n");
         assert_eq!(fs::read_to_string(second).unwrap(), "second\n");
     }

@@ -50,3 +50,4 @@ proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 
 [lints.rust]
 unsafe_code = "forbid"
+dead_code_pub_in_binary = "warn"
