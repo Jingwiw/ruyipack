@@ -44,7 +44,7 @@ impl<'src> ParsedSpec<'src> {
     }
 
     pub(crate) fn findings(&self, rules: &[SelectedRule]) -> Vec<Finding> {
-        analyzer::Analyzer::new(rules).run(self.source, &self.parsed.spec)
+        analyzer::run(self.source, &self.parsed.spec, rules)
     }
 
     pub(crate) fn metadata_findings(&self) -> Vec<Finding> {
