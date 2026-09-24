@@ -164,15 +164,6 @@ impl Snapshot {
                     let value_end = range.start + raw.trim_end_matches([' ', '\t']).len();
                     let value_range = value_start..value_end;
                     let (field, expected) = match &item.tag {
-                        Tag::Name => ("package.name".to_owned(), "Name".to_owned()),
-                        Tag::Version => ("package.version".to_owned(), "Version".to_owned()),
-                        Tag::Release => ("spec.release".to_owned(), "Release".to_owned()),
-                        Tag::Summary => ("package.summary".to_owned(), "Summary".to_owned()),
-                        Tag::License => ("package.license".to_owned(), "License".to_owned()),
-                        Tag::URL => ("package.url".to_owned(), "URL".to_owned()),
-                        Tag::Other(name) if name.eq_ignore_ascii_case("BuildSystem") => {
-                            ("build.system".to_owned(), name.clone())
-                        }
                         Tag::BuildRequires => {
                             if !name.trim().eq_ignore_ascii_case("BuildRequires") {
                                 return Err("build-requires.rpm: AST/source header mismatch".into());
@@ -224,7 +215,13 @@ impl Snapshot {
                             consumed_assets.push(asset);
                             (format!("{identity}.url"), expected)
                         }
-                        _ => return Err(format!("preamble: unsupported tag {:?}", item.tag)),
+                        _ => {
+                            let (field, expected) =
+                                scalar_preamble(&item.tag).ok_or_else(|| {
+                                    format!("preamble: unsupported tag {:?}", item.tag)
+                                })?;
+                            (field.to_owned(), expected.to_owned())
+                        }
                     };
                     if !name.trim().eq_ignore_ascii_case(&expected) {
                         return Err(format!("{field}: AST/source header mismatch"));
@@ -772,19 +769,27 @@ fn may_declare_sources(source: &str, item: &SpecItem<Span>) -> bool {
     }
 }
 
+fn scalar_preamble(tag: &Tag) -> Option<(&'static str, &'static str)> {
+    Some(match tag {
+        Tag::Name => ("package.name", "Name"),
+        Tag::Version => ("package.version", "Version"),
+        Tag::Release => ("spec.release", "Release"),
+        Tag::Summary => ("package.summary", "Summary"),
+        Tag::License => ("package.license", "License"),
+        Tag::URL => ("package.url", "URL"),
+        Tag::Other(name) if name.eq_ignore_ascii_case("BuildSystem") => {
+            ("build.system", "BuildSystem")
+        }
+        _ => return None,
+    })
+}
+
 fn preamble_field(tag: &Tag) -> Option<String> {
     Some(match tag {
-        Tag::Name => "package.name".into(),
-        Tag::Version => "package.version".into(),
-        Tag::Release => "spec.release".into(),
-        Tag::Summary => "package.summary".into(),
-        Tag::License => "package.license".into(),
-        Tag::URL => "package.url".into(),
         Tag::BuildRequires => "build-requires.rpm".into(),
         Tag::Source(Some(number)) => format!("sources.{number}"),
         Tag::Source(None) => "sources".into(),
-        Tag::Other(name) if name.eq_ignore_ascii_case("BuildSystem") => "build.system".into(),
-        _ => return None,
+        _ => scalar_preamble(tag)?.0.into(),
     })
 }
 
