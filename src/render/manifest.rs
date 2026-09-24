@@ -362,7 +362,7 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
         }
     }
     if let Some(system) = &input.build.system
-        && crate::check::build::contract(system).is_none()
+        && crate::profile::buildsystems::contract(system).is_none()
     {
         record(Err(invalid(
             "build.system",

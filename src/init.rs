@@ -45,7 +45,7 @@ enum Comments {
 
 /// Accepts exactly the build systems with a contract and template.
 fn build_system_names() -> clap::builder::PossibleValuesParser {
-    clap::builder::PossibleValuesParser::new(crate::check::build::systems())
+    clap::builder::PossibleValuesParser::new(crate::profile::buildsystems::systems())
 }
 
 pub(crate) fn run(options: &Options) -> Result<(), InitError> {
@@ -196,7 +196,7 @@ fn render(
         "buildsystem",
         include_str!("../templates/buildsystems/buildsystem.toml.j2"),
     )?;
-    let contract = system.and_then(crate::check::build::contract);
+    let contract = system.and_then(crate::profile::buildsystems::contract);
     let requirements = contract
         .map(|contract| contract.build_requires.as_slice())
         .unwrap_or_default();

@@ -12,6 +12,8 @@
 //! changelog macros are emitted literally for the target RPM environment.
 //! RemoteAsset is openRuyi source-fetch metadata carried in RPM comment lines.
 
+pub(crate) mod buildsystems;
+
 use serde::{Deserialize, Serialize};
 
 const SOURCE: &str = include_str!("../profiles/openruyi-v1/profile.toml");

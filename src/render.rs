@@ -37,7 +37,7 @@ pub(crate) fn run(source: &str) -> Result<RenderedSpec, RenderError> {
         .build
         .system
         .as_deref()
-        .and_then(crate::check::build::contract_identity);
+        .and_then(crate::profile::buildsystems::contract_identity);
     Ok(RenderedSpec {
         build_contract,
         name: manifest.package.name,
