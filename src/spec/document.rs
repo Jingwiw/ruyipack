@@ -577,8 +577,8 @@ impl Snapshot {
         let mut holder_values = Vec::new();
         let mut shared_years: Option<String> = None;
         for range in comments {
-            let raw = line(&self.source, &range)?.to_owned();
-            let field = comment_field(&raw);
+            let raw = line(&self.source, &range)?;
+            let field = comment_field(raw);
             if !(self.selects(field)
                 || (field == "spec.copyright-years" && self.selects("spec.copyright-holders")))
             {
@@ -625,7 +625,7 @@ impl Snapshot {
             } else if let Some(value) = raw.strip_prefix("# SPDX-FileContributor: ") {
                 let value_range = range.start + raw.len() - value.len()..range.start + raw.len();
                 self.list_item("spec.contributors", value_range, range)?;
-            } else if let Some(value) = crate::spec_metadata::license_declaration(&raw) {
+            } else if let Some(value) = crate::spec_metadata::license_declaration(raw) {
                 self.scalar(
                     "spec.license",
                     range.start + raw.len() - value.len()..range.start + raw.len(),
@@ -638,7 +638,7 @@ impl Snapshot {
                 {
                     return Err("spec: unsupported SPDX declaration shape".into());
                 }
-                valid_comments(&raw)?;
+                valid_comments(raw)?;
                 if let Some(previous) = ordinary
                     .last_mut()
                     .filter(|previous| previous.end == range.start)
