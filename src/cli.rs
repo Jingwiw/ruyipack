@@ -20,6 +20,7 @@ pub(crate) struct Cli {
 }
 
 #[derive(Subcommand)]
+#[command(defer = true)]
 pub(crate) enum Command {
     /// Creates a package manifest template in an existing directory.
     Init(init::Options),
