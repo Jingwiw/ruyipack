@@ -219,8 +219,6 @@ fn multiple_resized_replacements_preserve_intervening_utf8_bytes() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
-
     #[test]
     fn selected_edits_preserve_unselected_bytes(
         old_version in "[0-9]{1,3}(\\.[0-9]{1,3}){0,2}",
