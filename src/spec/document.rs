@@ -82,7 +82,7 @@ impl Snapshot {
         snapshot.list("spec.contributors", "# SPDX-FileContributor: ");
         snapshot.list("spec.comments", "");
         snapshot.list("build-requires.rpm", "BuildRequires:  ");
-        let profile = crate::profile::load().map_err(|error| error.to_string())?;
+        let profile = crate::profile::load();
         let mut coverage = Vec::new();
         let mut comments = Vec::new();
         let mut consumed_assets = Vec::new();

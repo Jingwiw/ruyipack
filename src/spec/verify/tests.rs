@@ -18,8 +18,8 @@ const MANIFEST: &str = include_str!("../../../examples/ed/ed.toml");
 #[test]
 fn rejects_changed_facts_even_when_the_spec_still_parses() {
     let recipe = manifest::parse(MANIFEST).unwrap();
-    let profile = profile::load().unwrap();
-    let original = spec::render(&recipe, &profile);
+    let profile = profile::load();
+    let original = spec::render(&recipe, profile);
     for (before, after, field) in [
         ("Name:           ed", "Name:           another", "Name"),
         ("1.22.5", "1.22.6", "Version"),
@@ -93,7 +93,7 @@ fn rejects_changed_facts_even_when_the_spec_still_parses() {
             parsed.parsed.diagnostics.is_empty(),
             "not a clean parser result: {before}"
         );
-        let error = run(&parsed, &recipe, &profile).unwrap_err().to_string();
+        let error = run(&parsed, &recipe, profile).unwrap_err().to_string();
         assert!(error.contains(field), "{before}: {error}");
     }
 }
@@ -107,9 +107,9 @@ fn rejects_changed_vcs_declarations() {
     ] {
         let input = MANIFEST.replace("no-public-repository = true", choice);
         let recipe = manifest::parse(&input).unwrap();
-        let profile = profile::load().unwrap();
-        let original = spec::render(&recipe, &profile);
-        assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
+        let profile = profile::load();
+        let original = spec::render(&recipe, profile);
+        assert!(run(&ParsedSpec::parse(&original), &recipe, profile).is_ok());
         for declaration in [
             "VCS: git:https://example.org/another.git\n",
             "# VCS: No VCS link available\n",
@@ -118,7 +118,7 @@ fn rejects_changed_vcs_declarations() {
             let parsed = ParsedSpec::parse(&changed);
             assert!(parsed.parsed.diagnostics.is_empty());
             assert!(
-                run(&parsed, &recipe, &profile).is_err(),
+                run(&parsed, &recipe, profile).is_err(),
                 "{choice}: {declaration}"
             );
         }
@@ -130,7 +130,7 @@ fn rejects_changed_vcs_declarations() {
                 );
                 let parsed = ParsedSpec::parse(&changed);
                 assert!(parsed.parsed.diagnostics.is_empty());
-                assert!(run(&parsed, &recipe, &profile).is_err());
+                assert!(run(&parsed, &recipe, profile).is_err());
             }
         }
     }
@@ -139,8 +139,8 @@ fn rejects_changed_vcs_declarations() {
 #[test]
 fn rejects_missing_duplicate_and_unexpected_units() {
     let recipe = manifest::parse(MANIFEST).unwrap();
-    let profile = profile::load().unwrap();
-    let original = spec::render(&recipe, &profile);
+    let profile = profile::load();
+    let original = spec::render(&recipe, profile);
     for changed in [
         original.replace("Version:        1.22.5\n", ""),
         original.replace("Version:        1.22.5", "Version: 1.22.5\nVersion: 1.22.5"),
@@ -155,7 +155,7 @@ fn rejects_missing_duplicate_and_unexpected_units() {
     ] {
         let parsed = ParsedSpec::parse(&changed);
         assert!(parsed.parsed.diagnostics.is_empty());
-        assert!(run(&parsed, &recipe, &profile).is_err());
+        assert!(run(&parsed, &recipe, profile).is_err());
     }
 }
 
@@ -166,8 +166,8 @@ fn keeps_each_checksum_bound_to_its_source() {
         "a".repeat(64)
     );
     let recipe = manifest::parse(&source).unwrap();
-    let profile = profile::load().unwrap();
-    let original = spec::render(&recipe, &profile);
+    let profile = profile::load();
+    let original = spec::render(&recipe, profile);
     let source_lines: Vec<_> = original
         .lines()
         .filter(|line| line.starts_with("Source"))
@@ -185,7 +185,7 @@ fn keeps_each_checksum_bound_to_its_source() {
     let parsed = ParsedSpec::parse(&changed);
     assert!(parsed.parsed.diagnostics.is_empty());
     assert!(
-        run(&parsed, &recipe, &profile)
+        run(&parsed, &recipe, profile)
             .unwrap_err()
             .to_string()
             .contains("sources.2.sha256")
@@ -201,29 +201,29 @@ fn ignores_layout_but_preserves_prose_and_macro_structure() {
         .build_requires
         .rpm
         .push("pkgconfig(example) >= 1.2".into());
-    let profile = profile::load().unwrap();
-    let original = spec::render(&recipe, &profile);
+    let profile = profile::load();
+    let original = spec::render(&recipe, profile);
     let changed = original
         .replace("Name:           ", "Name:\t")
         .replace("%files\n", "%files\n\n");
-    assert!(run(&ParsedSpec::parse(&changed), &recipe, &profile).is_ok());
+    assert!(run(&ParsedSpec::parse(&changed), &recipe, profile).is_ok());
     let changed = original.replace("  Indented text  ", "Indented text");
-    assert!(run(&ParsedSpec::parse(&changed), &recipe, &profile).is_err());
+    assert!(run(&ParsedSpec::parse(&changed), &recipe, profile).is_err());
 }
 
 #[test]
 fn preserves_remote_asset_marker_bytes() {
     let recipe = manifest::parse(MANIFEST).unwrap();
-    let profile = profile::load().unwrap();
-    let original = spec::render(&recipe, &profile);
-    assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
+    let profile = profile::load();
+    let original = spec::render(&recipe, profile);
+    assert!(run(&ParsedSpec::parse(&original), &recipe, profile).is_ok());
 
     let changed = original.replacen("#!RemoteAsset:", "# !RemoteAsset:", 1);
     assert_ne!(changed, original);
     let parsed = ParsedSpec::parse(&changed);
     assert!(parsed.parsed.diagnostics.is_empty());
     assert!(
-        run(&parsed, &recipe, &profile)
+        run(&parsed, &recipe, profile)
             .unwrap_err()
             .to_string()
             .contains("sources.0.sha256")
@@ -237,9 +237,9 @@ fn stage_options_match_their_stage_value_and_order() {
          [build.stages.build]\noptions = [\"CC_FOR_BUILD=gcc\"]\n"
     );
     let recipe = manifest::parse(&input).unwrap();
-    let profile = profile::load().unwrap();
-    let original = spec::render(&recipe, &profile);
-    assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
+    let profile = profile::load();
+    let original = spec::render(&recipe, profile);
+    assert!(run(&ParsedSpec::parse(&original), &recipe, profile).is_ok());
     for (before, after) in [
         ("BuildOption(conf):  --enable-nls\n", ""),
         ("--enable-nls", "--disable-nls"),
@@ -258,7 +258,7 @@ fn stage_options_match_their_stage_value_and_order() {
         assert_ne!(changed, original);
         let parsed = ParsedSpec::parse(&changed);
         assert!(parsed.parsed.diagnostics.is_empty(), "{before}");
-        assert!(run(&parsed, &recipe, &profile).is_err(), "{before}");
+        assert!(run(&parsed, &recipe, profile).is_err(), "{before}");
     }
 }
 
@@ -270,9 +270,9 @@ fn stage_scripts_match_kind_placement_and_exact_body() {
          [build.stages.install]\nappend = '''cat <<'END' > generated\n\tcontent\n\nEND\n\n'''\n"
     );
     let recipe = manifest::parse(&input).unwrap();
-    let profile = profile::load().unwrap();
-    let original = spec::render(&recipe, &profile);
-    assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
+    let profile = profile::load();
+    let original = spec::render(&recipe, profile);
+    assert!(run(&ParsedSpec::parse(&original), &recipe, profile).is_ok());
     for (before, after) in [
         ("%conf -p", "%build -p"),
         ("%conf -p", "%conf -a"),
@@ -295,7 +295,7 @@ fn stage_scripts_match_kind_placement_and_exact_body() {
         assert_ne!(changed, original);
         let parsed = ParsedSpec::parse(&changed);
         assert!(parsed.parsed.diagnostics.is_empty(), "{before}");
-        assert!(run(&parsed, &recipe, &profile).is_err(), "{before}");
+        assert!(run(&parsed, &recipe, profile).is_err(), "{before}");
     }
 }
 
@@ -306,9 +306,9 @@ fn stage_replacement_checks_explicit_main_sections() {
          [build.stages.check]\nreplace = '# Tests require unavailable hardware.'\n"
     );
     let recipe = manifest::parse(&input).unwrap();
-    let profile = profile::load().unwrap();
-    let original = spec::render(&recipe, &profile);
-    assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
+    let profile = profile::load();
+    let original = spec::render(&recipe, profile);
+    assert!(run(&ParsedSpec::parse(&original), &recipe, profile).is_ok());
     for (before, after) in [
         ("%conf\n\n", ""),
         ("%conf\n", "%conf -p\n"),
@@ -322,21 +322,21 @@ fn stage_replacement_checks_explicit_main_sections() {
         assert_ne!(changed, original);
         let parsed = ParsedSpec::parse(&changed);
         assert!(parsed.parsed.diagnostics.is_empty(), "{before}");
-        assert!(run(&parsed, &recipe, &profile).is_err(), "{before}");
+        assert!(run(&parsed, &recipe, profile).is_err(), "{before}");
     }
 }
 
 #[test]
 fn build_system_presence_matches_the_manifest() {
     let mut recipe = manifest::parse(MANIFEST).unwrap();
-    let profile = profile::load().unwrap();
-    let declarative = spec::render(&recipe, &profile);
+    let profile = profile::load();
+    let declarative = spec::render(&recipe, profile);
     recipe.build.system = None;
-    let explicit = spec::render(&recipe, &profile);
-    assert!(run(&ParsedSpec::parse(&explicit), &recipe, &profile).is_ok());
-    assert!(run(&ParsedSpec::parse(&declarative), &recipe, &profile).is_err());
+    let explicit = spec::render(&recipe, profile);
+    assert!(run(&ParsedSpec::parse(&explicit), &recipe, profile).is_ok());
+    assert!(run(&ParsedSpec::parse(&declarative), &recipe, profile).is_err());
     recipe.build.system = Some("autotools".into());
-    assert!(run(&ParsedSpec::parse(&explicit), &recipe, &profile).is_err());
+    assert!(run(&ParsedSpec::parse(&explicit), &recipe, profile).is_err());
 }
 
 const SUBPACKAGES: &str = r#"
@@ -367,11 +367,11 @@ description = "Install the editor family."
 #[test]
 fn subpackage_facts_are_verified_independently_of_the_main_package() {
     let recipe = manifest::parse(&format!("{MANIFEST}{SUBPACKAGES}")).unwrap();
-    let profile = profile::load().unwrap();
-    let original = spec::render(&recipe, &profile);
+    let profile = profile::load();
+    let original = spec::render(&recipe, profile);
     let parsed = ParsedSpec::parse(&original);
     assert!(parsed.parsed.diagnostics.is_empty());
-    assert!(run(&parsed, &recipe, &profile).is_ok());
+    assert!(run(&parsed, &recipe, profile).is_ok());
     for (before, after) in [
         ("%package        devel", "%package        headers"),
         ("%package        devel", "%package        -n devel"),
@@ -431,7 +431,7 @@ fn subpackage_facts_are_verified_independently_of_the_main_package() {
             "not a clean parser result: {before}"
         );
         assert!(
-            run(&parsed, &recipe, &profile).is_err(),
+            run(&parsed, &recipe, profile).is_err(),
             "accepted: {before}"
         );
     }
@@ -440,9 +440,9 @@ fn subpackage_facts_are_verified_independently_of_the_main_package() {
 #[test]
 fn subpackages_reject_missing_duplicate_and_unexpected_units() {
     let recipe = manifest::parse(&format!("{MANIFEST}{SUBPACKAGES}")).unwrap();
-    let profile = profile::load().unwrap();
-    let original = spec::render(&recipe, &profile);
-    assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
+    let profile = profile::load();
+    let original = spec::render(&recipe, profile);
+    assert!(run(&ParsedSpec::parse(&original), &recipe, profile).is_ok());
     for (before, after) in [
         ("Summary:        Development files\n", ""),
         (
@@ -495,23 +495,23 @@ fn subpackages_reject_missing_duplicate_and_unexpected_units() {
             "not a clean parser result: {before}"
         );
         assert!(
-            run(&parsed, &recipe, &profile).is_err(),
+            run(&parsed, &recipe, profile).is_err(),
             "accepted: {before}"
         );
     }
     let extra_tail = format!("{original}\n%files unexpected\n");
     let parsed = ParsedSpec::parse(&extra_tail);
     assert!(parsed.parsed.diagnostics.is_empty());
-    let error = run(&parsed, &recipe, &profile).unwrap_err().to_string();
+    let error = run(&parsed, &recipe, profile).unwrap_err().to_string();
     assert!(error.contains("unexpected sections"), "{error}");
 }
 
 #[test]
 fn subpackage_facts_cannot_be_moved_between_package_scopes() {
     let recipe = manifest::parse(&format!("{MANIFEST}{SUBPACKAGES}")).unwrap();
-    let profile = profile::load().unwrap();
-    let original = spec::render(&recipe, &profile);
-    assert!(run(&ParsedSpec::parse(&original), &recipe, &profile).is_ok());
+    let profile = profile::load();
+    let original = spec::render(&recipe, profile);
+    assert!(run(&ParsedSpec::parse(&original), &recipe, profile).is_ok());
     for (left, right) in [
         ("Development files", "Editor tools"),
         (
@@ -537,6 +537,6 @@ fn subpackage_facts_cannot_be_moved_between_package_scopes() {
         assert_ne!(changed, original);
         let parsed = ParsedSpec::parse(&changed);
         assert!(parsed.parsed.diagnostics.is_empty(), "{left}");
-        assert!(run(&parsed, &recipe, &profile).is_err(), "accepted: {left}");
+        assert!(run(&parsed, &recipe, profile).is_err(), "accepted: {left}");
     }
 }

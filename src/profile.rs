@@ -15,6 +15,7 @@
 pub(crate) mod buildsystems;
 
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 const SOURCE: &str = include_str!("../profiles/openruyi-v1/profile.toml");
 
@@ -55,6 +56,7 @@ impl Profile {
         }
     }
 }
-pub(crate) fn load() -> Result<Profile, toml::de::Error> {
-    toml::from_str(SOURCE)
+pub(crate) fn load() -> &'static Profile {
+    static PROFILE: OnceLock<Profile> = OnceLock::new();
+    PROFILE.get_or_init(|| toml::from_str(SOURCE).expect("embedded profile must be valid"))
 }
