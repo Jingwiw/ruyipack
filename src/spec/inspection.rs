@@ -6,13 +6,13 @@
 
 //! Parsed SPEC syntax and normalized main-package tags.
 
-mod json;
 use super::{ParsedSpec, diagnostic};
 use crate::parser_diagnostic::{self, Diagnostic};
 use rpm_spec::{
     ast::{Span, SpecFile, SpecItem},
     printer::{self, PrinterConfig},
 };
+use serde::Serialize;
 use std::{
     io::{self, Write},
     path::Path,
@@ -50,7 +50,22 @@ impl<'src> Inspection<'src> {
     }
 
     pub(crate) fn write_json(&self, path: &Path, writer: &mut impl Write) -> io::Result<()> {
-        json::write(path, self.source, &self.view, &self.diagnostics, writer)
+        let path = path.to_string_lossy();
+        let report = InspectionReport {
+            format_version: 1,
+            input: InputIdentity {
+                display_path: &path,
+                sha256: crate::utf8_file::digest(self.source),
+            },
+            parser: ParserIdentity {
+                version: env!("RUYIPACK_RPM_SPEC_VERSION"),
+                revision: env!("RUYIPACK_RPM_SPEC_REVISION"),
+            },
+            preamble: &self.view.items,
+            parser_diagnostics: &self.diagnostics,
+        };
+        serde_json::to_writer(&mut *writer, &report)?;
+        writeln!(writer)
     }
 }
 
@@ -74,4 +89,25 @@ fn retain_tag_items(items: &mut Vec<SpecItem<Span>>) {
         }
         _ => false,
     });
+}
+
+#[derive(Serialize)]
+struct InspectionReport<'a> {
+    format_version: u32,
+    input: InputIdentity<'a>,
+    parser: ParserIdentity,
+    preamble: &'a [SpecItem<Span>],
+    parser_diagnostics: &'a [Diagnostic],
+}
+
+#[derive(Serialize)]
+struct InputIdentity<'a> {
+    display_path: &'a str,
+    sha256: String,
+}
+
+#[derive(Serialize)]
+struct ParserIdentity {
+    version: &'static str,
+    revision: &'static str,
 }
