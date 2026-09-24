@@ -591,8 +591,6 @@ impl Snapshot {
                 let (years, holder) = value
                     .split_once(' ')
                     .ok_or("spec.copyright-holders: missing holder")?;
-                crate::spec_metadata::validate_years(years)?;
-                valid_text(holder, "spec.copyright-holders", false)?;
                 if let Some(previous) = copyright.holders.lines.last()
                     && previous.end != range.start
                 {

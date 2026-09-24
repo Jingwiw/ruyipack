@@ -83,25 +83,37 @@ fn resizing_separate_dependency_groups_is_rejected() {
 #[test]
 fn copyright_years_and_holders_change_without_overlapping_replacements() {
     let prefix = concat!("# SPDX-FileCopy", "rightText: (C) ");
-    let source = format!("{prefix}2025 First Holder\n{prefix}2025 Second Holder\nName: demo\n");
-    let snapshot = capture(&source);
-    for (holders, expected) in [
-        (
-            vec!["Updated Holder", "Second Holder"],
-            format!(
-                "{prefix}2026-2027 Updated Holder\n{prefix}2026-2027 Second Holder\nName: demo\n"
-            ),
-        ),
-        (
-            vec!["Merged Holder"],
-            format!("{prefix}2026-2027 Merged Holder\nName: demo\n"),
-        ),
+    for (years, first) in [
+        ("2025", "First Holder"),
+        ("INVALID", "First Holder"),
+        ("2025", ""),
     ] {
-        let mut edited = snapshot.document().clone();
-        edited["spec"]["copyright-years"] = "2026-2027".into();
-        edited["spec"]["copyright-holders"] =
-            Value::Array(holders.into_iter().map(Value::from).collect());
-        assert_eq!(snapshot.render(&edited).unwrap(), expected);
+        let source =
+            format!("{prefix}{years} {first}\n{prefix}{years} Second Holder\nName: demo\n");
+        let snapshot = capture(&source);
+        if years == "INVALID" || first.is_empty() {
+            assert!(snapshot.render(snapshot.document()).is_err());
+        } else {
+            assert_eq!(snapshot.render(snapshot.document()).unwrap(), source);
+        }
+        for (holders, expected) in [
+            (
+                vec!["Updated Holder", "Second Holder"],
+                format!(
+                    "{prefix}2026-2027 Updated Holder\n{prefix}2026-2027 Second Holder\nName: demo\n"
+                ),
+            ),
+            (
+                vec!["Merged Holder"],
+                format!("{prefix}2026-2027 Merged Holder\nName: demo\n"),
+            ),
+        ] {
+            let mut edited = snapshot.document().clone();
+            edited["spec"]["copyright-years"] = "2026-2027".into();
+            edited["spec"]["copyright-holders"] =
+                Value::Array(holders.into_iter().map(Value::from).collect());
+            assert_eq!(snapshot.render(&edited).unwrap(), expected);
+        }
     }
 }
 
