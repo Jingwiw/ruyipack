@@ -36,6 +36,7 @@ regenerating. No filename heuristic chooses an authority or synchronizes files.
 | `file_output` | Written/unchanged/skipped paths, typed partial failures | `edit` formats results and retains recovery information |
 | `check` | Findings and explicit incomplete reasons | `check`, `gen`, and `edit` reports |
 | `profile::buildsystems` | Embedded system names, requirements, stage guidance and identity | `init`, manifest validation, generation reports and RPK004 |
+| `edit::drafts` | Draft storage layout and output protection | Saved and interactive editing |
 
 Read `generate.rs` and `edit.rs` for orchestration, then `render.rs`,
 `edit/candidate.rs`, and `spec/document.rs` for calculation. `file_output.rs` owns

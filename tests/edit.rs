@@ -553,11 +553,19 @@ fn explicit_output_cannot_overwrite_its_draft_or_saved_state() {
     let directory = fixture();
     let drafts = prepare(directory.path(), &["ed.spec"], &["package.version"]);
     change_version(&drafts.join("ed.toml"), "1.22.6");
-    for target in [
+    let mut targets = vec![
         drafts.join("ed.toml"),
         drafts.join(".state/index.json"),
         drafts.join(".state/originals/0.spec"),
-    ] {
+        drafts.join(".state/schema/0.json"),
+    ];
+    #[cfg(unix)]
+    for (index, target) in targets.clone().iter().enumerate() {
+        let alias = directory.path().join(format!("state-alias-{index}"));
+        fs::hard_link(target, &alias).unwrap();
+        targets.push(alias);
+    }
+    for target in targets {
         let before = fs::read(&target).unwrap();
         let output = command(directory.path())
             .arg("--from")

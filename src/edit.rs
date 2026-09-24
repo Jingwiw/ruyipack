@@ -256,7 +256,11 @@ impl ApplyResult<'_> {
 
 fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, EditError> {
     if let Some(output) = &options.output {
-        protect_drafts(output, inputs)?;
+        let paths = inputs
+            .iter()
+            .filter_map(|item| item.draft.as_deref())
+            .collect::<Vec<_>>();
+        drafts::protect_output(output, &paths)?;
     }
     let checked = inputs
         .iter()
@@ -434,50 +438,6 @@ fn read_candidate(
             format!("{}: {error}", path.display()),
         )
     })
-}
-
-/// A destination must not replace the draft or its recovery inputs.
-fn protect_drafts(output: &Path, inputs: &[Input]) -> Result<(), String> {
-    let Some(draft) = inputs.iter().find_map(|item| item.draft.as_ref()) else {
-        return Ok(());
-    };
-    let root = draft.parent().ok_or("draft has no parent directory")?;
-    let parent = output
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let target = fs::canonicalize(parent)
-        .map_err(|e| format!("{}: {e}", parent.display()))?
-        .join(output.file_name().ok_or("output must name a file")?);
-    if target.starts_with(root) {
-        return Err(format!(
-            "{}: output must be outside the draft directory",
-            output.display()
-        ));
-    }
-    #[cfg(unix)]
-    if let Ok(target_metadata) = fs::metadata(&target) {
-        use std::os::unix::fs::MetadataExt;
-        let mut protected = inputs
-            .iter()
-            .filter_map(|item| item.draft.clone())
-            .collect::<Vec<_>>();
-        protected.push(root.join(".state/index.json"));
-        for index in 0..inputs.len() {
-            protected.push(root.join(format!(".state/originals/{index}.spec")));
-            protected.push(root.join(format!(".state/schema/{index}.json")));
-        }
-        for path in protected {
-            let metadata = fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            if metadata.dev() == target_metadata.dev() && metadata.ino() == target_metadata.ino() {
-                return Err(format!(
-                    "{}: output aliases a draft or its state",
-                    output.display()
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn retain(

@@ -273,7 +273,7 @@ For edit, `original_sha256` identifies the source; the nested input hash identif
 the candidate (`report_subject`). Paths have no human presentation suffix.
 Errors have `code`, `message`, and optional `path`/`selected_fields`; selection is
 operation scope, not necessarily the offending field. Codes include
-`unmappable-fields`, `source-changed`, `invalid-draft`, `draft-shape`,
+`unmappable-fields`, `source-changed`, `invalid-draft`,
 `invalid-assignment`, `invalid-candidate`, `static-check-failed`, and the fallback
 `operation-failed`. CLI argument errors can precede JSON. Diagnostics use lowercase
 severity names and remain inside JSON rather than stderr.
