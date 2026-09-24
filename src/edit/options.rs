@@ -46,7 +46,8 @@ pub(crate) struct Options {
     #[arg(long, conflicts_with = "editor")]
     pub check: bool,
     /// Selects the check report format.
-    #[arg(long, value_enum, requires = "check")]
+    // Conflicts can waive `requires`, so reject non-check modes on this option too.
+    #[arg(long, value_enum, requires = "check", conflicts_with_all = ["prepare", "view", "schema", "diff", "stdout", "output", "editor", "force"])]
     pub format: Option<CheckFormat>,
     /// Prints source-to-candidate diffs without writing SPEC files.
     #[arg(long)]

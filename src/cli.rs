@@ -60,9 +60,68 @@ Without a usable terminal or an explicit action, conflicting output is an error.
         #[arg(long, conflicts_with_all = ["path", "stdout", "diff", "force", "skip_existing"])]
         check: bool,
         /// Selects the generation check report format.
-        #[arg(long, value_enum, requires = "check")]
+        // Conflicts can waive `requires`, so reject non-check modes on this option too.
+        #[arg(long, value_enum, requires = "check", conflicts_with_all = ["path", "stdout", "diff", "force", "skip_existing"])]
         format: Option<check_command::CheckFormat>,
         #[command(flatten, next_help_heading = "Output options")]
         output: output_cli::OutputOptions,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    #[test]
+    fn report_format_requires_an_actual_check() {
+        let edit_modes: &[&[&str]] = &[
+            &["--prepare", "drafts"],
+            &["--view"],
+            &["--schema"],
+            &["--diff"],
+            &["--stdout"],
+            &["--output", "other.spec"],
+            &["--editor", "vim"],
+            &["--output", "other.spec", "--force"],
+        ];
+        let gen_modes: &[&[&str]] = &[
+            &["--output", "other.spec"],
+            &["--stdout"],
+            &["--diff"],
+            &["--force"],
+            &["--skip-existing"],
+        ];
+        for (command, input, modes) in [("edit", "ed.spec", edit_modes), ("gen", "ed", gen_modes)] {
+            let parse = |args: &[&str]| {
+                Cli::try_parse_from(
+                    ["ruyipack", command, input]
+                        .into_iter()
+                        .chain(args.iter().copied()),
+                )
+            };
+            for format in ["human", "json"] {
+                assert!(parse(&["--check", "--format", format]).is_ok());
+                assert_eq!(
+                    parse(&["--format", format]).err().map(|error| error.kind()),
+                    Some(ErrorKind::MissingRequiredArgument)
+                );
+                for mode in modes {
+                    assert!(parse(mode).is_ok(), "{command} {mode:?}");
+                    let mut args = vec!["--format", format];
+                    args.extend_from_slice(mode);
+                    for check in [false, true] {
+                        if check {
+                            args.push("--check");
+                        }
+                        assert_eq!(
+                            parse(&args).err().map(|error| error.kind()),
+                            Some(ErrorKind::ArgumentConflict),
+                            "{command} {args:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
