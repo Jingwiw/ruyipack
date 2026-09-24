@@ -202,10 +202,8 @@ impl CheckReport {
 
     /// Writes one deterministic JSON object.
     pub(crate) fn write_json(&self, path: &Path, writer: &mut impl Write) -> io::Result<()> {
-        let report = self.structured(path);
-        let json = serde_json::to_string(&report)
-            .expect("the machine check report contains only JSON-compatible values");
-        writeln!(writer, "{json}")
+        serde_json::to_writer(&mut *writer, &self.structured(path))?;
+        writeln!(writer)
     }
 }
 
@@ -266,4 +264,28 @@ pub(crate) struct Finding {
     pub(crate) severity: Severity,
     pub(crate) message: String,
     pub(crate) span: SourceLocation,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_preserves_writer_error_kind() {
+        struct BrokenWriter;
+        impl Write for BrokenWriter {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let report = CheckReport::incomplete("", vec![], vec![]);
+        let error = report
+            .write_json(Path::new("input.spec"), &mut BrokenWriter)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    }
 }
