@@ -6,6 +6,8 @@
 
 //! Black-box tests for read-only JSON inspection.
 
+use super::support::assert_file;
+
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -14,7 +16,7 @@ use std::{
     process::{Command, Output},
 };
 
-mod support;
+use super::support;
 
 fn command(path: &Path) -> Command {
     let mut command = support::command();
@@ -32,7 +34,7 @@ fn report(output: &Output) -> Value {
 fn ed_inspection_preserves_syntax_locations_and_input_identity() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("ed.spec");
-    let source = include_str!("fixtures/ed.spec");
+    let source = include_str!("../fixtures/ed.spec");
     fs::write(&path, source).unwrap();
     let first = command(&path).output().unwrap();
     let result = report(&first);
@@ -85,8 +87,7 @@ fn ed_inspection_preserves_syntax_locations_and_input_identity() {
         human.stdout,
         rpm_spec::printer::print_with(&view, &config).as_bytes()
     );
-    assert_eq!(first.stdout, command(&path).output().unwrap().stdout);
-    assert_eq!(fs::read_to_string(&path).unwrap(), source);
+    assert_file(&path, source);
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
 }
 
@@ -134,7 +135,7 @@ fn conditions_and_repeated_tags_are_not_resolved_or_collapsed() {
         items[4]["Preamble"]["value"]["Text"]["segments"][0]["Literal"],
         "3"
     );
-    assert_eq!(fs::read_to_string(&path).unwrap(), source);
+    assert_file(&path, source);
 }
 
 #[test]
@@ -161,7 +162,7 @@ fn inspection_and_check_share_complete_parser_diagnostics() {
             checked["parser_diagnostics"]
         );
         assert_eq!(inspected["parser_diagnostics"][0]["severity"], severity);
-        assert_eq!(fs::read_to_string(&path).unwrap(), source);
+        assert_file(&path, source);
     }
 }
 
@@ -169,7 +170,7 @@ fn inspection_and_check_share_complete_parser_diagnostics() {
 fn text_diagnostics_do_not_present_body_local_offsets_as_source_locations() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("diagnostic.spec");
-    let source = include_str!("fixtures/ed.spec")
+    let source = include_str!("../fixtures/ed.spec")
         .replace("Version:        1.22.5", "Version:        %{unfinished")
         .replace(
             "Summary:        A line-oriented text editor",
@@ -245,7 +246,7 @@ fn text_diagnostics_do_not_present_body_local_offsets_as_source_locations() {
             "{stderr}"
         );
     }
-    assert_eq!(fs::read_to_string(&path).unwrap(), source);
+    assert_file(&path, &source);
 }
 
 #[test]

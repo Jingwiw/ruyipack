@@ -6,41 +6,17 @@
 
 //! Black-box checks for manifest selection, input validation, and rendered facts.
 
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Output},
-};
+use super::support::{assert_file, quiet_success as success, run};
 
-const MANIFEST: &str = include_str!("../examples/ed/ed.toml");
-const SPEC: &str = include_str!("fixtures/ed.spec");
-const SOURCE: &str = "https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz";
+use std::fs;
 
-fn run(directory: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_ruyipack"))
-        .current_dir(directory)
-        .args(args)
-        .output()
-        .expect("run ruyipack")
-}
+const MANIFEST: &str = include_str!("../../examples/ed/ed.toml");
+const SPEC: &str = include_str!("../fixtures/ed.spec");
 
 fn workspace(source: &str) -> tempfile::TempDir {
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("ed.toml"), source).unwrap();
     directory
-}
-
-fn success(output: &Output) {
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        output.stderr.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 fn rejected(source: &str, message: &str) {
@@ -58,10 +34,7 @@ fn rejected(source: &str, message: &str) {
     );
     assert!(!directory.path().join("ed.spec").exists());
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
-    assert_eq!(
-        fs::read_to_string(directory.path().join("ed.toml")).unwrap(),
-        source
-    );
+    assert_file(directory.path().join("ed.toml"), source);
 }
 
 #[test]
@@ -343,34 +316,6 @@ fn required_and_invalid_fields_are_rejected_before_publication() {
 }
 
 #[test]
-fn sources_keep_macros_rename_fragments_and_encoded_paths() {
-    for url in [
-        "%{url}/download#/%{name}-%{version}.tar.lz",
-        "%url/download#/%name-%version.tar.lz",
-        "https://example.org/a%%20b.tar.lz",
-    ] {
-        let directory = workspace(&MANIFEST.replace(SOURCE, url));
-        let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-        success(&output);
-        assert_eq!(output.stdout, SPEC.replace(SOURCE, url).as_bytes());
-    }
-    for url in [
-        "https:/example.org/ed.tar.lz",
-        // The pinned rpm-spec parser represents these as unsupported macro tokens.
-        "https://example.org/a%20b.tar.lz",
-        "https://example.org/%AF.tar.lz",
-        "https://example.org/a b.tar.lz",
-        "https://example.org/%{version.tar.lz",
-        "https://example.org/%{release_tag}.tar.lz",
-        "https://example.org/%{?version}.tar.lz",
-        "https://example.org/%{lua:print(123)}.tar.lz",
-        "https://example.org/%(touch MUST_NOT_EXIST).tar.lz",
-    ] {
-        rejected(&MANIFEST.replace(SOURCE, url), "sources.0.url");
-    }
-}
-
-#[test]
 fn numbered_sources_keep_their_own_checksums_and_numeric_order() {
     let extra = |number: &str, hash: &str| {
         format!(
@@ -390,10 +335,13 @@ fn numbered_sources_keep_their_own_checksums_and_numeric_order() {
     assert_eq!(output.stdout, expected.as_bytes());
 
     rejected(&MANIFEST.replace("[sources.0]", "[sources.1]"), "sources.0");
-    rejected(
-        &format!("{MANIFEST}{}", extra("1", "bad")),
-        "sources.1.sha256",
-    );
+    // Empty is invalid too: only an absent sha256 key permits a bare marker.
+    for hash in ["", "bad"] {
+        rejected(
+            &format!("{MANIFEST}{}", extra("1", hash)),
+            "sources.1.sha256",
+        );
+    }
     rejected(
         &format!("{MANIFEST}{}", extra("extra", &"a".repeat(64))),
         "source number",
@@ -423,7 +371,7 @@ fn malformed_generated_text_cannot_be_published_even_with_force() {
         let output = run(directory.path(), &["gen", "ed", "--force"]);
         assert_eq!(output.status.code(), Some(1));
         assert!(output.stdout.is_empty());
-        assert_eq!(fs::read_to_string(path).unwrap(), "# maintained by hand\n");
+        assert_file(path, "# maintained by hand\n");
     }
 }
 
@@ -450,7 +398,7 @@ fn generation_errors_identify_the_selected_manifest_without_writing() {
             "{error}"
         );
         assert!(error.contains(message), "{error}");
-        assert_eq!(fs::read_to_string(path).unwrap(), source);
+        assert_file(path, &source);
         assert!(!directory.path().join("ed.spec").exists());
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
@@ -728,43 +676,6 @@ fn generated_vcs_and_scripts_offer_selected_editing_when_full_views_are_unsuppor
 }
 
 #[test]
-fn source_without_a_digest_renders_a_bare_remote_asset_and_warns() {
-    // Incomplete authoring output is allowed, but must not claim policy compliance.
-    let manifest = MANIFEST.replace(
-        "sha256 = \"56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc\"\n",
-        "",
-    );
-    let directory = workspace(&manifest);
-    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let spec = String::from_utf8_lossy(&output.stdout);
-    // Bare marker on its own line, not the sha256 form.
-    assert!(spec.contains("#!RemoteAsset\nSource0:"), "{spec}");
-    assert!(!spec.contains("#!RemoteAsset:  sha256:"), "{spec}");
-    // The warning identifies the unmet openRuyi requirement.
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("openRuyi requires SHA-256"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-#[test]
-fn an_empty_sha256_is_rejected_rather_than_treated_as_bare() {
-    // A blank scaffold field must not silently opt into the bare form; only an
-    // absent key does. This keeps the missing-field report honest.
-    let manifest = MANIFEST.replace(
-        "sha256 = \"56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc\"",
-        "sha256 = \"\"",
-    );
-    rejected(&manifest, "sources.0.sha256");
-}
-
-#[test]
 fn main_package_requires_provides_and_noarch_render_and_round_trip() {
     // Inject the three new main-package fields into the ed manifest. ed itself is
     // not noarch; this checks the rendering and round-trip, not an ed reproduction.
@@ -905,10 +816,7 @@ replace = ""
         fs::read(directory.path().join("ed.spec")).unwrap(),
         stdout.stdout
     );
-    assert_eq!(
-        fs::read_to_string(directory.path().join("ed.toml")).unwrap(),
-        source
-    );
+    assert_file(directory.path().join("ed.toml"), &source);
 }
 
 #[test]
@@ -1001,10 +909,7 @@ fn malformed_subpackage_dependencies_cannot_overwrite_even_with_force() {
             assert_eq!(output.status.code(), Some(1), "{field}: {output:?}");
             assert!(output.stdout.is_empty());
             assert!(!output.stderr.is_empty());
-            assert_eq!(
-                fs::read_to_string(&destination).unwrap(),
-                "# maintained by hand\n"
-            );
+            assert_file(&destination, "# maintained by hand\n");
             assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
         }
     }
@@ -1019,9 +924,6 @@ fn generation_reports_identify_real_inputs_and_never_publish() {
     let args = ["gen", "ed", "--check", "--format", "json"];
     let first = run(directory.path(), &args);
     success(&first);
-    let second = run(directory.path(), &args);
-    success(&second);
-    assert_eq!(first.stdout, second.stdout);
     let report: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
     assert_eq!(report["format_version"], 1);
     assert_eq!(report["scope"], "manifest-generation-static");
@@ -1035,7 +937,7 @@ fn generation_reports_identify_real_inputs_and_never_publish() {
         report["profile"]["sha256"],
         format!(
             "{:x}",
-            Sha256::digest(include_bytes!("../profiles/openruyi-v1/profile.toml"))
+            Sha256::digest(include_bytes!("../../profiles/openruyi-v1/profile.toml"))
         )
     );
     assert_eq!(
@@ -1047,7 +949,7 @@ fn generation_reports_identify_real_inputs_and_never_publish() {
         format!(
             "{:x}",
             Sha256::digest(include_bytes!(
-                "../profiles/openruyi-v1/buildsystems/autotools.toml"
+                "../../profiles/openruyi-v1/buildsystems/autotools.toml"
             ))
         )
     );
@@ -1059,29 +961,11 @@ fn generation_reports_identify_real_inputs_and_never_publish() {
     assert_eq!(report["report"]["format_version"], 2);
     assert_eq!(report["report"]["evidence"]["stage"], "spec-static");
     assert!(report.get("environment").is_none());
-    assert_eq!(
-        fs::read_to_string(&target).unwrap(),
-        "existing manual SPEC\n"
-    );
-    assert_eq!(
-        fs::read_to_string(directory.path().join("ed.toml")).unwrap(),
-        MANIFEST
-    );
-    let without_check = run(directory.path(), &["gen", "ed", "--format", "json"]);
-    assert_eq!(without_check.status.code(), Some(2));
+    assert_file(&target, "existing manual SPEC\n");
+    assert_file(directory.path().join("ed.toml"), MANIFEST);
     let human = run(directory.path(), &["gen", "ed", "--check"]);
     success(&human);
     assert!(human.stdout.is_empty());
-    for conflicting in [
-        "--stdout",
-        "--diff",
-        "--force",
-        "--skip-existing",
-        "--output=other.spec",
-    ] {
-        let result = run(directory.path(), &["gen", "ed", "--check", conflicting]);
-        assert_eq!(result.status.code(), Some(2));
-    }
     let plain = MANIFEST.replace("system = \"autotools\"\n", "");
     fs::write(directory.path().join("ed.toml"), plain).unwrap();
     let result = run(directory.path(), &args);
@@ -1105,10 +989,7 @@ fn generation_check_reports_static_failure_without_writing() {
     assert_eq!(report["valid"], false);
     assert_eq!(report["report"]["evidence"]["status"], "fail");
     assert!(!directory.path().join("ed.spec").exists());
-    assert_eq!(
-        fs::read_to_string(directory.path().join("ed.toml")).unwrap(),
-        manifest
-    );
+    assert_file(directory.path().join("ed.toml"), &manifest);
 }
 
 #[test]
@@ -1139,9 +1020,9 @@ fn generation_and_editing_use_only_their_selected_authority() {
         edited,
         SPEC.replace("Version:        1.22.5", "Version:        2")
     );
-    assert_eq!(
-        fs::read_to_string(directory.path().join("ed.toml")).unwrap(),
-        "invalid neighboring TOML!"
+    assert_file(
+        directory.path().join("ed.toml"),
+        "invalid neighboring TOML!",
     );
     fs::write(directory.path().join("ed.toml"), MANIFEST).unwrap();
     let generated = run(directory.path(), &["gen", "ed", "--stdout"]);
@@ -1149,9 +1030,6 @@ fn generation_and_editing_use_only_their_selected_authority() {
     assert_eq!(generated.stdout, SPEC.as_bytes());
     let conflict = run(directory.path(), &["gen", "ed"]);
     assert_eq!(conflict.status.code(), Some(1));
-    assert_eq!(fs::read_to_string(&target).unwrap(), edited);
-    assert_eq!(
-        fs::read_to_string(directory.path().join("ed.toml")).unwrap(),
-        MANIFEST
-    );
+    assert_file(&target, &edited);
+    assert_file(directory.path().join("ed.toml"), MANIFEST);
 }

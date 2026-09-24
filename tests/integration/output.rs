@@ -6,9 +6,11 @@
 
 //! Black-box checks for generated-file destinations and read-only previews.
 
+use super::support::assert_file;
+
 use std::{fs, path::Path, process::Command};
 
-const MANIFEST: &str = include_str!("../examples/ed/ed.toml");
+const MANIFEST: &str = include_str!("../../examples/ed/ed.toml");
 
 fn workspace() -> tempfile::TempDir {
     let directory = tempfile::tempdir().expect("create workspace");
@@ -72,10 +74,7 @@ fn diff_never_writes_new_changed_or_identical_targets() {
     assert!(identical.status.success());
     assert!(identical.stdout.is_empty());
     assert_eq!(fs::read(&path).unwrap(), preview.stdout);
-    assert_eq!(
-        fs::read_to_string(directory.path().join("ed.toml")).unwrap(),
-        MANIFEST
-    );
+    assert_file(directory.path().join("ed.toml"), MANIFEST);
 }
 
 #[test]
@@ -111,7 +110,7 @@ fn output_selects_a_cwd_relative_file_and_uses_the_same_overwrite_policy() {
     assert!(help.contains("review.spec.new"));
     // gen does accept --output, so its conflict help must keep advertising it.
     assert!(help.contains("--output FILE"), "{help}");
-    assert_eq!(fs::read_to_string(&target).unwrap(), "hand edited\n");
+    assert_file(&target, "hand edited\n");
 
     let replaced = gen_command(directory.path())
         .args(args)
@@ -146,32 +145,7 @@ fn skip_existing_keeps_edits_and_creates_missing_targets() {
         .unwrap();
     assert!(kept.status.success());
     assert!(kept.stdout.is_empty());
-    assert_eq!(fs::read_to_string(target).unwrap(), "hand edited\n");
-}
-
-#[test]
-fn clap_rejects_incompatible_output_options_before_reading_a_manifest() {
-    let directory = tempfile::tempdir().unwrap();
-    for args in [
-        ["--force", "--skip-existing"].as_slice(),
-        &["--diff", "--force"],
-        &["--diff", "--skip-existing"],
-        &["--stdout", "--diff"],
-        &["--stdout", "--force"],
-        &["--stdout", "--skip-existing"],
-        &["--stdout", "--output=other.spec"],
-    ] {
-        for ordered in [args.to_vec(), args.iter().rev().copied().collect()] {
-            let result = gen_command(directory.path())
-                .args(ordered)
-                .output()
-                .unwrap();
-            assert_eq!(result.status.code(), Some(2), "{args:?}");
-            assert!(result.stdout.is_empty());
-            assert!(String::from_utf8_lossy(&result.stderr).contains("cannot be used with"));
-        }
-    }
-    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    assert_file(target, "hand edited\n");
 }
 
 #[test]

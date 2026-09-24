@@ -6,13 +6,15 @@
 
 //! Source context and field selection compose without broadening the edit boundary.
 
+use super::support::{assert_file, rejected, success};
+
 use std::{
     fs,
     path::Path,
     process::{Command, Output, Stdio},
 };
 
-const SPEC: &str = include_str!("fixtures/ed.spec");
+const SPEC: &str = include_str!("../fixtures/ed.spec");
 const URL: &str = "https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz";
 const HASH: &str = "56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc";
 
@@ -30,19 +32,6 @@ fn run(directory: &Path, args: &[&str]) -> Output {
         .stdin(Stdio::null())
         .output()
         .unwrap()
-}
-
-fn success(output: &Output) {
-    assert!(output.status.success(), "{output:?}");
-}
-
-fn rejected(output: &Output, message: &str) {
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains(message),
-        "{output:?}"
-    );
 }
 
 fn selected_view(directory: &Path, field: &str) -> Output {
@@ -99,10 +88,7 @@ fn unavailable_context_blocks_only_sources_that_reference_it() {
             &selected_view(directory.path(), "sources.0.url"),
             "https://example.org/archive.tar.lz",
         );
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            literal
-        );
+        assert_file(directory.path().join("ed.spec"), &literal);
     }
 }
 
@@ -175,10 +161,7 @@ fn unknown_include_and_statement_invalidate_context_not_literal_source_urls() {
             ),
             "unavailable or ambiguous",
         );
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            literal
-        );
+        assert_file(directory.path().join("ed.spec"), &literal);
     }
 }
 
@@ -198,10 +181,7 @@ fn an_unambiguous_package_context_is_used_without_entering_the_selected_document
     );
     success(&output);
     assert_eq!(output.stdout, SPEC.replace(URL, replacement).as_bytes());
-    assert_eq!(
-        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-        SPEC
-    );
+    assert_file(directory.path().join("ed.spec"), SPEC);
 }
 
 #[test]
@@ -235,10 +215,7 @@ fn a_source_url_draft_cannot_add_checksum_or_package_context_fields() {
         assert_eq!(output.status.code(), Some(1), "{output:?}");
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(report["valid"], false);
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            SPEC
-        );
+        assert_file(directory.path().join("ed.spec"), SPEC);
     }
     fs::write(&draft, allowed).unwrap();
     let output = run(directory.path(), &["--from", "drafts", "--stdout"]);
@@ -265,15 +242,12 @@ fn selecting_one_source_url_preserves_an_unmapped_sibling_source_and_its_digest(
     );
     success(&output);
     assert_eq!(output.stdout, source.replace(URL, replacement).as_bytes());
-    assert_eq!(
-        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-        source
-    );
+    assert_file(directory.path().join("ed.spec"), &source);
 }
 
 #[test]
 fn implicit_source_numbers_follow_rpm_before_field_selection() {
-    for case in include_str!("fixtures/source-numbering.tsv")
+    for case in include_str!("../fixtures/source-numbering.tsv")
         .lines()
         .filter(|line| !line.starts_with('#') && !line.is_empty())
     {
@@ -332,10 +306,7 @@ fn implicit_source_numbers_follow_rpm_before_field_selection() {
                 "unknown field",
             );
         }
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            source
-        );
+        assert_file(directory.path().join("ed.spec"), &source);
     }
 }
 
@@ -374,10 +345,7 @@ fn uncertain_implicit_source_numbers_do_not_block_unrelated_edits() {
                 .replace("Version:        1.22.5", "Version:        2")
                 .as_bytes()
         );
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            source
-        );
+        assert_file(directory.path().join("ed.spec"), &source);
     }
 }
 
@@ -403,10 +371,7 @@ fn a_damaged_selected_digest_can_be_repaired_without_changing_other_bytes() {
                 ),
                 "expected 64 hexadecimal digits",
             );
-            assert_eq!(
-                fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-                source
-            );
+            assert_file(directory.path().join("ed.spec"), &source);
         }
         success(&run(
             directory.path(),
@@ -426,14 +391,11 @@ fn a_damaged_selected_digest_can_be_repaired_without_changing_other_bytes() {
         let preview = run(directory.path(), &["--from", "drafts", "--stdout"]);
         success(&preview);
         assert_eq!(preview.stdout, SPEC.replace(HASH, &replacement).as_bytes());
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            source
-        );
+        assert_file(directory.path().join("ed.spec"), &source);
         success(&run(directory.path(), &["--from", "drafts"]));
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            SPEC.replace(HASH, &replacement)
+        assert_file(
+            directory.path().join("ed.spec"),
+            &(SPEC.replace(HASH, &replacement)),
         );
     }
 }
@@ -455,8 +417,5 @@ fn a_source_url_edit_preserves_its_unselected_damaged_digest() {
     success(&output);
     assert_eq!(output.stdout, source.replace(URL, replacement).as_bytes());
     assert!(String::from_utf8_lossy(&output.stderr).contains("review required"));
-    assert_eq!(
-        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-        source
-    );
+    assert_file(directory.path().join("ed.spec"), &source);
 }

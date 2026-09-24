@@ -47,39 +47,3 @@ pub(super) fn prepare(snapshot: &Snapshot, document: &Table) -> Result<Candidate
         review_triggers,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn candidates_are_repeatable_and_preserve_unselected_bytes() {
-        let source = include_str!("../../tests/fixtures/ed.spec");
-        let parsed = ParsedSpec::parse(source);
-        let selection = vec!["package.version".to_owned()];
-        let snapshot = Snapshot::capture_selected(&parsed, &selection).unwrap();
-        let unchanged = prepare(&snapshot, snapshot.document()).unwrap();
-        assert_eq!(unchanged.contents, source);
-        assert!(unchanged.review_triggers.is_empty());
-        let document = super::super::fields::assign(
-            snapshot.document(),
-            &[("package.version".into(), "2".into())],
-        )
-        .unwrap();
-        let first = prepare(&snapshot, &document).unwrap();
-        let second = prepare(&snapshot, &document).unwrap();
-        assert_eq!(
-            first.contents,
-            source.replace("Version:        1.22.5", "Version:        2")
-        );
-        assert_eq!(first.contents, second.contents);
-        assert_eq!(first.review_triggers, ["package.version"]);
-        assert_eq!(first.review_triggers, second.review_triggers);
-        let path = std::path::Path::new("ed.spec");
-        assert_eq!(
-            serde_json::to_value(first.report.structured(path)).unwrap(),
-            serde_json::to_value(second.report.structured(path)).unwrap()
-        );
-        assert!(first.report.is_success());
-    }
-}

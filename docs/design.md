@@ -96,12 +96,17 @@ permission handling, stale-source checks, and their limits.
 
 ## Regression contracts
 
-- `edit::candidate` tests repeatability and exact preservation outside the selected
-  version range; `tests/edit_selected.rs` covers unsupported unrelated syntax.
+CLI tests share `tests/integration/main.rs`, with domain modules that can be run
+separately (for example, `cargo test --test integration edit::`). Closed-stream
+regressions remain isolated in `tests/stdio.rs`. Argument-conflict matrices use
+`Cli::try_parse_from`; CLI cases retain exit-status and file-safety checks.
+
+- `spec::document` property tests and `tests/integration/edit_selected.rs` check
+  exact preservation outside selected fields, including unsupported syntax.
 - `file_output` tests no-op byte/inode/mtime preservation, stale-source rejection,
   and partial I/O failure with exact already-written paths.
-- `tests/gen.rs` verifies operation authority, deterministic provenance, and
+- `tests/integration/generation.rs` checks input authority, provenance, and
   validation failures without publication.
-- `tests/edit.rs` checks draft identity/shape failures and structured error codes.
-- `tests/source_validation.rs` and `tests/edit_source_selection.rs` distinguish
+- `tests/integration/edit.rs` checks draft identity/shape failures and error codes.
+- `tests/integration/source_validation.rs` and `edit_source_selection.rs` distinguish
   safely locating an old invalid value from validating its replacement.

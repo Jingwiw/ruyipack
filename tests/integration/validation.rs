@@ -6,10 +6,12 @@
 
 //! Entry-point checks for shared package validation.
 
+use super::support::{assert_file, run};
+
 use std::{fs, process::Command};
 
-const SPEC: &str = include_str!("fixtures/ed.spec");
-const MANIFEST: &str = include_str!("../examples/ed/ed.toml");
+const SPEC: &str = include_str!("../fixtures/ed.spec");
+const MANIFEST: &str = include_str!("../../examples/ed/ed.toml");
 const LICENSE: &str = "GPL-3.0-or-later AND LGPL-2.1-or-later";
 const SPEC_LICENSE: &str = concat!("# SPDX-License-", "Identifier: MulanPSL-2.0\n");
 
@@ -52,22 +54,16 @@ fn spec_license_uses_spdx_checks_without_changing_the_package_license() {
         error.contains("RPK001") && error.contains("spec.license"),
         "{error}"
     );
-    assert_eq!(
-        fs::read_to_string(dir.path().join("ed.spec")).unwrap(),
-        SPEC
-    );
-    assert_eq!(
-        fs::read_to_string(dir.path().join("invalid.spec")).unwrap(),
-        invalid
-    );
+    assert_file(dir.path().join("ed.spec"), SPEC);
+    assert_file(dir.path().join("invalid.spec"), &invalid);
 
     let expression = "MIT AND (Apache-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0)";
     let assignment = format!("spec.license={expression}");
     let output = run(dir.path(), &["edit", "ed.spec", "--set", &assignment]);
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(
-        fs::read_to_string(dir.path().join("ed.spec")).unwrap(),
-        SPEC.replace("MulanPSL-2.0", expression)
+    assert_file(
+        dir.path().join("ed.spec"),
+        &(SPEC.replace("MulanPSL-2.0", expression)),
     );
     assert!(run(dir.path(), &["check", "ed.spec"]).status.success());
 }
@@ -88,10 +84,7 @@ fn spec_license_header_scope_keeps_missing_and_duplicate_edit_policy() {
             &["edit", "ed.spec", "--set", "spec.license=MIT"],
         );
         assert_eq!(edited.status.code(), Some(1), "{edited:?}");
-        assert_eq!(
-            fs::read_to_string(dir.path().join("ed.spec")).unwrap(),
-            source
-        );
+        assert_file(dir.path().join("ed.spec"), &source);
     }
     let source = SPEC.replace(
         SPEC_LICENSE,
@@ -155,10 +148,7 @@ fn invalid_license_is_rejected_by_check_gen_and_edit_without_writes() {
             error.contains("RPK001") && error.contains("package.license"),
             "{error}"
         );
-        assert_eq!(
-            fs::read_to_string(dir.path().join("ed.spec")).unwrap(),
-            SPEC
-        );
+        assert_file(dir.path().join("ed.spec"), SPEC);
     }
 }
 
@@ -227,20 +217,8 @@ fn license_checks_visit_subpackages_and_conditions_without_expanding_macros() {
             let end = usize::try_from(span["end_byte"].as_u64().unwrap()).unwrap();
             assert!(source[start..end].starts_with("License:"));
         }
-        assert_eq!(
-            fs::read_to_string(dir.path().join("ed.spec")).unwrap(),
-            source
-        );
+        assert_file(dir.path().join("ed.spec"), &source);
     }
-}
-
-fn run(directory: &std::path::Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_ruyipack"))
-        .current_dir(directory)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .unwrap()
 }
 
 #[test]
@@ -278,14 +256,8 @@ fn literal_metadata_checks_reject_invalid_edits_and_keep_sources_unchanged() {
                 "{output:?}"
             );
             assert!(output.stdout.is_empty());
-            assert_eq!(
-                fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-                SPEC
-            );
-            assert_eq!(
-                fs::read_to_string(directory.path().join("invalid.spec")).unwrap(),
-                invalid
-            );
+            assert_file(directory.path().join("ed.spec"), SPEC);
+            assert_file(directory.path().join("invalid.spec"), &invalid);
         }
     }
 }
@@ -317,10 +289,7 @@ fn editor_and_saved_drafts_share_metadata_checks() {
     let output = run(directory.path(), &["edit", "--from", "drafts"]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("RPK002"));
-    assert_eq!(
-        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-        SPEC
-    );
+    assert_file(directory.path().join("ed.spec"), SPEC);
 
     #[cfg(unix)]
     {
@@ -348,10 +317,7 @@ fn editor_and_saved_drafts_share_metadata_checks() {
             error.contains("RPK002") && error.contains("Drafts retained"),
             "{error}"
         );
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            SPEC
-        );
+        assert_file(directory.path().join("ed.spec"), SPEC);
     }
 }
 
@@ -378,10 +344,7 @@ fn metadata_checks_preserve_literal_versions_http_and_unevaluated_macros() {
         );
         assert!(output.status.success(), "{field}: {output:?}");
         assert!(String::from_utf8_lossy(&output.stdout).contains(value));
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            SPEC
-        );
+        assert_file(directory.path().join("ed.spec"), SPEC);
     }
     fs::write(
         directory.path().join("ed.spec"),
@@ -443,10 +406,7 @@ fn autotools_requirements_are_checked_by_check_gen_and_saved_edits() {
             error.contains("RPK004") && error.contains("autoconf"),
             "{error}"
         );
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            SPEC
-        );
+        assert_file(directory.path().join("ed.spec"), SPEC);
     }
 }
 
@@ -543,6 +503,6 @@ fn independent_incomplete_reasons_survive_each_other_and_confirmed_failures() {
         let diagnostics = String::from_utf8(human.stderr).unwrap();
         assert!(diagnostics.contains("license expressions require RPM evaluation"));
         assert!(diagnostics.contains("build requirements require RPM evaluation"));
-        assert_eq!(fs::read_to_string(&path).unwrap(), source);
+        assert_file(&path, &source);
     }
 }

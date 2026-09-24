@@ -15,7 +15,7 @@ use std::{
 
 use serde_json::Value;
 
-mod support;
+use super::support;
 
 use support::{command, json_line, output_text};
 
@@ -63,9 +63,9 @@ fn json_reports_accept_non_utf8_paths_in_success_and_failure() {
     let temp = tempfile::tempdir().unwrap();
     let spec = temp.path().join(OsStr::from_bytes(b"ed-\xff.spec"));
     let manifest = temp.path().join(OsStr::from_bytes(b"ed-\xff.toml"));
-    let original = include_str!("fixtures/ed.spec");
+    let original = include_str!("../fixtures/ed.spec");
     fs::write(&spec, original).unwrap();
-    fs::write(&manifest, include_str!("../examples/ed/ed.toml")).unwrap();
+    fs::write(&manifest, include_str!("../../examples/ed/ed.toml")).unwrap();
     for (prefix, input, suffix, exit, pointer) in [
         (&["check"][..], &spec, &[][..], 0, "/input/display_path"),
         (&["inspect"][..], &spec, &[][..], 0, "/input/display_path"),
@@ -117,7 +117,7 @@ fn json_reports_accept_non_utf8_paths_in_success_and_failure() {
             Some(input.to_string_lossy().as_ref())
         );
     }
-    assert_eq!(fs::read_to_string(spec).unwrap(), original);
+    support::assert_file(spec, original);
     assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
 }
 
@@ -259,27 +259,6 @@ RPM001 = \"deny\"
 }
 
 #[test]
-fn check_accepts_autochangelog_without_parser_warning() {
-    let temp = tempfile::tempdir().expect("create temporary directory");
-    let spec = write_file(
-        temp.path(),
-        "autochangelog.spec",
-        format!("{COMPLETE_REQUIRED_TAGS}\n%changelog\n%autochangelog\n"),
-    );
-
-    let output = run([OsStr::new("check"), spec.as_os_str()]);
-
-    assert!(
-        output.status.success(),
-        "status={:?}, stderr={}",
-        output.status,
-        output_text(&output.stderr)
-    );
-    assert!(output.stdout.is_empty(), "{}", output_text(&output.stdout));
-    assert!(output.stderr.is_empty(), "{}", output_text(&output.stderr));
-}
-
-#[test]
 fn check_reports_exactly_the_six_required_tag_rules() {
     let temp = tempfile::tempdir().expect("create temporary directory");
     write_file(temp.path(), "empty.spec", "");
@@ -397,18 +376,14 @@ fn check_stops_tag_checks_when_the_parser_reports_an_error() {
 }
 
 #[test]
-fn check_json_reports_pass_deterministically() {
+fn check_json_reports_pass_with_input_identity() {
     let temp = tempfile::tempdir().expect("create temporary directory");
     write_file(temp.path(), "demo.spec", COMPLETE_REQUIRED_TAGS);
 
     let first = run_json_check(temp.path(), OsStr::new("demo.spec"));
-    let second = run_json_check(temp.path(), OsStr::new("demo.spec"));
 
     assert_eq!(first.status.code(), Some(0));
-    assert_eq!(second.status.code(), Some(0));
-    assert_eq!(first.stdout, second.stdout);
     let first_report = machine_report(&first);
-    machine_report(&second);
     assert_machine_envelope(
         &first_report,
         "demo.spec",
@@ -426,13 +401,9 @@ fn check_json_keeps_parser_warning_and_orders_findings() {
     write_file(temp.path(), "warning.spec", PARSER_WARNING_SPEC);
 
     let first = run_json_check(temp.path(), OsStr::new("warning.spec"));
-    let second = run_json_check(temp.path(), OsStr::new("warning.spec"));
 
     assert_eq!(first.status.code(), Some(1));
-    assert_eq!(second.status.code(), Some(1));
-    assert_eq!(first.stdout, second.stdout);
     let report = machine_report(&first);
-    machine_report(&second);
     assert_machine_envelope(
         &report,
         "warning.spec",

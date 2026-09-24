@@ -6,29 +6,14 @@
 
 //! Shared Source/RemoteAsset behavior across real generation and editing commands.
 
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Output},
-};
+use super::support::{assert_file, quiet_success as success, rejected, run};
 
-const MANIFEST: &str = include_str!("../examples/ed/ed.toml");
-const SPEC: &str = include_str!("fixtures/ed.spec");
+use std::{fs, process::Output};
+
+const MANIFEST: &str = include_str!("../../examples/ed/ed.toml");
+const SPEC: &str = include_str!("../fixtures/ed.spec");
 const URL: &str = "https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz";
 const HASH: &str = "56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc";
-
-fn run(directory: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_ruyipack"))
-        .current_dir(directory)
-        .args(args)
-        .output()
-        .unwrap()
-}
-
-fn success(output: &Output) {
-    assert!(output.status.success(), "{output:?}");
-    assert!(output.stderr.is_empty(), "{output:?}");
-}
 
 fn reviewed(output: &Output, field: &str) {
     assert!(output.status.success(), "{output:?}");
@@ -37,15 +22,6 @@ fn reviewed(output: &Output, field: &str) {
     assert!(
         stderr.contains(&format!("review required after changing {field}:")),
         "{stderr}"
-    );
-}
-
-fn rejected(output: &Output, field: &str) {
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains(field),
-        "{output:?}"
     );
 }
 
@@ -135,10 +111,7 @@ fn invalid_or_unsupported_sources_can_be_viewed_but_not_published() {
         let document: toml::Table =
             toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
         assert_eq!(document["sources"]["0"]["url"].as_str(), Some(url));
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            spec
-        );
+        assert_file(directory.path().join("ed.spec"), &spec);
         fs::write(directory.path().join("ed.spec"), SPEC).unwrap();
         rejected(
             &run(
@@ -147,10 +120,7 @@ fn invalid_or_unsupported_sources_can_be_viewed_but_not_published() {
             ),
             "sources.0.url",
         );
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            SPEC
-        );
+        assert_file(directory.path().join("ed.spec"), SPEC);
         assert!(!directory.path().join("MUST_NOT_EXIST").exists());
     }
 }
@@ -172,10 +142,7 @@ fn selected_source_repairs_validate_the_new_url_not_the_old_one() {
             &run(directory.path(), &["edit", "ed.spec", "--set", &same]),
             "sources.0.url",
         );
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            original
-        );
+        assert_file(directory.path().join("ed.spec"), &original);
         let assignment = format!("sources.0.url={replacement}");
         let preview = run(
             directory.path(),
@@ -183,15 +150,12 @@ fn selected_source_repairs_validate_the_new_url_not_the_old_one() {
         );
         reviewed(&preview, "sources.0.url");
         assert_eq!(preview.stdout, SPEC.replace(URL, replacement).as_bytes());
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            original
-        );
+        assert_file(directory.path().join("ed.spec"), &original);
         let saved = run(directory.path(), &["edit", "ed.spec", "--set", &assignment]);
         assert!(saved.status.success(), "{saved:?}");
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            SPEC.replace(URL, replacement)
+        assert_file(
+            directory.path().join("ed.spec"),
+            &(SPEC.replace(URL, replacement)),
         );
     }
 }
@@ -204,6 +168,7 @@ fn generated_bare_sources_remain_editable_without_inventing_a_digest() {
     let generated = run(directory.path(), &["gen", "ed", "--stdout"]);
     assert!(generated.status.success(), "{generated:?}");
     assert!(String::from_utf8_lossy(&generated.stderr).contains("no sha256"));
+    assert!(String::from_utf8_lossy(&generated.stderr).contains("openRuyi requires SHA-256"));
     let spec = String::from_utf8(generated.stdout).unwrap();
     assert_eq!(
         spec,
@@ -236,15 +201,12 @@ fn generated_bare_sources_remain_editable_without_inventing_a_digest() {
     );
     reviewed(&edited, "sources.0.url");
     assert_eq!(edited.stdout, spec.replace(URL, replacement).as_bytes());
-    assert_eq!(
-        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-        spec
-    );
+    assert_file(directory.path().join("ed.spec"), &spec);
     let saved = run(directory.path(), &["edit", "ed.spec", "--set", &assignment]);
     assert!(saved.status.success(), "{saved:?}");
-    assert_eq!(
-        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-        spec.replace(URL, replacement)
+    assert_file(
+        directory.path().join("ed.spec"),
+        &(spec.replace(URL, replacement)),
     );
     for (malformed, error) in [
         (
@@ -272,10 +234,7 @@ fn generated_bare_sources_remain_editable_without_inventing_a_digest() {
             &run(directory.path(), &["edit", "ed.spec", "--view"]),
             error,
         );
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            malformed
-        );
+        assert_file(directory.path().join("ed.spec"), &malformed);
     }
 }
 
@@ -370,9 +329,9 @@ fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
         let checked = run(directory.path(), &["edit", "ed.spec", "--check"]);
         assert_eq!(checked.status.code(), Some(1), "{checked:?}");
         assert!(String::from_utf8_lossy(&checked.stderr).contains("64 hexadecimal digits"));
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            SPEC.replace(HASH, &digest)
+        assert_file(
+            directory.path().join("ed.spec"),
+            &(SPEC.replace(HASH, &digest)),
         );
         fs::write(directory.path().join("ed.spec"), SPEC).unwrap();
         rejected(
@@ -387,10 +346,7 @@ fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
             ),
             "64 hexadecimal digits",
         );
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            SPEC
-        );
+        assert_file(directory.path().join("ed.spec"), SPEC);
     }
 }
 
@@ -504,10 +460,7 @@ fn remote_asset_digests_stay_bound_to_the_adjacent_source_identity() {
             &run(directory.path(), &["edit", "ed.spec", "--view"]),
             "RemoteAsset",
         );
-        assert_eq!(
-            fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-            spec
-        );
+        assert_file(directory.path().join("ed.spec"), &spec);
     }
 }
 
@@ -542,10 +495,7 @@ fn authoring_rejects_url_credentials_without_echoing_them() {
             assert!(!directory.path().join("ed.spec.new").exists());
         }
     }
-    assert_eq!(
-        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-        SPEC
-    );
+    assert_file(directory.path().join("ed.spec"), SPEC);
 }
 
 #[test]
@@ -582,8 +532,5 @@ fn unselected_credential_urls_do_not_block_version_edits_or_prevent_repairs() {
     );
     reviewed(&repaired, "sources.0.url");
     assert!(!String::from_utf8_lossy(&repaired.stdout).contains("private-marker"));
-    assert_eq!(
-        fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
-        source
-    );
+    assert_file(directory.path().join("ed.spec"), &source);
 }

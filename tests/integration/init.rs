@@ -6,17 +6,15 @@
 
 //! Scaffold contents, local directory checks, identity, and the existing gen consumer.
 
+use super::support::{assert_file, success};
+
 use std::{
     fs,
     path::Path,
     process::{Command, Output},
 };
 
-#[allow(
-    dead_code,
-    reason = "The shared helper also supports JSON report tests."
-)]
-mod support;
+use super::support;
 use support::output_text;
 
 fn command(directory: &Path) -> Command {
@@ -36,10 +34,6 @@ fn command(directory: &Path) -> Command {
 
 fn run(directory: &Path, args: &[&str]) -> Output {
     command(directory).args(args).output().unwrap()
-}
-
-fn success(output: &Output) {
-    assert!(output.status.success(), "{output:?}");
 }
 
 fn document(output: &Output) -> toml::Value {
@@ -80,7 +74,7 @@ fn comment_modes_share_fields_and_filled_scaffolds_use_gen() {
     assert!(incomplete.stdout.is_empty());
     assert!(!root.join("ed.spec").exists());
 
-    let filled: toml::Value = toml::from_str(include_str!("../examples/ed/ed.toml")).unwrap();
+    let filled: toml::Value = toml::from_str(include_str!("../../examples/ed/ed.toml")).unwrap();
     // Populate the scaffold's existing authoring fields, then select the already supported build system.
     for section in ["spec", "package", "sources", "build-requires"] {
         for key in scaffold[section].as_table().unwrap().keys() {
@@ -101,7 +95,7 @@ fn comment_modes_share_fields_and_filled_scaffolds_use_gen() {
     success(&generated);
     assert_eq!(
         output_text(&generated.stdout),
-        include_str!("fixtures/ed.spec")
+        include_str!("../fixtures/ed.spec")
     );
 }
 
@@ -124,7 +118,7 @@ fn full_comments_offer_optional_subpackages_that_feed_generation() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(!example.is_empty(), "missing commented subpackage example");
-    let source = include_str!("../examples/ed/ed.toml").to_owned() + "\n" + &example;
+    let source = include_str!("../../examples/ed/ed.toml").to_owned() + "\n" + &example;
     fs::write(root.join("ed.toml"), source).unwrap();
     let generated = run(root, &["gen", "ed", "--stdout"]);
     success(&generated);
@@ -210,7 +204,7 @@ fn init_reuses_output_conflicts_without_exposing_a_second_path_option() {
     for action in ["--stdout", "--diff", "--skip-existing"] {
         let output = run(root, &["init", "demo", "--dir", "output", action]);
         success(&output);
-        assert_eq!(fs::read_to_string(&target).unwrap(), "# manual content\n");
+        assert_file(&target, "# manual content\n");
     }
     success(&run(root, &["init", "demo", "--dir", "output", "--force"]));
     assert_eq!(fs::read(&target).unwrap(), expected);
@@ -342,7 +336,7 @@ fn autotools_scaffolds_share_the_contract_and_feed_existing_generation() {
     assert!(output_text(&full.stdout).contains("autoreconf -fiv"));
     assert!(!output_text(&standard.stdout).contains("autoreconf"));
     let contract: toml::Value = toml::from_str(include_str!(
-        "../profiles/openruyi-v1/buildsystems/autotools.toml"
+        "../../profiles/openruyi-v1/buildsystems/autotools.toml"
     ))
     .unwrap();
     assert_eq!(scaffold["build"]["system"], contract["name"]);
@@ -351,7 +345,7 @@ fn autotools_scaffolds_share_the_contract_and_feed_existing_generation() {
         contract["build-requires"]
     );
     assert!(scaffold["build"].get("stages").is_none());
-    let fixture: toml::Value = toml::from_str(include_str!("../examples/ed/ed.toml")).unwrap();
+    let fixture: toml::Value = toml::from_str(include_str!("../../examples/ed/ed.toml")).unwrap();
     for field in ["spec", "package", "sources"] {
         scaffold[field] = fixture[field].clone();
     }
@@ -365,7 +359,7 @@ fn autotools_scaffolds_share_the_contract_and_feed_existing_generation() {
     success(&generated);
     assert_eq!(
         output_text(&generated.stdout),
-        include_str!("fixtures/ed.spec")
+        include_str!("../fixtures/ed.spec")
     );
 
     // Optional guidance must describe fields that the generator already consumes.
@@ -402,12 +396,12 @@ fn cmake_and_meson_scaffolds_render_without_fabricated_requirements() {
     let cases = [
         (
             "cmake",
-            include_str!("../profiles/openruyi-v1/buildsystems/cmake.toml"),
+            include_str!("../../profiles/openruyi-v1/buildsystems/cmake.toml"),
             ["%cmake", "%cmake_build", "%cmake_install", "%ctest"],
         ),
         (
             "meson",
-            include_str!("../profiles/openruyi-v1/buildsystems/meson.toml"),
+            include_str!("../../profiles/openruyi-v1/buildsystems/meson.toml"),
             ["%meson", "%meson_build", "%meson_install", "%meson_test"],
         ),
     ];

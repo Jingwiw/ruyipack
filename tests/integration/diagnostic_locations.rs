@@ -6,10 +6,12 @@
 
 //! Parser diagnostic locations must not contradict their original source.
 
+use super::support::assert_file;
+
 use serde_json::json;
 use std::fs;
 
-mod support;
+use super::support;
 
 #[test]
 fn inconsistent_conditional_location_does_not_hide_the_error() {
@@ -45,7 +47,7 @@ fn inconsistent_conditional_location_does_not_hide_the_error() {
             );
         }
     }
-    assert_eq!(fs::read_to_string(&path).unwrap(), source);
+    assert_file(&path, source);
 }
 
 #[test]
@@ -71,13 +73,13 @@ fn consistent_conditional_location_is_not_removed_by_error_code() {
             ])
         );
     }
-    assert_eq!(fs::read_to_string(&path).unwrap(), "%endif");
+    assert_file(&path, "%endif");
 }
 
 #[test]
 fn batch_edit_parser_diagnostics_identify_each_candidate_file() {
     let directory = tempfile::tempdir().unwrap();
-    let source = format!("%unknown value\n{}", include_str!("fixtures/ed.spec"));
+    let source = format!("%unknown value\n{}", include_str!("../fixtures/ed.spec"));
     let first = directory.path().join("first.spec");
     let second = directory.path().join("second.spec");
     for path in [&first, &second] {
@@ -100,6 +102,6 @@ fn batch_edit_parser_diagnostics_identify_each_candidate_file() {
             )),
             "{stderr}"
         );
-        assert_eq!(fs::read_to_string(path).unwrap(), source);
+        assert_file(path, &source);
     }
 }

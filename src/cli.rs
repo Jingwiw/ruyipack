@@ -125,4 +125,30 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn generation_output_modes_are_exclusive() {
+        for args in [
+            ["--force", "--skip-existing"],
+            ["--diff", "--force"],
+            ["--diff", "--skip-existing"],
+            ["--stdout", "--diff"],
+            ["--stdout", "--force"],
+            ["--stdout", "--skip-existing"],
+            ["--stdout", "--output=other.spec"],
+            ["--check", "--stdout"],
+            ["--check", "--diff"],
+            ["--check", "--force"],
+            ["--check", "--skip-existing"],
+            ["--check", "--output=other.spec"],
+        ] {
+            assert_eq!(
+                Cli::try_parse_from(["ruyipack", "gen", "ed"].into_iter().chain(args))
+                    .err()
+                    .map(|error| error.kind()),
+                Some(ErrorKind::ArgumentConflict),
+                "{args:?}"
+            );
+        }
+    }
 }

@@ -6,13 +6,15 @@
 
 //! Selection is a source projection, not a requirement to map the whole SPEC.
 
+use super::support::{assert_file, success};
+
 use std::{
     fs,
     path::Path,
-    process::{Command, Output, Stdio},
+    process::{Command, Stdio},
 };
 
-const SOURCE: &str = include_str!("fixtures/ed.spec");
+const SOURCE: &str = include_str!("../fixtures/ed.spec");
 
 fn command(directory: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ruyipack"));
@@ -21,10 +23,6 @@ fn command(directory: &Path) -> Command {
         .current_dir(directory)
         .stdin(Stdio::null());
     command
-}
-
-fn success(output: &Output) {
-    assert!(output.status.success(), "{output:?}");
 }
 
 fn fixture(source: &str) -> tempfile::TempDir {
@@ -80,10 +78,7 @@ fn selected_version_preserves_unmapped_tags_macros_and_unselected_conditional_by
             .replace("Version:        1.22.5", "Version:        1.22.6")
             .as_bytes()
     );
-    assert_eq!(
-        fs::read_to_string(directory.path().join("case.spec")).unwrap(),
-        source
-    );
+    assert_file(directory.path().join("case.spec"), &source);
     assert!(!directory.path().join("macro-was-executed").exists());
     let document = view(directory.path(), "package.version");
     assert_eq!(
@@ -151,10 +146,7 @@ fn duplicate_and_conditional_selected_versions_are_rejected_without_output() {
                 "{error}"
             );
         }
-        assert_eq!(
-            fs::read_to_string(directory.path().join("case.spec")).unwrap(),
-            source
-        );
+        assert_file(directory.path().join("case.spec"), &source);
     }
 }
 
@@ -232,10 +224,7 @@ fn selected_draft_schema_and_resume_keep_selection_and_reject_shape_changes() {
         assert!(!output.status.success(), "{output:?}");
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(report["valid"], false);
-        assert_eq!(
-            fs::read_to_string(directory.path().join("case.spec")).unwrap(),
-            source
-        );
+        assert_file(directory.path().join("case.spec"), &source);
     }
     fs::write(&draft, "[package]\nversion = '1.22.6'\n").unwrap();
     success(
