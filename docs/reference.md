@@ -55,8 +55,7 @@ warns (also in JSON `authoring_warnings`), emits no VCS assertion, and never tur
 an unknown or failed lookup into `no-public-repository`. Conflicting choices fail.
 Addresses and declarations are not verified remotely. A generated candidate is not
 proof of VCS policy compliance; confirm the declaration before publishing.
-The ed example demonstrates an explicit input declaration, not verified upstream
-repository evidence; do not infer that declaration from its historical CVS TODO.
+The ed example illustrates an explicit declaration, not verified repository evidence.
 
 Each `[sources.N]` chooses exactly one material form:
 `url` with optional `sha256` for a remote resource, or `path` for a local input.

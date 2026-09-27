@@ -6,7 +6,7 @@
 
 //! Build-system contracts: declared requirements and default stage actions.
 //!
-//! Each supported system has a TOML file in `profiles/openruyi-v1/buildsystems`
+//! Each supported system has a TOML file in `profiles/openruyi/buildsystems`
 //! and an entry in `CONTRACTS`. These supply CLI choices, init guidance, and
 //! the RPK004 requirement check. Stage actions are guidance, not shell scripts
 //! executed by RuyiPack: the generated BuildSystem tag selects target RPM macros.
@@ -14,7 +14,7 @@
 //! this tool has no common requirement contract, not that the system needs no tools.
 
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
@@ -38,60 +38,33 @@ pub(crate) struct StageAction {
     pub(crate) full_note: Option<String>,
 }
 
-/// One embedded build-system contract source, parsed on first use.
-struct Embedded {
-    toml: &'static str,
-    cache: OnceLock<Contract>,
-}
-
-impl Embedded {
-    const fn new(toml: &'static str) -> Self {
-        Self {
-            toml,
-            cache: OnceLock::new(),
-        }
-    }
-
-    fn get(&self) -> &Contract {
-        self.cache
-            .get_or_init(|| toml::from_str(self.toml).expect("embedded contract must be valid"))
-    }
-}
-
-static CONTRACTS: [Embedded; 3] = [
-    Embedded::new(include_str!(
-        "../../profiles/openruyi-v1/buildsystems/autotools.toml"
-    )),
-    Embedded::new(include_str!(
-        "../../profiles/openruyi-v1/buildsystems/cmake.toml"
-    )),
-    Embedded::new(include_str!(
-        "../../profiles/openruyi-v1/buildsystems/meson.toml"
-    )),
+const SOURCES: [&str; 3] = [
+    include_str!("../../profiles/openruyi/buildsystems/autotools.toml"),
+    include_str!("../../profiles/openruyi/buildsystems/cmake.toml"),
+    include_str!("../../profiles/openruyi/buildsystems/meson.toml"),
 ];
+static CONTRACTS: LazyLock<[Contract; 3]> = LazyLock::new(|| {
+    SOURCES.map(|source| toml::from_str(source).expect("embedded contract must be valid"))
+});
 
 /// Returns the contract for a declared system name, if one is supported.
 pub(crate) fn contract(name: &str) -> Option<&'static Contract> {
-    CONTRACTS
-        .iter()
-        .map(Embedded::get)
-        .find(|contract| contract.name == name)
+    CONTRACTS.iter().find(|contract| contract.name == name)
 }
 
 /// Identifies the exact embedded contract selected by a manifest.
 pub(crate) fn contract_identity(name: &str) -> Option<crate::profile::Identity> {
     CONTRACTS
         .iter()
-        .find(|entry| entry.get().name == name)
-        .map(|entry| crate::profile::Identity {
-            name: format!("openruyi-v1/buildsystems/{name}"),
-            sha256: crate::utf8_file::digest(entry.toml),
+        .zip(SOURCES)
+        .find(|(contract, _)| contract.name == name)
+        .map(|(_, source)| crate::profile::Identity {
+            name: format!("openruyi/buildsystems/{name}"),
+            sha256: crate::utf8_file::digest(source),
         })
 }
 
 /// Names of every supported build system, in declaration order.
 pub(crate) fn systems() -> impl Iterator<Item = &'static str> {
-    CONTRACTS
-        .iter()
-        .map(|embedded| embedded.get().name.as_str())
+    CONTRACTS.iter().map(|contract| contract.name.as_str())
 }

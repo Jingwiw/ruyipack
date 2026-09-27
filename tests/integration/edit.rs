@@ -1133,12 +1133,12 @@ fn edit_reports_bind_original_candidate_and_profile_without_inventing_a_path() {
         format!("{:x}", Sha256::digest(version_source("2").as_bytes()))
     );
     assert_eq!(file["report_subject"], "candidate");
-    assert_eq!(file["profile"]["name"], "openruyi-v1");
+    assert_eq!(file["profile"]["name"], "openruyi");
     assert_eq!(
         file["profile"]["sha256"],
         format!(
             "{:x}",
-            Sha256::digest(include_bytes!("../../profiles/openruyi-v1/profile.toml"))
+            Sha256::digest(include_bytes!("../../profiles/openruyi/profile.toml"))
         )
     );
     assert_eq!(file["report"]["evidence"]["stage"], "spec-static");

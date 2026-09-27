@@ -426,4 +426,27 @@ printf '%s' "$last"
     let drifted = run(&args, "drift");
     assert_eq!(drifted.status.code(), Some(1));
     assert_file(&input, &(spec.to_owned() + "# concurrent edit\n"));
+
+    let batch = spec.replace(
+        "%description",
+        "#!RemoteAsset\nSource1: local.tar.gz\n%description",
+    );
+    fs::write(&input, &batch).unwrap();
+    fs::remove_file(root.join("calls")).unwrap();
+    let rejected = run(
+        &[
+            "edit",
+            "input.spec",
+            "--hash-source",
+            "0",
+            "--hash-source",
+            "1",
+            "--trusted-spec",
+            "--check",
+        ],
+        "",
+    );
+    assert_eq!(rejected.status.code(), Some(1), "{rejected:?}");
+    assert_file(root.join("calls"), "native\n"); // No first download before the whole batch is resolved.
+    assert_file(&input, &batch);
 }

@@ -336,7 +336,7 @@ fn autotools_scaffolds_share_the_contract_and_feed_existing_generation() {
     assert!(output_text(&full.stdout).contains("autoreconf -fiv"));
     assert!(!output_text(&standard.stdout).contains("autoreconf"));
     let contract: toml::Value = toml::from_str(include_str!(
-        "../../profiles/openruyi-v1/buildsystems/autotools.toml"
+        "../../profiles/openruyi/buildsystems/autotools.toml"
     ))
     .unwrap();
     assert_eq!(scaffold["build"]["system"], contract["name"]);
@@ -396,12 +396,12 @@ fn cmake_and_meson_scaffolds_render_without_fabricated_requirements() {
     let cases = [
         (
             "cmake",
-            include_str!("../../profiles/openruyi-v1/buildsystems/cmake.toml"),
+            include_str!("../../profiles/openruyi/buildsystems/cmake.toml"),
             ["%cmake", "%cmake_build", "%cmake_install", "%ctest"],
         ),
         (
             "meson",
-            include_str!("../../profiles/openruyi-v1/buildsystems/meson.toml"),
+            include_str!("../../profiles/openruyi/buildsystems/meson.toml"),
             ["%meson", "%meson_build", "%meson_install", "%meson_test"],
         ),
     ];

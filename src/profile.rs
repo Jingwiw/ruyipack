@@ -6,7 +6,7 @@
 
 //! Embedded openRuyi defaults shared by SPEC generation and editing.
 //!
-//! `profiles/openruyi-v1/profile.toml` pins the packaging-guideline revision;
+//! `profiles/openruyi/profile.toml` pins the packaging-guideline revision;
 //! see `docs/design.md#openruyi-policy-sources` for the upstream document.
 //! Its license applies to the SPEC file, not the packaged software. Release and
 //! changelog macros are emitted literally for the target RPM environment.
@@ -15,9 +15,9 @@
 pub(crate) mod buildsystems;
 
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
-const SOURCE: &str = include_str!("../profiles/openruyi-v1/profile.toml");
+const SOURCE: &str = include_str!("../profiles/openruyi/profile.toml");
 
 #[derive(Serialize)]
 pub(crate) struct Identity {
@@ -29,7 +29,7 @@ pub(crate) struct Identity {
 // policy version or the identity of every rule in this executable.
 pub(crate) fn identity() -> Identity {
     Identity {
-        name: "openruyi-v1".into(),
+        name: "openruyi".into(),
         sha256: crate::utf8_file::digest(SOURCE),
     }
 }
@@ -57,6 +57,7 @@ impl Profile {
     }
 }
 pub(crate) fn load() -> &'static Profile {
-    static PROFILE: OnceLock<Profile> = OnceLock::new();
-    PROFILE.get_or_init(|| toml::from_str(SOURCE).expect("embedded profile must be valid"))
+    static PROFILE: LazyLock<Profile> =
+        LazyLock::new(|| toml::from_str(SOURCE).expect("embedded profile must be valid"));
+    &PROFILE
 }

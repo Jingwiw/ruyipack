@@ -63,7 +63,7 @@ fn table_schema(table: &Table, parent: &str) -> Json {
             Value::Table(table) => table_schema(table, &field),
             Value::Array(_) => json!({ "type": "array", "items": { "type": "string" } }),
             Value::String(_) => json!({ "type": "string" }),
-            // The source mapper currently emits only strings, string arrays and tables.
+            // The source mapper emits only strings, string arrays and tables.
             _ => Json::Bool(false),
         };
         if schema.is_object() {

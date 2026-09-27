@@ -326,11 +326,8 @@ fn validate_body(
     for entry in &files.entries {
         if let Err(error) = single_line(&format!("{prefix}.files.entries"), entry) {
             messages.push(error);
-        } else if let Err(error) = crate::spec::verify::file_entry(entry) {
-            messages.push(invalid(
-                &format!("{prefix}.files.entries"),
-                &error.to_string(),
-            ));
+        } else if let Err(error) = crate::spec::files::entry(entry) {
+            messages.push(invalid(&format!("{prefix}.files.entries"), error));
         }
     }
     messages
@@ -583,7 +580,7 @@ fn single_line(field: &str, value: &str) -> Result<(), String> {
 /// Generation has an HTTPS-only policy; editing existing HTTP sources is supported.
 fn source_url(field: &str, value: &str, package: &PackageInput) -> Result<(), String> {
     single_line(field, value)?;
-    let scheme = crate::source::validate_expression(
+    let url = crate::source::validate_expression(
         value,
         &[
             ("name", &package.name),
@@ -592,13 +589,11 @@ fn source_url(field: &str, value: &str, package: &PackageInput) -> Result<(), St
         ],
     )
     .map_err(|reason| format!("{field}: {reason}"))?;
-    crate::source::require_https(field, scheme)
+    crate::source::require_https(field, url)
 }
 
 fn https_url(field: &str, value: &str) -> Result<(), String> {
     single_line(field, value)?;
-    crate::source::reject_credentials(value).map_err(|reason| format!("{field}: {reason}"))?;
-    let scheme =
-        crate::source::validate_url(value).map_err(|reason| format!("{field}: {reason}"))?;
-    crate::source::require_https(field, scheme)
+    let url = crate::source::authoring_url(value).map_err(|reason| format!("{field}: {reason}"))?;
+    crate::source::require_https(field, url)
 }

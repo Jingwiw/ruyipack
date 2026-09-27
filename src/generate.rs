@@ -16,7 +16,7 @@ use std::{
 use crate::{
     file_output,
     output_cli::{self, ReportFormat},
-    render, source_hash, utf8_file,
+    render, source, utf8_file,
 };
 
 /// Generates the SPEC owned by one manifest.
@@ -103,7 +103,7 @@ pub(crate) fn run(
                             ("url", &package.url),
                         ],
                     )?;
-                    source_hash::download(&url)
+                    source::RemoteSource::parse(&url)?.download()
                 })()
                 .map_err(|e| GenerateError::SourceHash(format!("sources.{number}: {e}")))?;
                 *sha256 = Some(downloaded.sha256.clone());

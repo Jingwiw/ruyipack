@@ -17,8 +17,8 @@ workspace database, execution framework, or a persistent package-wide mode to do
   is derived output. Existing output is only consulted for publication conflicts
   or a requested diff, never merged back into the manifest.
   Explicit `--hash-sources` fills missing digests in that same in-memory manifest
-  before final rendering. It does not add a TOML output or write/read an intermediate
-  file; `init` remains an offline authoring scaffold, not a parallel fact-input path.
+  before final rendering, without rewriting the input TOML.
+  `init` creates an offline authoring scaffold.
 - `edit` reads the selected SPEC and replaces supported field ranges. It does not
   read or update a neighboring manifest, even if the filenames match.
 - Drafts are proposals tied to original SPEC bytes, not another authority.
@@ -39,14 +39,18 @@ regenerating. No filename heuristic chooses an authority or synchronizes files.
 | `file_output` | Written/unchanged/skipped paths, typed partial failures | `edit` formats results and retains recovery information |
 | `check` | Findings and explicit incomplete reasons | `check`, `gen`, and `edit` reports |
 | `profile::buildsystems` | Embedded system names, requirements, stage guidance and identity | `init`, manifest validation, generation reports and RPK004 |
-| `source_hash` | Resolved URLs and digests of actual downloads | `gen` fills missing manifest digests in memory; `edit` fills selected native-resolved candidate digests; `source-hash` reports without writing |
+| `source` | Resolved URLs and digests of actual downloads | `gen` fills missing manifest digests in memory; `edit` fills selected native-resolved candidate digests; `source-hash` reports without writing |
 | `edit::drafts` | Draft storage layout and output protection | Saved and interactive editing |
 
 Read `generate.rs` and `edit.rs` for orchestration, then `render.rs`,
 `edit/candidate.rs`, and `spec/document.rs` for calculation. `file_output.rs` owns
 conflict handling and publication. `output_cli` owns argument translation and
 terminal conflict selection; publication retains the checks around that selection.
-CLI/editor interactions stay outside candidate calculation. These are private modules, not a promised Rust library API.
+CLI/editor interactions stay outside candidate calculation. `source_hash` only
+presents the native hashing command; generation and editing consume `source`
+directly. `spec::files` parses file rows for both manifest validation and result
+comparison; input validation does not call the output verifier. These are private
+modules, not a promised Rust library API.
 
 ## Facts, decisions, and evidence
 
@@ -85,7 +89,7 @@ all distribution policy. Its defaults come from the pinned
 | BuildSystem / BuildOption and stage hooks | RPM declarative build syntax; actual actions come from target macros. `render::spec` emits declarations, not copies of default scripts. |
 | Autotools tool requirements | `check::build` enforces the profile declaration contract, not a dependency solver. CMake/Meson empty lists do not assert dependency-free builds. |
 
-The [build-system TOMLs](../profiles/openruyi-v1/buildsystems) record macro-file
+The [build-system TOMLs](../profiles/openruyi/buildsystems) record macro-file
 paths and revisions beside their copied stage guidance. Consult those sources
 before changing defaults; verify actual macros in the target environment.
 [Native RPM semantics](https://rpm.org/docs/6.0.x/manual/spec.html) and openRuyi

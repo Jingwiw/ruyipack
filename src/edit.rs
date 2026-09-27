@@ -303,11 +303,9 @@ fn create_drafts(
     drafts::create(dir, &sources)
 }
 
-// Keep each input attached to its candidate/error; reports and publication consume
-// the same result rather than maintaining parallel, partially populated vectors.
+// Mapping errors have no candidate; static failures retain their candidate report.
 struct CheckedInput<'a> {
     input: &'a Input,
-    // Static failures retain their candidate report; mapping failures have no candidate.
     candidate: Option<candidate::Candidate>,
     error: Option<EditError>,
 }
@@ -593,8 +591,8 @@ fn complete_hashes(
     item: &Input,
     document: &mut Table,
     options: &Options,
-) -> Result<crate::source_hash::SourceHashes, EditError> {
-    let complete = || -> Result<crate::source_hash::SourceHashes, String> {
+) -> Result<crate::source::SourceHashes, EditError> {
+    let complete = || -> Result<crate::source::SourceHashes, String> {
         // A saved draft never silently acquires permission to edit another field.
         for number in &options.hash_source {
             let field = format!("sources.{number}.sha256");
@@ -610,13 +608,13 @@ fn complete_hashes(
             }
         }
         let contents = item.snapshot.render_before_hashing(document)?;
-        let hashes = crate::source_hash::calculate(
+        let hashes = crate::source::calculate(
             &item.path,
             &contents,
             &options.hash_source,
             &options.defines,
         )?;
-        crate::source_hash::unchanged(&item.path, item.snapshot.source())?;
+        crate::source::unchanged(&item.path, item.snapshot.source())?;
         Ok(hashes)
     };
     let hashes = complete().map_err(|e| {

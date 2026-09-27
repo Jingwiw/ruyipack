@@ -969,19 +969,19 @@ fn generation_reports_identify_real_inputs_and_never_publish() {
         report["profile"]["sha256"],
         format!(
             "{:x}",
-            Sha256::digest(include_bytes!("../../profiles/openruyi-v1/profile.toml"))
+            Sha256::digest(include_bytes!("../../profiles/openruyi/profile.toml"))
         )
     );
     assert_eq!(
         report["build_contract"]["name"],
-        "openruyi-v1/buildsystems/autotools"
+        "openruyi/buildsystems/autotools"
     );
     assert_eq!(
         report["build_contract"]["sha256"],
         format!(
             "{:x}",
             Sha256::digest(include_bytes!(
-                "../../profiles/openruyi-v1/buildsystems/autotools.toml"
+                "../../profiles/openruyi/buildsystems/autotools.toml"
             ))
         )
     );
@@ -1128,19 +1128,25 @@ fn materials_and_file_lists_compose_without_opening_local_inputs() {
             "failed to generate SPEC",
         );
     }
-    for row in [
-        "%dir",
-        "%config(bogus) /etc/ed",
-        "%config(noreplace missingok) /etc/ed",
-        "%verify(not,md5) /etc/ed",
-        "%verify(size not md5) /etc/ed",
-        "%unknown %{_bindir}/ed",
-        "%files other",
-        "%post",
-        "%exclude relative",
+    for (row, reason) in [
+        ("%dir", "file directive requires a path"),
+        ("%config(bogus) /etc/ed", "file directive flags"),
+        (
+            "%config(noreplace missingok) /etc/ed",
+            "file directive flags",
+        ),
+        ("%verify(not,md5) /etc/ed", "file directive flags"),
+        ("%verify(size not md5) /etc/ed", "file directive flags"),
+        ("%unknown %{_bindir}/ed", "unsupported file directive"),
+        ("%files other", "unsupported file directive"),
+        ("%post", "unsupported file directive"),
+        (
+            "%exclude relative",
+            "file paths must start with / or %{ (except doc/license)",
+        ),
     ] {
         let invalid = MANIFEST.replace("\"%{_bindir}/%{name}\"", &format!("{row:?}"));
-        rejected(&invalid, "package.files.entries");
+        rejected(&invalid, &format!("package.files.entries: {reason}"));
     }
     rejected(
         &MANIFEST.replace("[package.files]", "[package.files]\nlists = [\"-n\"]"),

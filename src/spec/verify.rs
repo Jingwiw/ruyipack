@@ -19,12 +19,10 @@ use crate::render::{
 use rpm_spec::{
     ast::{
         BuildScriptKind, BuildScriptPlacement, ChangelogItem, CommentStyle, FileDirective,
-        FileEntry, FilesContent, PackageName, PreambleContent, PreambleItem, Section, Span,
-        SpecItem, SubpkgRef, Tag, TagValue, Text, TextSegment,
+        FilesContent, PackageName, PreambleContent, PreambleItem, Section, Span, SpecItem,
+        SubpkgRef, Tag, TagValue, Text, TextSegment,
     },
-    parser::{
-        Input, ParserState, deps::parse_dep_expr, files::parse_files_content, text::parse_text,
-    },
+    parser::{Input, ParserState, deps::parse_dep_expr, text::parse_text},
 };
 
 type ExpectedTag = (Tag, Option<&'static str>, TagValue);
@@ -476,7 +474,7 @@ fn files(
         }
     }
     for path in &files.entries {
-        let entry = file_entry(path)?;
+        let entry = super::files::entry(path).map_err(mismatch)?;
         expected.push((
             entry.directives,
             entry.path.map(|p| p.path),
@@ -510,107 +508,6 @@ fn files(
         }
     }
     check(expected.next().is_none(), field)
-}
-
-/// A bounded file row, not an arbitrary SPEC section or macro statement.
-/// Keep native directive spelling rather than inventing a second flags schema.
-pub(crate) fn file_entry(value: &str) -> Result<FileEntry<Span>, RenderError> {
-    fn parse(value: &str) -> Result<FileEntry<Span>, RenderError> {
-        let state = ParserState::new();
-        let input = format!("{value}\n");
-        let (rest, mut items) =
-            parse_files_content(&state, Input::new(&input)).map_err(|_| mismatch("file entry"))?;
-        check(
-            rest.fragment().is_empty() && state.diagnostics.borrow().is_empty(),
-            "file entry",
-        )?;
-        match items.pop() {
-            Some(FilesContent::Entry(entry)) if items.is_empty() => Ok(entry),
-            _ => Err(mismatch("file entry")),
-        }
-    }
-    // rpm-spec 0.4.1 preserves %exclude as macro text instead of a directive.
-    // Validate its payload separately; the full spelling remains in comparison
-    // and is covered by the native RPM regression.
-    let payload = value.strip_prefix("%exclude ").unwrap_or(value);
-    // The pinned parser silently drops unknown config/verify flags.
-    // Check only these bounded vocabularies before that information is lost.
-    for (prefix, allowed) in [
-        ("%config(", &["noreplace", "missingok"][..]),
-        (
-            "%verify(",
-            &[
-                "not",
-                "md5",
-                "filedigest",
-                "size",
-                "link",
-                "user",
-                "group",
-                "mtime",
-                "mode",
-                "rdev",
-                "caps",
-            ][..],
-        ),
-    ] {
-        for rest in payload.split(prefix).skip(1) {
-            let (flags, _) = rest
-                .split_once(')')
-                .ok_or_else(|| mismatch("file directive flags"))?;
-            let flags: Vec<_> = if prefix == "%config(" {
-                flags.split(',').map(str::trim).collect()
-            } else {
-                flags.split_whitespace().collect()
-            };
-            check(
-                !flags.is_empty()
-                    && flags.iter().enumerate().all(|(i, flag)| {
-                        let flag = flag.to_ascii_lowercase();
-                        allowed.contains(&flag.as_str())
-                            && (flag != "not" || i == 0 && flags.len() > 1)
-                    }),
-                "file directive flags",
-            )?;
-        }
-    }
-    let entry = parse(payload)?;
-    check(
-        !payload.starts_with('%') || payload.starts_with("%{") || !entry.directives.is_empty(),
-        "unsupported file directive",
-    )?;
-    let relative = entry
-        .directives
-        .iter()
-        .any(|d| matches!(d, FileDirective::Doc | FileDirective::License));
-    match &entry.path {
-        Some(path) => {
-            let valid = match path.path.segments.first() {
-                Some(TextSegment::Literal(s)) => relative || s.starts_with('/'),
-                Some(TextSegment::Macro(m)) => !matches!(m.kind, rpm_spec::ast::MacroKind::Plain),
-                _ => false,
-            };
-            check(
-                valid,
-                "file paths must start with / or %{ (except doc/license)",
-            )?;
-            if !relative && let Some(path) = path.path.literal_str() {
-                check(
-                    !path.chars().any(char::is_whitespace),
-                    "one file path per entry",
-                )?;
-            }
-        }
-        None => check(
-            matches!(entry.directives.as_slice(), [FileDirective::Defattr(_)]),
-            "file directive requires a path",
-        )?,
-    }
-    if payload == value {
-        Ok(entry)
-    } else {
-        parse(value)
-    }
 }
 
 /// Parses expressions for comparison without evaluating or rewriting their macros.

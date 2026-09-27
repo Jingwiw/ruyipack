@@ -10,6 +10,7 @@ mod analyzer;
 mod diagnostic;
 pub(crate) mod document;
 pub(crate) mod expression;
+pub(crate) mod files;
 pub(crate) mod inspection;
 pub(crate) mod native;
 mod syntax;
