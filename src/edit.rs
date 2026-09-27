@@ -72,37 +72,54 @@ pub(crate) fn run(mut options: Options) -> Result<bool, EditError> {
         options.fields.push(field.to_owned());
     }
     let options = &options;
-    let mut report = json!({"format_version": 2, "scope": if options.prepare.is_some() { "edit-draft" } else { "selected-edit-static" }, "files": [],
-        "operation": if options.prepare.is_some() { "prepare" } else if options.check { "check" } else { "apply" }});
-    let result = execute(options, &mut report);
+    let result = execute(options);
     if !matches!(options.format, Some(ReportFormat::Json)) {
-        return result.map(|(success, _)| success);
+        return result.and_then(|result| {
+            let success = result.is_success();
+            result.publication.map(|_| success)
+        });
     }
-    let (success, written) = match result {
-        Ok((success, outcomes)) => (
-            success,
-            outcomes
-                .into_iter()
-                .filter_map(|outcome| match outcome {
-                    file_output::EditOutcome::Written(path) => Some(path),
-                    _ => None,
-                })
-                .collect::<Vec<_>>(),
-        ),
-        Err(error) => {
-            let written = error.written_paths().to_vec();
-            report["error"] = serde_json::to_value(error).expect("serializable error");
-            (false, written)
-        }
+    let success = result.as_ref().is_ok_and(EditResult::is_success);
+    let mut report = match &result {
+        Ok(result) => result.report(options),
+        Err(error) => json!({"files": [], "error": error}),
     };
+    report["format_version"] = 2.into();
+    report["scope"] = if options.prepare.is_some() {
+        "edit-draft"
+    } else {
+        "selected-edit-static"
+    }
+    .into();
+    report["operation"] = if options.prepare.is_some() {
+        "prepare"
+    } else if options.check {
+        "check"
+    } else {
+        "apply"
+    }
+    .into();
     report["valid"] = success.into();
-    // A failed report write is an I/O error, not a new business result to serialize.
-    let text = serde_json::to_string(&report).map_err(|e| e.to_string())?;
-    write_stdout(&(text + "\n")).map_err(|mut error| {
-        if !written.is_empty() {
-            error.push_str(&format!("\nFiles already written: {written:?}\nInspect these files and their current SHA-256 before retrying; publication was not rolled back."));
+    let publication = result.and_then(|result| result.publication);
+    // Retain publication facts until its acknowledgement has actually been written.
+    let mut stdout = io::stdout().lock();
+    let written = (|| -> io::Result<()> {
+        serde_json::to_writer(&mut stdout, &report)?;
+        writeln!(stdout)
+    })();
+    written.map_err(|error| {
+        let mut message = format!("failed to write output to stdout: {error}");
+        let paths: Vec<_> = match &publication {
+            Ok(outcomes) => outcomes.iter().filter_map(|outcome| match outcome {
+                file_output::EditOutcome::Written(path) => Some(path),
+                _ => None,
+            }).collect(),
+            Err(error) => error.written_paths().iter().collect(),
+        };
+        if !paths.is_empty() {
+            message.push_str(&format!("\nFiles already written: {paths:?}\nInspect these files and their current SHA-256 before retrying; publication was not rolled back."));
         }
-        error
+        message
     })?;
     Ok(success)
 }
@@ -186,10 +203,7 @@ fn load_inputs(options: &Options) -> Result<Vec<Input>, EditError> {
     Ok(inputs)
 }
 
-fn execute(
-    options: &Options,
-    report: &mut serde_json::Value,
-) -> Result<(bool, Vec<file_output::EditOutcome>), EditError> {
+fn execute(options: &Options) -> Result<EditResult, EditError> {
     let mut inputs = load_inputs(options)?;
     if options.view || options.schema {
         let view = inputs[0].snapshot.document();
@@ -199,24 +213,22 @@ fn execute(
             toml::to_string_pretty(view).map_err(|e| e.to_string())?
         };
         write_stdout(&text)?;
-        return Ok((true, Vec::new()));
+        return Ok(EditResult::unpublished(inputs));
     }
     if let Some(dir) = &options.prepare {
         let created = create_drafts(dir, &inputs, Some(options))?;
-        if matches!(options.format, Some(ReportFormat::Json)) {
-            report["files"] = inputs.iter().zip(&created).map(|(item, path)| json!({
-                "source": item.path.to_string_lossy(), "original_sha256": utf8_file::sha256(item.snapshot.source()),
-                "draft": path.to_string_lossy(),
-            })).collect();
-            return Ok((true, Vec::new()));
-        }
         let dir = created[0]
             .parent()
             .expect("created drafts have an absolute parent");
         let display = dir.to_string_lossy();
         let quoted = shell_words::quote(&display);
-        writeln!(io::stderr().lock(), "Drafts: {display}\nCheck: ruyipack edit --from={quoted} --check\nPreview: ruyipack edit --from={quoted} --diff").map_err(|e| e.to_string())?;
-        return Ok((true, Vec::new()));
+        if !matches!(options.format, Some(ReportFormat::Json)) {
+            writeln!(io::stderr().lock(), "Drafts: {display}\nCheck: ruyipack edit --from={quoted} --check\nPreview: ruyipack edit --from={quoted} --diff").map_err(|e| e.to_string())?;
+        }
+        for (item, path) in inputs.iter_mut().zip(created) {
+            item.draft = Some(path);
+        }
+        return Ok(EditResult::unpublished(inputs));
     }
     // Saved drafts already contain the edit; reopening them requires --editor.
     let opens_editor = options.editor.is_some()
@@ -256,21 +268,42 @@ fn execute(
             return Err(retain(error.into(), temporary, &inputs));
         }
     }
-    match apply(options, &inputs, report) {
-        Err(error) => Err(retain(error, temporary, &inputs)),
-        Ok(result) => {
+    if let Some(output) = &options.output {
+        let paths = inputs
+            .iter()
+            .filter_map(|item| item.draft.as_deref())
+            .collect::<Vec<_>>();
+        if let Err(error) = drafts::protect_output(output, &paths) {
+            return Err(retain(error.into(), temporary, &inputs));
+        }
+    }
+    let mut result = apply(options, inputs);
+    let changed_sources = result
+        .inputs
+        .iter()
+        .zip(&result.checks)
+        .filter_map(|(item, check)| {
+            check
+                .candidate
+                .as_ref()
+                .filter(|candidate| candidate.contents != item.snapshot.source())
+                .map(|_| item.path.as_path())
+        });
+    let unapplied = has_unapplied_changes(
+        changed_sources,
+        result.publication.as_deref().unwrap_or(&[]),
+    );
+    result.publication = match result.publication {
+        Err(error) => Err(retain(error, temporary, &result.inputs)),
+        Ok(outcomes) => {
             // Finalize drafts from publication facts before fallible notifications.
-            let retained = temporary
-                .filter(|_| result.has_unapplied_changes())
-                .map(tempfile::TempDir::keep);
-            for outcome in result
-                .outcomes
-                .iter()
-                .filter(|_| !matches!(options.format, Some(ReportFormat::Json)))
-            {
-                outcome
-                    .write_human(&mut io::stderr().lock())
-                    .map_err(|e| e.to_string())?;
+            let retained = temporary.filter(|_| unapplied).map(tempfile::TempDir::keep);
+            if !matches!(options.format, Some(ReportFormat::Json)) {
+                for outcome in &outcomes {
+                    outcome
+                        .write_human(&mut io::stderr().lock())
+                        .map_err(|e| e.to_string())?;
+                }
             }
             if let Some(path) = retained {
                 writeln!(
@@ -281,9 +314,10 @@ fn execute(
                 )
                 .map_err(|e| e.to_string())?;
             }
-            Ok((result.success, result.outcomes))
+            Ok(outcomes)
         }
-    }
+    };
+    Ok(result)
 }
 
 fn input(
@@ -368,172 +402,181 @@ fn candidate_record(item: &Input, candidate: &candidate::Candidate) -> serde_jso
         "report": candidate.report.structured(&item.path)})
 }
 
-struct ApplyResult<'a> {
-    success: bool,
-    changed_sources: Vec<&'a Path>,
-    outcomes: Vec<file_output::EditOutcome>,
+// A failed static check still has candidate text and reports worth showing.
+struct CandidateCheck {
+    candidate: Option<candidate::Candidate>,
+    error: Option<EditError>,
 }
 
-impl ApplyResult<'_> {
-    fn has_unapplied_changes(&self) -> bool {
-        self.changed_sources.iter().any(|source| !self.outcomes.iter().any(|outcome| {
-            matches!(outcome, file_output::EditOutcome::Written(path) | file_output::EditOutcome::Unchanged(path) if path == source)
-        }))
+struct EditResult {
+    inputs: Vec<Input>,
+    checks: Vec<CandidateCheck>,
+    publication: Result<Vec<file_output::EditOutcome>, EditError>,
+}
+
+impl EditResult {
+    fn unpublished(inputs: Vec<Input>) -> Self {
+        Self {
+            inputs,
+            checks: Vec::new(),
+            publication: Ok(Vec::new()),
+        }
+    }
+
+    fn is_success(&self) -> bool {
+        self.publication.is_ok() && self.checks.iter().all(|check| check.error.is_none())
+    }
+
+    fn report(&self, options: &Options) -> serde_json::Value {
+        let mut report = json!({});
+        report["files"] = if options.prepare.is_some() {
+            self.inputs.iter().map(|item| json!({
+                "source": item.path.to_string_lossy(), "original_sha256": utf8_file::sha256(item.snapshot.source()),
+                "draft": item.draft.as_deref().map(Path::to_string_lossy),
+            })).collect()
+        } else {
+            self.inputs.iter().zip(&self.checks).map(|(item, check)| {
+                let mut record = check.candidate.as_ref().map_or_else(
+                    || json!({"source": item.path.to_string_lossy(), "draft": item.draft.as_deref().map(Path::to_string_lossy), "valid": false}),
+                    |candidate| candidate_record(item, candidate),
+                );
+                if let Some(error) = &check.error { record["error"] = json!(error); }
+                record
+            }).collect()
+        };
+        match &self.publication {
+            Ok(outcomes) if !options.check && options.prepare.is_none() => {
+                report["outcomes"] = outcomes.iter().zip(&self.inputs).zip(&self.checks).map(|((outcome, item), check)| {
+                    let (status, path, sha256) = match outcome {
+                        file_output::EditOutcome::Written(path) => ("written", path, Some(utf8_file::sha256(&check.candidate.as_ref().expect("published candidate").contents))),
+                        file_output::EditOutcome::Unchanged(path) => ("unchanged", path, Some(utf8_file::sha256(&check.candidate.as_ref().expect("unchanged candidate").contents))),
+                        file_output::EditOutcome::Skipped(path) => ("skipped", path, None),
+                    };
+                    json!({"source": item.path.to_string_lossy(), "status": status, "path": path.to_string_lossy(), "sha256": sha256})
+                }).collect();
+            }
+            Err(error) => {
+                report["error"] = json!(error);
+                if !error.written_paths().is_empty() {
+                    report["written"] = json!(
+                        error
+                            .written_paths()
+                            .iter()
+                            .map(|path| path.to_string_lossy())
+                            .collect::<Vec<_>>()
+                    );
+                }
+            }
+            _ => {}
+        }
+        report
     }
 }
 
-fn apply<'a>(
-    options: &Options,
-    inputs: &'a [Input],
-    report: &mut serde_json::Value,
-) -> Result<ApplyResult<'a>, EditError> {
-    if let Some(output) = &options.output {
-        let paths = inputs
-            .iter()
-            .filter_map(|item| item.draft.as_deref())
-            .collect::<Vec<_>>();
-        drafts::protect_output(output, &paths)?;
-    }
-    let checked = inputs
-        .iter()
-        .map(|item| read_candidate(item, options))
-        .collect::<Vec<_>>();
-    let json = matches!(options.format, Some(ReportFormat::Json));
-    let mut records = Vec::new();
-    let mut errors = Vec::new();
-    let mut changed_sources = Vec::new();
-    for (item, result) in inputs.iter().zip(&checked) {
-        let candidate = result.as_ref().ok();
-        let static_error = candidate.filter(|c| !c.report.is_success()).map(|candidate| {
-            EditError::at(
-                Kind::StaticCheckFailed,
-                &item.path,
-                item.snapshot.selection(),
+fn has_unapplied_changes<'a>(
+    mut changed_sources: impl Iterator<Item = &'a Path>,
+    outcomes: &[file_output::EditOutcome],
+) -> bool {
+    changed_sources.any(|source| !outcomes.iter().any(|outcome| {
+        matches!(outcome, file_output::EditOutcome::Written(path) | file_output::EditOutcome::Unchanged(path) if path == source)
+    }))
+}
+
+fn apply(options: &Options, inputs: Vec<Input>) -> EditResult {
+    let checks = inputs.iter().map(|item| match read_candidate(item, options) {
+        Err(error) => CandidateCheck { candidate: None, error: Some(error) },
+        Ok(candidate) => {
+            let error = (!candidate.report.is_success()).then(|| EditError::at(
+                Kind::StaticCheckFailed, &item.path, item.snapshot.selection(),
                 format!("{}: candidate failed static checks: {}. No SPEC files written; repair the reported fields and retry", item.path.display(),
                     match candidate.report.introduced_static_blockers(&item.baseline) {
                         Some(true) => "new or changed static blockers (compare baseline_report in --check --format json)",
                         Some(false) => "pre-existing blockers remain; no new static failures introduced",
                         None => "static checks remain incomplete; unresolved results cannot be attributed to this edit",
                     }),
-            )
-        });
-        let error = result.as_ref().err().or(static_error.as_ref());
-        if json {
-            let mut record = candidate.map_or_else(
-                || json!({"source": item.path.to_string_lossy(), "draft": item.draft.as_deref().map(Path::to_string_lossy), "valid": false}),
-                |candidate| candidate_record(item, candidate),
-            );
-            if let Some(error) = error {
-                record["error"] = serde_json::to_value(error).expect("serializable error");
-            }
-            records.push(record);
+            ));
+            CandidateCheck { candidate: Some(candidate), error }
         }
-        if let Some(candidate) = candidate {
-            if candidate.contents != item.snapshot.source() {
-                changed_sources.push(item.path.as_path());
-            }
-            if !json {
-                if !candidate.review_triggers.is_empty() {
-                    writeln!(io::stderr().lock(),
-                    "{} (candidate): review required after changing {}: source authenticity, unrefreshed digests, patch applicability, and native build have not been verified",
-                    item.path.display(), candidate.review_triggers.join(", "))
-                    .map_err(|e| e.to_string())?;
+    }).collect::<Vec<_>>();
+    let publication = (|| {
+        if !matches!(options.format, Some(ReportFormat::Json)) {
+            for (item, check) in inputs.iter().zip(&checks) {
+                if let Some(candidate) = &check.candidate {
+                    if !candidate.review_triggers.is_empty() {
+                        writeln!(io::stderr().lock(), "{} (candidate): review required after changing {}: source authenticity, unrefreshed digests, patch applicability, and native build have not been verified",
+                            item.path.display(), candidate.review_triggers.join(", ")).map_err(|e| e.to_string())?;
+                    }
+                    candidate
+                        .report
+                        .write_human(
+                            Path::new(&format!("{} (candidate)", item.path.display())),
+                            &mut io::stderr().lock(),
+                        )
+                        .map_err(|e| e.to_string())?;
                 }
-                candidate
-                    .report
-                    .write_human(
-                        Path::new(&format!("{} (candidate)", item.path.display())),
-                        &mut io::stderr().lock(),
+                if options.check {
+                    writeln!(
+                        io::stdout().lock(),
+                        "{}: {}",
+                        item.path.display(),
+                        if check.error.is_none() {
+                            "valid"
+                        } else {
+                            "invalid"
+                        }
                     )
                     .map_err(|e| e.to_string())?;
+                }
             }
         }
-        if options.check && !json {
-            writeln!(
-                io::stdout().lock(),
-                "{}: {}",
-                item.path.display(),
-                if error.is_none() { "valid" } else { "invalid" }
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        if let Some(error) = error {
-            errors.push(error.to_string());
-        }
-    }
-    if json {
-        report["files"] = records.into();
-    }
-    let success = errors.is_empty();
-    if options.check {
-        if !json {
-            for error in &errors {
-                writeln!(io::stderr().lock(), "error: {error}").map_err(|e| e.to_string())?;
+        let errors = checks.iter().filter_map(|check| check.error.as_ref());
+        if options.check {
+            if !matches!(options.format, Some(ReportFormat::Json)) {
+                for error in errors {
+                    writeln!(io::stderr().lock(), "error: {error}").map_err(|e| e.to_string())?;
+                }
             }
+            return Ok(Vec::new());
         }
-        return Ok(ApplyResult {
-            success,
-            changed_sources,
-            outcomes: Vec::new(),
-        });
-    }
-    if !success {
-        return Err(errors.join("\n").into());
-    }
-    let candidates = checked.into_iter().collect::<Result<Vec<_>, _>>()?;
-    let files = inputs
-        .iter()
-        .zip(&candidates)
-        .map(|(item, candidate)| file_output::EditFile {
-            source_path: &item.path,
-            original: item.snapshot.source(),
-            contents: &candidate.contents,
-        })
-        .collect::<Vec<_>>();
-    let mode = if options.diff {
-        file_output::EditMode::Diff
-    } else if options.stdout {
-        file_output::EditMode::Stdout
-    } else if options.force {
-        file_output::EditMode::Overwrite
-    } else {
-        file_output::EditMode::Write
-    };
-    let publication = file_output::run_edits(
-        &files,
-        options.output.as_deref(),
-        mode,
-        crate::output_cli::select_edit_action,
-    );
-    if json {
-        match &publication {
-            Ok(outcomes) => {
-                report["outcomes"] = outcomes.iter().zip(&files).map(|(outcome, file)| {
-                    let (status, path, sha256) = match outcome {
-                        file_output::EditOutcome::Written(path) => ("written", path, Some(utf8_file::sha256(file.contents))),
-                        file_output::EditOutcome::Unchanged(path) => ("unchanged", path, Some(utf8_file::sha256(file.contents))),
-                        file_output::EditOutcome::Skipped(path) => ("skipped", path, None),
-                    };
-                    json!({"source": file.source_path.to_string_lossy(), "status": status, "path": path.to_string_lossy(), "sha256": sha256})
-                }).collect();
-            }
-            Err(file_output::OutputError::Partial { written, .. }) => {
-                report["written"] = json!(
-                    written
-                        .iter()
-                        .map(|path| path.to_string_lossy())
-                        .collect::<Vec<_>>()
-                )
-            }
-            Err(_) => {}
+        let errors = errors.map(ToString::to_string).collect::<Vec<_>>();
+        if !errors.is_empty() {
+            return Err(errors.join("\n").into());
         }
+        let files = inputs
+            .iter()
+            .zip(&checks)
+            .map(|(item, check)| file_output::EditFile {
+                source_path: &item.path,
+                original: item.snapshot.source(),
+                contents: &check
+                    .candidate
+                    .as_ref()
+                    .expect("all candidates passed")
+                    .contents,
+            })
+            .collect::<Vec<_>>();
+        let mode = if options.diff {
+            file_output::EditMode::Diff
+        } else if options.stdout {
+            file_output::EditMode::Stdout
+        } else if options.force {
+            file_output::EditMode::Overwrite
+        } else {
+            file_output::EditMode::Write
+        };
+        file_output::run_edits(
+            &files,
+            options.output.as_deref(),
+            mode,
+            crate::output_cli::select_edit_action,
+        )
+        .map_err(EditError::publication)
+    })();
+    EditResult {
+        inputs,
+        checks,
+        publication,
     }
-    let outcomes = publication.map_err(EditError::publication)?;
-    Ok(ApplyResult {
-        success,
-        changed_sources,
-        outcomes,
-    })
 }
 
 fn read_candidate(item: &Input, options: &Options) -> Result<candidate::Candidate, EditError> {
@@ -682,25 +725,16 @@ mod tests {
             (vec![EditOutcome::Written(source.into())], false),
             (vec![EditOutcome::Unchanged(source.into())], false),
         ] {
-            let result = ApplyResult {
-                success: true,
-                changed_sources: vec![source],
-                outcomes,
-            };
-            assert_eq!(result.has_unapplied_changes(), expected);
+            assert_eq!(
+                has_unapplied_changes([source].into_iter(), &outcomes),
+                expected
+            );
         }
-        let unchanged = ApplyResult {
-            success: true,
-            changed_sources: vec![],
-            outcomes: vec![],
-        };
-        assert!(!unchanged.has_unapplied_changes());
-        let batch = ApplyResult {
-            success: true,
-            changed_sources: vec![source, Path::new("second.spec")],
-            outcomes: vec![EditOutcome::Written(source.into())],
-        };
-        assert!(batch.has_unapplied_changes());
+        assert!(!has_unapplied_changes([].into_iter(), &[]));
+        assert!(has_unapplied_changes(
+            [source, Path::new("second.spec")].into_iter(),
+            &[EditOutcome::Written(source.into())],
+        ));
     }
 
     #[test]

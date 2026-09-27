@@ -53,6 +53,10 @@ directly. `spec::files` parses file rows for both manifest validation and result
 comparison; input validation does not call the output verifier. These are private
 modules, not a promised Rust library API.
 
+Edit execution returns per-file checks and the publication result, including
+partial failures. JSON is derived afterward; draft retention and failed-output
+recovery use those same facts.
+
 ## Facts, decisions, and evidence
 
 `spec/` adapts parser syntax and source locations into the limited views the tool
