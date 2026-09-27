@@ -263,10 +263,28 @@ proptest! {
             &ParsedSpec::parse(&source),
             &["package.version".into(), "package.summary".into()],
         ).unwrap();
-        prop_assert_eq!(snapshot.render(snapshot.document()).unwrap(), source);
+        prop_assert_eq!(snapshot.render(snapshot.document()).unwrap(), source.as_str());
         let mut edited = snapshot.document().clone();
         edited["package"]["version"] = new_version.clone().into();
         edited["package"]["summary"] = new_summary.clone().into();
-        prop_assert_eq!(snapshot.render(&edited).unwrap(), spec(&new_version, &new_summary));
+        let combined = snapshot.render(&edited).unwrap();
+        prop_assert_eq!(&combined, &spec(&new_version, &new_summary));
+
+        // Only independent literal fields commute. Each step must capture the
+        // newly rendered source, whose byte offsets can differ from the original.
+        let edit = |source: &str, field: &str, value: &str| {
+            let snapshot = Snapshot::capture_selected(
+                &ParsedSpec::parse(source), &[format!("package.{field}")],
+            ).unwrap();
+            let mut document = snapshot.document().clone();
+            document["package"][field] = value.into();
+            snapshot.render(&document).unwrap()
+        };
+        let version_first = edit(&source, "version", &new_version);
+        let summary_first = edit(&source, "summary", &new_summary);
+        prop_assert_eq!(edit(&version_first, "summary", &new_summary), combined.as_str());
+        prop_assert_eq!(edit(&summary_first, "version", &new_version), combined.as_str());
+        prop_assert_eq!(edit(&combined, "version", &new_version), combined.as_str());
+        prop_assert_eq!(edit(&combined, "summary", &new_summary), combined.as_str());
     }
 }
