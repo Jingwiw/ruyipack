@@ -141,7 +141,7 @@ struct VcsInput {
 fn resolve_vcs(input: &VcsInput) -> Result<Vcs, String> {
     match (input.git.as_deref(), input.same_as_url, input.no_public_repository) {
         (Some(url), false, false) => {
-            https_url("package.vcs.git", url)?;
+            validate_https_url("package.vcs.git", url)?;
             Ok(Vcs::Git(url.to_owned()))
         }
         (None, false, false) => Ok(Vcs::Unknown),
@@ -262,7 +262,7 @@ fn validate_body(
 ) -> Vec<String> {
     let invalid = |field: &str, reason: &str| format!("{field}: {reason}");
     let mut messages = Vec::new();
-    if let Err(error) = single_line(&format!("{prefix}.summary"), summary) {
+    if let Err(error) = validate_single_line(&format!("{prefix}.summary"), summary) {
         messages.push(error);
     }
     if description.trim().is_empty()
@@ -277,12 +277,12 @@ fn validate_body(
         ));
     }
     for require in requires {
-        if let Err(error) = single_line(&format!("{prefix}.requires"), require) {
+        if let Err(error) = validate_single_line(&format!("{prefix}.requires"), require) {
             messages.push(error);
         }
     }
     for provide in provides {
-        if let Err(error) = single_line(&format!("{prefix}.provides"), provide) {
+        if let Err(error) = validate_single_line(&format!("{prefix}.provides"), provide) {
             messages.push(error);
         }
     }
@@ -304,7 +304,7 @@ fn validate_body(
     ] {
         let field = format!("{prefix}.{suffix}");
         for value in values {
-            if let Err(error) = single_line(&field, value) {
+            if let Err(error) = validate_single_line(&field, value) {
                 messages.push(error);
             }
             if value.chars().any(char::is_whitespace) {
@@ -324,7 +324,7 @@ fn validate_body(
         }
     }
     for entry in &files.entries {
-        if let Err(error) = single_line(&format!("{prefix}.files.entries"), entry) {
+        if let Err(error) = validate_single_line(&format!("{prefix}.files.entries"), entry) {
             messages.push(error);
         } else if let Err(error) = crate::spec::files::entry(entry) {
             messages.push(invalid(&format!("{prefix}.files.entries"), error));
@@ -367,8 +367,8 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
     }
     record(crate::check::metadata::Field::Name.validate(&package.name));
     record(crate::check::metadata::Field::Version.validate(&package.version));
-    record(single_line("package.license", &package.license));
-    record(https_url("package.url", &package.url));
+    record(validate_single_line("package.license", &package.license));
+    record(validate_https_url("package.url", &package.url));
     // Deferred from deserialization so an empty [package.vcs] table joins the
     // report instead of aborting the parse before other fields are seen.
     let vcs = match resolve_vcs(&package.vcs) {
@@ -385,7 +385,7 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
         let field = format!("sources.{number}");
         match source {
             Source::Remote { url, sha256 } => {
-                record(source_url(&format!("{field}.url"), url, package));
+                record(validate_source_url(&format!("{field}.url"), url, package));
                 if let Some(hash) = sha256 {
                     record(
                         crate::source::validate_sha256(hash)
@@ -393,11 +393,14 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
                     );
                 }
             }
-            Source::Local { path } => record(local_path(&format!("{field}.path"), path)),
+            Source::Local { path } => record(validate_local_path(&format!("{field}.path"), path)),
         }
     }
     for (number, patch) in &input.patches {
-        record(local_path(&format!("patches.{number}.path"), &patch.path));
+        record(validate_local_path(
+            &format!("patches.{number}.path"),
+            &patch.path,
+        ));
     }
     if let Some(system) = &input.build.system
         && crate::profile::buildsystems::contract(system).is_none()
@@ -421,7 +424,7 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
             )));
         }
         for option in &config.options {
-            record(single_line(
+            record(validate_single_line(
                 &format!("build.stages.{}.options", stage.as_str()),
                 option,
             ));
@@ -446,7 +449,7 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
         }
     }
     for requirement in &input.build_requires.rpm {
-        record(single_line("build-requires.rpm", requirement));
+        record(validate_single_line("build-requires.rpm", requirement));
     }
     errors.extend(validate_body(
         "package",
@@ -558,8 +561,8 @@ where
     Ok(materials)
 }
 
-fn local_path(field: &str, path: &str) -> Result<(), String> {
-    single_line(field, path)?;
+fn validate_local_path(field: &str, path: &str) -> Result<(), String> {
+    validate_single_line(field, path)?;
     // Declares an RPM input; no local file is opened during generation.
     if path.chars().any(char::is_whitespace)
         || path.contains("://")
@@ -573,13 +576,13 @@ fn local_path(field: &str, path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn single_line(field: &str, value: &str) -> Result<(), String> {
+fn validate_single_line(field: &str, value: &str) -> Result<(), String> {
     crate::spec_metadata::validate_single_line(value).map_err(|reason| format!("{field}: {reason}"))
 }
 
 /// Generation has an HTTPS-only policy; editing existing HTTP sources is supported.
-fn source_url(field: &str, value: &str, package: &PackageInput) -> Result<(), String> {
-    single_line(field, value)?;
+fn validate_source_url(field: &str, value: &str, package: &PackageInput) -> Result<(), String> {
+    validate_single_line(field, value)?;
     let url = crate::source::validate_expression(
         value,
         &[
@@ -592,8 +595,9 @@ fn source_url(field: &str, value: &str, package: &PackageInput) -> Result<(), St
     crate::source::require_https(field, url)
 }
 
-fn https_url(field: &str, value: &str) -> Result<(), String> {
-    single_line(field, value)?;
-    let url = crate::source::authoring_url(value).map_err(|reason| format!("{field}: {reason}"))?;
+fn validate_https_url(field: &str, value: &str) -> Result<(), String> {
+    validate_single_line(field, value)?;
+    let url = crate::source::validate_authoring_url(value)
+        .map_err(|reason| format!("{field}: {reason}"))?;
     crate::source::require_https(field, url)
 }

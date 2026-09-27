@@ -4,14 +4,17 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Shared static SPEC checks and rule selection.
+//! Shared static SPEC checks, rule selection, and the check command boundary.
 
 pub(crate) mod build;
 pub(crate) mod license;
 pub(crate) mod metadata;
 
+use std::{io, path::Path};
+
 use crate::{
     check_report::{CheckReport, Finding, IncompleteReason, SelectedRule, Severity},
+    output_cli::{ReportError, ReportFormat, read_source},
     parser_diagnostic,
     spec::ParsedSpec,
 };
@@ -70,4 +73,22 @@ pub(crate) fn analyze(spec: &ParsedSpec<'_>) -> CheckReport {
         findings,
         local.incomplete_reasons,
     )
+}
+
+/// Checks the selected static rules in one SPEC.
+pub(crate) fn run(path: &Path, format: ReportFormat) -> Result<bool, ReportError> {
+    let Some(source) = read_source(path, format)? else {
+        return Ok(false);
+    };
+    let report = analyze(&ParsedSpec::parse(&source));
+
+    match format {
+        ReportFormat::Human => report
+            .write_human(path, &mut io::stderr().lock())
+            .map_err(ReportError::Stderr)?,
+        ReportFormat::Json => report
+            .write_json(path, &mut io::stdout().lock())
+            .map_err(ReportError::Stdout)?,
+    }
+    Ok(report.is_success())
 }

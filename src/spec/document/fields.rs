@@ -36,11 +36,46 @@ pub(crate) fn lookup_mut<'a>(table: &'a mut Table, field: &str) -> Option<&'a mu
     }
 }
 
-pub(crate) fn validate_shape(original: &Table, edited: &Table) -> Result<(), String> {
-    check_table(original, edited, "")
+pub(super) fn insert(table: &mut Table, field: &str, value: Value) -> Result<(), String> {
+    if let Some((head, tail)) = field.split_once('.') {
+        let child = table
+            .entry(head.to_owned())
+            .or_insert_with(|| Value::Table(Table::new()));
+        let child = child
+            .as_table_mut()
+            .ok_or_else(|| format!("{field}: conflicting field"))?;
+        insert(child, tail, value)
+    } else if table.insert(field.to_owned(), value).is_some() {
+        Err(format!("{field}: duplicate scalar field"))
+    } else {
+        Ok(())
+    }
 }
 
-fn check_table(original: &Table, edited: &Table, parent: &str) -> Result<(), String> {
+pub(super) fn string<'a>(table: &'a Table, field: &str) -> Result<&'a str, String> {
+    lookup(table, field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{field}: required string field"))
+}
+
+pub(super) fn strings<'a>(table: &'a Table, field: &str) -> Result<Vec<&'a str>, String> {
+    lookup(table, field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{field}: required array"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| format!("{field}: expected string array"))
+        })
+        .collect()
+}
+
+pub(crate) fn validate_shape(original: &Table, edited: &Table) -> Result<(), String> {
+    validate_table_shape(original, edited, "")
+}
+
+fn validate_table_shape(original: &Table, edited: &Table, parent: &str) -> Result<(), String> {
     for (key, value) in original {
         let field = path(parent, key);
         let changed = edited.get(key).ok_or_else(|| {
@@ -48,7 +83,7 @@ fn check_table(original: &Table, edited: &Table, parent: &str) -> Result<(), Str
         })?;
         match (value, changed) {
             (Value::Table(original), Value::Table(edited)) => {
-                check_table(original, edited, &field)?
+                validate_table_shape(original, edited, &field)?
             }
             (Value::Array(_), Value::Array(edited)) if edited.iter().all(Value::is_str) => {}
             (Value::String(_), Value::String(_)) => {}

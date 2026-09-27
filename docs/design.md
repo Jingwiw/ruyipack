@@ -42,9 +42,10 @@ regenerating. No filename heuristic chooses an authority or synchronizes files.
 | `source` | Resolved URLs and digests of actual downloads | `gen` fills missing manifest digests in memory; `edit` fills selected native-resolved candidate digests; `source-hash` reports without writing |
 | `edit::drafts` | Draft storage layout and output protection | Saved and interactive editing |
 
-Read `generate.rs` and `edit.rs` for orchestration, then `render.rs`,
-`edit/candidate.rs`, and `spec/document.rs` for calculation. `file_output.rs` owns
-conflict handling and publication. `output_cli` owns argument translation and
+Read `generate.rs` and `edit.rs` for orchestration, then `render.rs` and
+`edit/candidate.rs` for calculation. `spec/document.rs` owns the snapshot;
+`document/capture.rs` maps selected fields and `document/render.rs` validates and
+applies replacements. `file_output.rs` owns conflict handling and publication. `output_cli` owns argument translation and
 terminal conflict selection; publication retains the checks around that selection.
 CLI/editor interactions stay outside candidate calculation. `source_hash` only
 presents the native hashing command; generation and editing consume `source`
@@ -105,16 +106,19 @@ permission handling, stale-source checks, and their limits.
 ## Regression contracts
 
 CLI tests share `tests/integration/main.rs`, with domain modules that can be run
-separately (for example, `cargo test --test integration edit::`). Closed-stream
+separately (for example, `cargo test --test integration edit::drafts::`). Editing
+separates draft, editor, and report scenarios; generation separates build stages
+and package structure. Their command-local fixtures remain in the parent modules.
+Closed-stream
 regressions remain isolated in `tests/stdio.rs`. Argument-conflict matrices use
 `Cli::try_parse_from`; CLI cases retain exit-status and file-safety checks.
 
 - `spec::document` property tests and `tests/integration/edit_selected.rs` check
   exact preservation outside selected fields, including unsupported syntax.
-- `file_output` tests no-op byte/inode/mtime preservation, stale-source rejection,
+- `file_output/tests.rs` tests no-op byte/inode/mtime preservation, stale-source rejection,
   and partial I/O failure with exact already-written paths.
 - `tests/integration/generation.rs` checks input authority, provenance, and
   validation failures without publication.
-- `tests/integration/edit.rs` checks draft identity/shape failures and error codes.
+- `tests/integration/edit/drafts.rs` checks identity/shape failures; `edit/reports.rs` checks error codes and publication receipts.
 - `tests/integration/source_validation.rs` and `edit_source_selection.rs` distinguish
   safely locating an old invalid value from validating its replacement.

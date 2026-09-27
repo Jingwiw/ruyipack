@@ -30,7 +30,7 @@ pub(crate) struct Identity {
 pub(crate) fn identity() -> Identity {
     Identity {
         name: "openruyi".into(),
-        sha256: crate::utf8_file::digest(SOURCE),
+        sha256: crate::utf8_file::sha256(SOURCE),
     }
 }
 

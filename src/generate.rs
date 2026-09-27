@@ -65,7 +65,7 @@ pub(crate) fn run(
             }
             Err(source) => return Err(GenerateError::Input(source)),
         };
-        manifest_digest = Some(utf8_file::digest(&manifest_source));
+        manifest_digest = Some(utf8_file::sha256(&manifest_source));
         let render_error = |source| GenerateError::Render {
             path: manifest_path.to_path_buf(),
             source,

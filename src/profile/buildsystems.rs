@@ -60,7 +60,7 @@ pub(crate) fn contract_identity(name: &str) -> Option<crate::profile::Identity> 
         .find(|(contract, _)| contract.name == name)
         .map(|(_, source)| crate::profile::Identity {
             name: format!("openruyi/buildsystems/{name}"),
-            sha256: crate::utf8_file::digest(source),
+            sha256: crate::utf8_file::sha256(source),
         })
 }
 

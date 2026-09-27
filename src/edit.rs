@@ -116,7 +116,7 @@ fn load_inputs(options: &Options) -> Result<Vec<Input>, EditError> {
         let [item] = inputs.as_slice() else {
             return Err("--expect-sha256 requires exactly one SPEC".into());
         };
-        let actual = utf8_file::digest(item.snapshot.source());
+        let actual = utf8_file::sha256(item.snapshot.source());
         if &actual != expected {
             return Err(EditError::at(
                 Kind::SourceChanged,
@@ -161,7 +161,7 @@ fn execute(options: &Options, report: &mut serde_json::Value) -> Result<bool, Ed
         let created = create_drafts(dir, &inputs, Some(options))?;
         if matches!(options.format, Some(ReportFormat::Json)) {
             report["files"] = inputs.iter().zip(&created).map(|(item, path)| json!({
-                "source": item.path.to_string_lossy(), "original_sha256": utf8_file::digest(item.snapshot.source()),
+                "source": item.path.to_string_lossy(), "original_sha256": utf8_file::sha256(item.snapshot.source()),
                 "draft": path.to_string_lossy(),
             })).collect();
             return Ok(true);
@@ -315,7 +315,7 @@ fn candidate_record(item: &Input, candidate: &candidate::Candidate) -> serde_jso
     };
     json!({"source": item.path.to_string_lossy(), "draft": item.draft.as_deref().map(Path::to_string_lossy),
         "valid": candidate.report.is_success(),
-        "original_sha256": utf8_file::digest(item.snapshot.source()), "report_subject": "candidate",
+        "original_sha256": utf8_file::sha256(item.snapshot.source()), "report_subject": "candidate",
         "profile": crate::profile::identity(), "changed": candidate.contents != item.snapshot.source(),
         "review_triggers": candidate.review_triggers, "review_required": review_required,
         "source_hashes": candidate.source_hashes,
@@ -466,8 +466,8 @@ fn apply<'a>(
             Ok(outcomes) => {
                 report["outcomes"] = outcomes.iter().zip(&files).map(|(outcome, file)| {
                     let (status, path, sha256) = match outcome {
-                        file_output::EditOutcome::Written(path) => ("written", path, Some(utf8_file::digest(file.contents))),
-                        file_output::EditOutcome::Unchanged(path) => ("unchanged", path, Some(utf8_file::digest(file.contents))),
+                        file_output::EditOutcome::Written(path) => ("written", path, Some(utf8_file::sha256(file.contents))),
+                        file_output::EditOutcome::Unchanged(path) => ("unchanged", path, Some(utf8_file::sha256(file.contents))),
                         file_output::EditOutcome::Skipped(path) => ("skipped", path, None),
                     };
                     json!({"source": file.source_path.to_string_lossy(), "status": status, "path": path.to_string_lossy(), "sha256": sha256})
@@ -576,7 +576,7 @@ fn complete_hashes(
             &options.hash_source,
             &options.defines,
         )?;
-        crate::source::unchanged(&item.path, item.snapshot.source())?;
+        crate::source::ensure_unchanged(&item.path, item.snapshot.source())?;
         Ok(hashes)
     };
     let hashes = complete().map_err(|e| {

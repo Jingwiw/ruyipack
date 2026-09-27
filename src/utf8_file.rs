@@ -13,7 +13,7 @@ use std::{
 };
 
 /// Identifies the exact UTF-8 bytes, without normalization.
-pub(crate) fn digest(source: &str) -> String {
+pub(crate) fn sha256(source: &str) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(source.as_bytes()))
 }

@@ -14,7 +14,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-const SOURCE: &str = include_str!("../fixtures/ed.spec");
+const SPEC: &str = include_str!("../fixtures/ed.spec");
 
 fn command(directory: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ruyipack"));
@@ -32,25 +32,24 @@ fn fixture(source: &str) -> tempfile::TempDir {
 }
 
 fn extended() -> String {
-    SOURCE
-        .replace(
-            "Name:           ed",
-            concat!(
-                "%global local_value preserved\n",
-                "%global inert %(touch macro-was-executed)\n",
-                "Name:           ed"
-            ),
-        )
-        .replace(
-            "URL:            https://www.gnu.org/software/ed/",
-            concat!(
-                "URL:            https://www.gnu.org/software/ed/\n",
-                "VCS:            git:https://example.invalid/ed.git\n",
-                "BuildOption(conf): --disable-silent-rules\n",
-                "Provides:       base:ed\n",
-                "%if 0\nBuildRequires: ignored-conditional\n%endif"
-            ),
-        )
+    SPEC.replace(
+        "Name:           ed",
+        concat!(
+            "%global local_value preserved\n",
+            "%global inert %(touch macro-was-executed)\n",
+            "Name:           ed"
+        ),
+    )
+    .replace(
+        "URL:            https://www.gnu.org/software/ed/",
+        concat!(
+            "URL:            https://www.gnu.org/software/ed/\n",
+            "VCS:            git:https://example.invalid/ed.git\n",
+            "BuildOption(conf): --disable-silent-rules\n",
+            "Provides:       base:ed\n",
+            "%if 0\nBuildRequires: ignored-conditional\n%endif"
+        ),
+    )
 }
 
 fn view(directory: &Path, field: &str) -> toml::Table {
@@ -127,7 +126,7 @@ fn duplicate_and_conditional_selected_versions_are_rejected_without_output() {
         "%if 0\nVersion: 1.22.5\n%else\nVersion: 1.22.6\n%endif",
         "%if 0\n%if 1\nVersion: 1.22.5\n%endif\n%endif",
     ] {
-        let source = SOURCE.replace("Version:        1.22.5", version);
+        let source = SPEC.replace("Version:        1.22.5", version);
         let directory = fixture(&source);
         for mode in [
             vec!["--set", "package.version=1.23", "--stdout"],
@@ -152,7 +151,7 @@ fn duplicate_and_conditional_selected_versions_are_rejected_without_output() {
 
 #[test]
 fn parser_errors_anywhere_still_block_a_selected_view() {
-    let source = format!("%endif\n{SOURCE}");
+    let source = format!("%endif\n{SPEC}");
     let directory = fixture(&source);
     let output = command(directory.path())
         .args(["case.spec", "--field", "package.version", "--view"])

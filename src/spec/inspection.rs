@@ -55,7 +55,7 @@ impl<'src> Inspection<'src> {
             format_version: 1,
             input: InputIdentity {
                 display_path: &path,
-                sha256: crate::utf8_file::digest(self.source),
+                sha256: crate::utf8_file::sha256(self.source),
             },
             parser: ParserIdentity {
                 version: env!("RUYIPACK_RPM_SPEC_VERSION"),

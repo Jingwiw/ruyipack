@@ -37,7 +37,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         let path = fs::canonicalize(&options.spec).map_err(|e| e.to_string())?;
         let original = utf8_file::read(&path).map_err(|e| e.to_string())?;
         let result = source::calculate(&path, &original, &[options.source], &options.defines)?;
-        source::unchanged(&path, &original)?;
+        source::ensure_unchanged(&path, &original)?;
         Ok::<_, String>((result, path))
     })();
     let valid = result.is_ok();

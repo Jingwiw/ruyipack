@@ -14,7 +14,7 @@ use super::Snapshot;
 
 const DEPENDENCIES: &str =
     "Name: demo\nBuildRequires:\tfirst\nBuildRequires:  second\n\n%description\nA demo.\n";
-const ED: &str = include_str!("../../../tests/fixtures/ed.spec");
+const SPEC: &str = include_str!("../../../tests/fixtures/ed.spec");
 
 fn capture(source: &str) -> Snapshot {
     Snapshot::capture_selected(&ParsedSpec::parse(source), &[]).unwrap()
@@ -146,14 +146,14 @@ fn multiline_description_keeps_the_following_section_unchanged() {
 
 #[test]
 fn ordinary_comment_blocks_can_gain_lines_without_moving() {
-    let snapshot = capture(ED);
+    let snapshot = capture(SPEC);
     let mut edited = snapshot.document().clone();
     edited["spec"]["comments"] = Value::Array(vec![
         "# VCS: No VCS link available\n# Check upstream before changing the archive".into(),
     ]);
     assert_eq!(
         snapshot.render(&edited).unwrap(),
-        ED.replace(
+        SPEC.replace(
             "# VCS: No VCS link available",
             "# VCS: No VCS link available\n# Check upstream before changing the archive"
         )
@@ -165,7 +165,7 @@ fn source_digest_edits_preserve_bare_markers_and_only_replace_the_selected_diges
     let marker =
         "#!RemoteAsset:  sha256:56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc";
     for original in [marker, "#!RemoteAsset"] {
-        let source = ED.replace(marker, original);
+        let source = SPEC.replace(marker, original);
         let snapshot = capture(&source);
         assert_eq!(snapshot.render(snapshot.document()).unwrap(), source);
         let mut edited = snapshot.document().clone();

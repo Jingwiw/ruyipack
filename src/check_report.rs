@@ -80,7 +80,7 @@ impl CheckReport {
         parser_diagnostics: Vec<ParserDiagnostic>,
     ) -> Self {
         Self {
-            sha256: crate::utf8_file::digest(source),
+            sha256: crate::utf8_file::sha256(source),
             status: CheckStatus::Incomplete,
             incomplete_reasons: vec![IncompleteReason::ParserError],
             selected_rules,
@@ -118,7 +118,7 @@ impl CheckReport {
             CheckStatus::Pass
         };
         Self {
-            sha256: crate::utf8_file::digest(source),
+            sha256: crate::utf8_file::sha256(source),
             status,
             incomplete_reasons,
             selected_rules,

@@ -90,7 +90,7 @@ pub(super) fn create(
         contents.push((document, schema_json));
         index.drafts.push(Entry {
             source,
-            original_sha256: utf8_file::digest(original),
+            original_sha256: utf8_file::sha256(original),
             fields: fields.to_vec(),
         });
     }
@@ -170,7 +170,7 @@ pub(super) fn load(dir: &Path) -> Result<Vec<Draft>, String> {
                 original_path.display()
             )
         })?;
-        if utf8_file::digest(&original) != entry.original_sha256 {
+        if utf8_file::sha256(&original) != entry.original_sha256 {
             return Err(format!(
                 "saved original hash mismatch for {}",
                 entry.source.display()

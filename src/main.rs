@@ -7,7 +7,6 @@
 //! Command-line entry point for `RuyiPack`.
 
 mod check;
-mod check_command;
 mod check_report;
 mod cli;
 mod edit;
@@ -41,7 +40,7 @@ fn main() -> ExitCode {
         Command::Init(options) => exit_for(init::run(&options).map(|()| true)),
         Command::Edit(options) => exit_for(edit::run(options)),
         Command::SourceHash(options) => exit_for(source_hash::run(&options)),
-        Command::Check { spec, format } => exit_for(check_command::run(&spec, format)),
+        Command::Check { spec, format } => exit_for(check::run(&spec, format)),
         Command::Inspect { spec, format } => exit_for(inspect::run(&spec, format)),
         Command::Gen {
             name,

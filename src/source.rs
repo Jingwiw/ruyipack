@@ -23,7 +23,7 @@ use url::{SyntaxViolation, Url};
 /// RPM syntax is recognized before URL validation, including escaped literal percent signs.
 pub(crate) fn validate_expression(value: &str, fields: &[(&str, &str)]) -> Result<Url, String> {
     let resolved = crate::spec::expression::substitute_fields(value, fields)?;
-    authoring_url(&resolved)
+    validate_authoring_url(&resolved)
 }
 
 /// Checks URL syntax independently of the generator's HTTPS-only publishing policy.
@@ -60,7 +60,7 @@ pub(crate) fn validate_url(value: &str) -> Result<Url, String> {
 }
 
 /// Parse once, then apply authoring policy without exposing credentials in errors.
-pub(crate) fn authoring_url(value: &str) -> Result<Url, String> {
+pub(crate) fn validate_authoring_url(value: &str) -> Result<Url, String> {
     let url = validate_url(value)?;
     credentials(&url)?;
     Ok(url)
@@ -174,19 +174,19 @@ pub(crate) fn calculate(
         .map(|(number, url)| Ok((number, url.download()?)))
         .collect::<Result<_, String>>()?;
     Ok(SourceHashes {
-        input_sha256: utf8_file::digest(contents),
+        input_sha256: utf8_file::sha256(contents),
         native: NativeEvidence {
             rpm: rpm_version.trim().to_owned(),
             defines: defines.to_vec(),
             working_directory: directory.to_string_lossy().into_owned(),
-            expanded_spec_sha256: utf8_file::digest(&expanded),
+            expanded_spec_sha256: utf8_file::sha256(&expanded),
             temporary_candidate: temporary.is_some(),
         },
         sources,
     })
 }
 
-pub(crate) fn unchanged(path: &Path, original: &str) -> Result<(), String> {
+pub(crate) fn ensure_unchanged(path: &Path, original: &str) -> Result<(), String> {
     if !utf8_file::is_unchanged(path, original).map_err(|e| e.to_string())? {
         return Err("SPEC changed during source hashing; rerun against the new input".into());
     }
@@ -204,7 +204,7 @@ impl<'url> RemoteSource<'url> {
     pub(crate) fn parse(original: &'url str) -> Result<Self, String> {
         Ok(Self {
             original,
-            url: authoring_url(original)?,
+            url: validate_authoring_url(original)?,
         })
     }
 
@@ -233,7 +233,7 @@ impl<'url> RemoteSource<'url> {
                 .args(["--write-out", "%{url_effective}", "--", self.url.as_str()]),
             "curl download",
         )?;
-        authoring_url(&effective_url)?;
+        validate_authoring_url(&effective_url)?;
         let mut reader = io::BufReader::new(asset.as_file());
         let mut digest = Sha256::new();
         let mut bytes = 0_u64;
