@@ -20,7 +20,7 @@ parser.add_argument("--require-package", action="append", default=[], help="targ
 args = parser.parse_args()
 os.environ["LC_ALL"] = "C"
 
-def checked(command, stage="Native result not accepted"):
+def run_checked(command, stage="Native result not accepted"):
     try:
         result = subprocess.run(command, capture_output=True, text=True)
     except OSError as error:
@@ -31,12 +31,12 @@ def checked(command, stage="Native result not accepted"):
     return result.stdout
 
 root = pathlib.Path(__file__).resolve().parent.parent
-packages = checked(["rpm", "-q", "rpm", "rpm-build", "rpm-config-openruyi", *args.require_package], "Environment not ready")
+packages = run_checked(["rpm", "-q", "rpm", "rpm-build", "rpm-config-openruyi", *args.require_package], "Environment not ready")
 print(packages, end="")
 
 cases = root / "tests/fixtures/source-numbering.tsv"
 with tempfile.TemporaryDirectory(prefix="ruyipack-native-") as directory:
-    print(json.dumps({"rpm": checked(["rpm", "--version"]).strip(), "macro_configuration_sha256": hashlib.sha256(checked(["rpm", "--showrc"]).encode()).hexdigest(), "preprocessing": "none", "defines": [f"_tmppath {directory}"], "scope": "source-numbering and explicitly supplied SPEC parses"}))
+    print(json.dumps({"rpm": run_checked(["rpm", "--version"]).strip(), "macro_configuration_sha256": hashlib.sha256(run_checked(["rpm", "--showrc"]).encode()).hexdigest(), "preprocessing": "none", "defines": [f"_tmppath {directory}"], "scope": "source-numbering and explicitly supplied SPEC parses"}))
     for case in cases.read_text().splitlines():
         if not case or case.startswith("#"):
             continue
@@ -52,7 +52,7 @@ with tempfile.TemporaryDirectory(prefix="ruyipack-native-") as directory:
         spec += "\n%files\n"
         path = pathlib.Path(directory) / "numbering.spec"
         path.write_text(spec)
-        result = checked(["rpmspec", "--define", f"_tmppath {directory}", "-P", str(path)])
+        result = run_checked(["rpmspec", "--define", f"_tmppath {directory}", "-P", str(path)])
         observed = {}
         for line in result.splitlines():
             if line.startswith("NATIVE_SOURCE"):
@@ -66,8 +66,8 @@ with tempfile.TemporaryDirectory(prefix="ruyipack-native-") as directory:
 
     for path in args.spec:
         source = path.read_bytes()
-        parsed = checked(["rpmspec", "--define", f"_tmppath {directory}", "-P", str(path)])
-        facts = checked(["rpmspec", "--define", f"_tmppath {directory}", "-q", "--srpm", "--qf", "%{NAME}\t%{VERSION}\t%{RELEASE}\n", str(path)])
+        parsed = run_checked(["rpmspec", "--define", f"_tmppath {directory}", "-P", str(path)])
+        facts = run_checked(["rpmspec", "--define", f"_tmppath {directory}", "-q", "--srpm", "--qf", "%{NAME}\t%{VERSION}\t%{RELEASE}\n", str(path)])
         if "%" in facts or not parsed.strip():
             raise SystemExit(f"Native result not accepted: unresolved or missing facts in {path}: {facts!r}")
         print(json.dumps({"spec": str(path), "sha256": hashlib.sha256(source).hexdigest(), "native_identity": facts.strip(), "expanded_sha256": hashlib.sha256(parsed.encode()).hexdigest()}))

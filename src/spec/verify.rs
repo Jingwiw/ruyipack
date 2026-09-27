@@ -30,7 +30,7 @@ type ExpectedTag = (Tag, Option<&'static str>, TagValue);
 /// Checks candidate facts against the manifest and profile.
 pub(crate) fn run(
     spec: &ParsedSpec<'_>,
-    recipe: &Manifest,
+    manifest: &Manifest,
     profile: &Profile,
 ) -> Result<(), RenderError> {
     let source = spec.source;
@@ -47,7 +47,7 @@ pub(crate) fn run(
         )));
     }
 
-    let package = &recipe.package;
+    let package = &manifest.package;
     let mut tags = Vec::new();
     for (tag, value) in [
         (Tag::Name, package.name.as_str()),
@@ -58,14 +58,14 @@ pub(crate) fn run(
     ] {
         tags.push((tag, None, TagValue::Text(text(value)?)));
     }
-    if recipe.package.noarch {
+    if manifest.package.noarch {
         tags.push((
             Tag::BuildArch,
             None,
             TagValue::ArchList(vec![text("noarch")?]),
         ));
     }
-    if let Some(system) = &recipe.build.system {
+    if let Some(system) = &manifest.build.system {
         tags.push((
             Tag::Other("BuildSystem".into()),
             None,
@@ -75,21 +75,21 @@ pub(crate) fn run(
     if let Vcs::Git(url) = &package.vcs {
         tags.push((Tag::VCS, None, TagValue::Text(text(&format!("git:{url}"))?)));
     }
-    for (number, source) in &recipe.sources {
+    for (number, source) in &manifest.sources {
         tags.push((
             Tag::Source(Some(*number)),
             None,
             TagValue::Text(text(source.value())?),
         ));
     }
-    for (number, patch) in &recipe.patches {
+    for (number, patch) in &manifest.patches {
         tags.push((
             Tag::Patch(Some(*number)),
             None,
             TagValue::Text(text(&patch.path)?),
         ));
     }
-    for (stage, config) in &recipe.build.stages {
+    for (stage, config) in &manifest.build.stages {
         for option in &config.options {
             // rpm-spec stores an unknown tag's parenthesized argument in `lang`.
             tags.push((
@@ -102,12 +102,12 @@ pub(crate) fn run(
     dependency_tags(
         &mut tags,
         Tag::BuildRequires,
-        &recipe.build_requires.rpm,
+        &manifest.build_requires.rpm,
         "build-requires.rpm",
     )?;
     tags.extend(body_tags(&package.body, "package")?);
 
-    let mut patch_order = recipe.patches.iter().map(|(number, _)| *number);
+    let mut patch_order = manifest.patches.iter().map(|(number, _)| *number);
     let mut comments = Vec::new();
     let mut sections = Vec::new();
     for (index, item) in parsed.spec.items.iter().enumerate() {
@@ -123,7 +123,7 @@ pub(crate) fn run(
                 match_tag(item, &mut tags, &field)?;
                 if let Tag::Source(Some(number)) = item.tag
                     && let Some((_, Source::Remote { sha256, .. })) =
-                        recipe.sources.iter().find(|(n, _)| *n == number)
+                        manifest.sources.iter().find(|(n, _)| *n == number)
                 {
                     let expected = format!("{}\n", profile.remote_asset(sha256.as_deref()));
                     // The hook consumes exact bytes adjacent to this material, not just any matching comment.
@@ -153,10 +153,10 @@ pub(crate) fn run(
     for holder in &profile.copyright_holders {
         expected_comments.push(text(&format!(
             "SPDX-FileCopyrightText: (C) {} {holder}",
-            recipe.spec.copyright_years
+            manifest.spec.copyright_years
         ))?);
     }
-    for contributor in &recipe.spec.contributors {
+    for contributor in &manifest.spec.contributors {
         expected_comments.push(text(&format!("SPDX-FileContributor: {contributor}"))?);
     }
     // Keep the generated marker split so REUSE does not read it as this source file's license.
@@ -164,11 +164,11 @@ pub(crate) fn run(
         &["SPDX-License-", "Identifier: ", &profile.spec_license].concat(),
     )?);
     if matches!(package.vcs, Vcs::NoPublicRepository) {
-        expected_comments.push(hash_comment(&profile.no_public_vcs_comment)?);
+        expected_comments.push(comment_text(&profile.no_public_vcs_comment)?);
     }
-    for (_, source) in &recipe.sources {
+    for (_, source) in &manifest.sources {
         if let Source::Remote { sha256, .. } = source {
-            expected_comments.push(hash_comment(&profile.remote_asset(sha256.as_deref()))?);
+            expected_comments.push(comment_text(&profile.remote_asset(sha256.as_deref()))?);
         }
     }
     check(
@@ -185,7 +185,7 @@ pub(crate) fn run(
         &package.body.description,
         "package.description",
     )?;
-    for subpackage in &recipe.subpackages {
+    for subpackage in &manifest.subpackages {
         let (name, reference, field) = subpackage_identity(&subpackage.name)?;
         let Some(Section::Package {
             name_arg, content, ..
@@ -212,7 +212,7 @@ pub(crate) fn run(
             &format!("{field}.description"),
         )?;
     }
-    build_scripts(&mut sections, source, recipe)?;
+    build_scripts(&mut sections, source, manifest)?;
     file_section(
         sections.next(),
         source,
@@ -220,7 +220,7 @@ pub(crate) fn run(
         &package.body.files,
         "package.files",
     )?;
-    for subpackage in &recipe.subpackages {
+    for subpackage in &manifest.subpackages {
         let (_, reference, field) = subpackage_identity(&subpackage.name)?;
         file_section(
             sections.next(),
@@ -313,14 +313,19 @@ fn subpackage_identity(
 
 fn description(
     section: Option<&Section<Span>>,
-    expected_subpkg: Option<&SubpkgRef>,
+    expected_subpackage: Option<&SubpkgRef>,
     expected: &str,
     field: &str,
 ) -> Result<(), RenderError> {
-    let Some(Section::Description { subpkg, body, .. }) = section else {
+    let Some(Section::Description {
+        subpkg: subpackage,
+        body,
+        ..
+    }) = section
+    else {
         return Err(mismatch(field));
     };
-    check(subpkg.as_ref() == expected_subpkg, field)?;
+    check(subpackage.as_ref() == expected_subpackage, field)?;
     let mut lines: Vec<_> = expected.lines().collect();
     // The parser discards separator lines at the end, not indentation or prose spaces.
     while lines.last().is_some_and(|line| line.trim().is_empty()) {
@@ -333,12 +338,12 @@ fn description(
 fn file_section(
     section: Option<&Section<Span>>,
     source: &str,
-    expected_subpkg: Option<&SubpkgRef>,
+    expected_subpackage: Option<&SubpkgRef>,
     expected: &Files,
     field: &str,
 ) -> Result<(), RenderError> {
     let Some(Section::Files {
-        subpkg,
+        subpkg: subpackage,
         file_lists,
         content,
         data,
@@ -347,7 +352,7 @@ fn file_section(
         return Err(mismatch(field));
     };
     check(
-        subpkg.as_ref() == expected_subpkg
+        subpackage.as_ref() == expected_subpackage
             && *file_lists
                 == expected
                     .lists
@@ -365,7 +370,7 @@ fn file_section(
         .ok_or_else(|| mismatch(field))?;
     let mut words = header.split_whitespace();
     check(words.next() == Some("%files"), field)?;
-    if let Some(expected) = expected_subpkg {
+    if let Some(expected) = expected_subpackage {
         if matches!(expected, SubpkgRef::Absolute(_)) {
             check(words.next() == Some("-n"), field)?;
         }
@@ -389,9 +394,9 @@ fn file_section(
 fn build_scripts<'a>(
     sections: &mut impl Iterator<Item = &'a Section<Span>>,
     source: &str,
-    recipe: &Manifest,
+    manifest: &Manifest,
 ) -> Result<(), RenderError> {
-    for (stage, config) in &recipe.build.stages {
+    for (stage, config) in &manifest.build.stages {
         let expected_kind = match stage {
             Stage::Prep => BuildScriptKind::Prep,
             Stage::Conf => BuildScriptKind::Conf,
@@ -522,7 +527,7 @@ fn text(value: &str) -> Result<Text, RenderError> {
     Ok(parsed)
 }
 
-fn hash_comment(value: &str) -> Result<Text, RenderError> {
+fn comment_text(value: &str) -> Result<Text, RenderError> {
     let body = value
         .strip_prefix('#')
         .ok_or_else(|| mismatch("profile comment"))?;

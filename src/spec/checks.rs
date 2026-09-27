@@ -4,14 +4,14 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Field traversal without RPM evaluation.
+//! openRuyi policy checks over literal fields, without RPM evaluation.
 
 use rpm_spec::ast::{PreambleItem, Span, SpecFile, SpecItem, Tag, TagValue};
 use rpm_spec_analyzer::visit::Visit;
 
 use crate::check::{RuleResult, build::BuildRequirements, license};
 
-pub(super) fn check(spec: &SpecFile<Span>, source: &str) -> RuleResult {
+pub(super) fn run(spec: &SpecFile<Span>, source: &str) -> RuleResult {
     let mut visitor = CheckVisitor {
         result: RuleResult::default(),
         build: BuildRequirements::default(),

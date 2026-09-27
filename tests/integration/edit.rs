@@ -9,6 +9,8 @@
 mod drafts;
 mod editor;
 mod reports;
+mod selection;
+mod sources;
 
 use super::support::{assert_file, success};
 
@@ -20,9 +22,9 @@ use std::{
 
 const SPEC: &str = include_str!("../fixtures/ed.spec");
 
-fn fixture() -> tempfile::TempDir {
+fn fixture(source: &str) -> tempfile::TempDir {
     let directory = tempfile::tempdir().unwrap();
-    fs::write(directory.path().join("ed.spec"), SPEC).unwrap();
+    fs::write(directory.path().join("ed.spec"), source).unwrap();
     directory
 }
 
@@ -70,7 +72,7 @@ fn change_version(path: &Path, version: &str) {
 
 #[test]
 fn full_view_exposes_existing_fields_without_writing_files() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let first = command(directory.path())
         .args(["ed.spec", "--all", "--view"])
         .output()
@@ -87,7 +89,7 @@ fn full_view_exposes_existing_fields_without_writing_files() {
 
 #[test]
 fn selected_view_and_schema_have_the_same_narrow_shape() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let output = command(directory.path())
         .args(["ed.spec", "--view", "--field", "package.version"])
         .output()
@@ -119,7 +121,7 @@ fn selected_view_and_schema_have_the_same_narrow_shape() {
 
 #[test]
 fn group_selection_keeps_descendants_without_duplicating_overlaps() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let output = command(directory.path())
         .args([
             "ed.spec",
@@ -150,7 +152,7 @@ fn group_selection_keeps_descendants_without_duplicating_overlaps() {
 
 #[test]
 fn unchanged_assignment_preserves_every_source_byte() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let output = command(directory.path())
         .args(["ed.spec", "--set", "package.version=1.22.5", "--stdout"])
         .output()
@@ -175,7 +177,7 @@ fn unchanged_assignment_preserves_every_source_byte() {
 
 #[test]
 fn version_assignment_changes_only_the_original_value() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let output = command(directory.path())
         .args(["ed.spec", "--set", "package.version=1.22.6", "--stdout"])
         .output()
@@ -210,7 +212,7 @@ fn version_assignment_changes_only_the_original_value() {
 
 #[test]
 fn repeated_set_options_preserve_equals_signs_and_string_types() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let output = command(directory.path())
         .args([
             "ed.spec",
@@ -233,7 +235,7 @@ fn repeated_set_options_preserve_equals_signs_and_string_types() {
 
 #[test]
 fn invalid_assignments_never_publish_a_partial_edit() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     for assignments in [
         vec!["package.version=1.22.6", "package.version=1.22.7"],
         vec!["package.version=1.22.6", "package.unknown=present"],
@@ -254,7 +256,7 @@ fn invalid_assignments_never_publish_a_partial_edit() {
 
 #[test]
 fn explicit_output_writes_a_copy_without_changing_the_source() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let output = command(directory.path())
         .args([
             "ed.spec",
@@ -297,7 +299,7 @@ fn explicit_output_writes_a_copy_without_changing_the_source() {
 
 #[test]
 fn noninteractive_edit_requires_an_explicit_input_mode() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let output = command(directory.path()).arg("ed.spec").output().unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("select what to edit"));
@@ -320,7 +322,7 @@ fn noninteractive_edit_requires_an_explicit_input_mode() {
 
 #[test]
 fn invalid_cli_combinations_fail_before_editing() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     // Keep real CLI wiring and assignment syntax here; the full conflict matrix
     // belongs to Cli::try_parse_from, without subprocess or filesystem setup.
     for args in [

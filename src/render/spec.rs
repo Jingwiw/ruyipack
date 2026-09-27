@@ -11,9 +11,9 @@ use crate::profile::Profile;
 use std::fmt::Write as _;
 
 /// Renders a complete SPEC from validated manifest fields and distribution defaults.
-pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
+pub(crate) fn render(manifest: &Manifest, profile: &Profile) -> String {
     let mut output = String::new();
-    let header = &recipe.spec;
+    let header = &manifest.spec;
 
     for holder in &profile.copyright_holders {
         writeln!(
@@ -33,18 +33,18 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
         .expect("writing to a String cannot fail");
 
     let column = profile.preamble_value_column;
-    write_tag(&mut output, "Name:", &recipe.package.name, column);
-    write_tag(&mut output, "Version:", &recipe.package.version, column);
+    write_tag(&mut output, "Name:", &manifest.package.name, column);
+    write_tag(&mut output, "Version:", &manifest.package.version, column);
     write_tag(&mut output, "Release:", &profile.release, column);
     write_tag(
         &mut output,
         "Summary:",
-        &recipe.package.body.summary,
+        &manifest.package.body.summary,
         column,
     );
-    write_tag(&mut output, "License:", &recipe.package.license, column);
-    write_tag(&mut output, "URL:", &recipe.package.url, column);
-    match &recipe.package.vcs {
+    write_tag(&mut output, "License:", &manifest.package.license, column);
+    write_tag(&mut output, "URL:", &manifest.package.url, column);
+    match &manifest.package.vcs {
         Vcs::Git(url) => write_tag(&mut output, "VCS:", &format!("git:{url}"), column),
         Vcs::Unknown | Vcs::SameAsUrl => {}
         Vcs::NoPublicRepository => {
@@ -52,7 +52,7 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
                 .expect("writing to a String cannot fail");
         }
     }
-    for (number, source) in &recipe.sources {
+    for (number, source) in &manifest.sources {
         if let Source::Remote { sha256, .. } = source {
             writeln!(output, "{}", profile.remote_asset(sha256.as_deref()))
                 .expect("writing to a String cannot fail");
@@ -64,28 +64,28 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
             column,
         );
     }
-    if recipe.package.noarch {
+    if manifest.package.noarch {
         write_tag(&mut output, "BuildArch:", "noarch", column);
     }
     // RPM's declarative build machinery supplies the default stage bodies.
     // Do not also inline the profile's guidance: that would replace those defaults.
-    if let Some(system) = &recipe.build.system {
+    if let Some(system) = &manifest.build.system {
         write_tag(&mut output, "BuildSystem:", system, column);
     }
     // openRuyi places patches after BuildSystem, before options and dependencies.
-    for (number, patch) in &recipe.patches {
+    for (number, patch) in &manifest.patches {
         write_tag(&mut output, &format!("Patch{number}:"), &patch.path, column);
     }
     output.push('\n');
 
-    for (stage, config) in &recipe.build.stages {
+    for (stage, config) in &manifest.build.stages {
         let label = format!("BuildOption({}):", stage.as_str());
         for option in &config.options {
             // openRuyi requires two spaces after each BuildOption label.
             write_tag(&mut output, &label, option, label.len() + 2);
         }
     }
-    if recipe
+    if manifest
         .build
         .stages
         .values()
@@ -97,27 +97,27 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
     render_tag_block(
         &mut output,
         "BuildRequires:",
-        &recipe.build_requires.rpm,
+        &manifest.build_requires.rpm,
         column,
     );
     render_tag_block(
         &mut output,
         "Requires:",
-        &recipe.package.body.requires,
+        &manifest.package.body.requires,
         column,
     );
     render_tag_block(
         &mut output,
         "Provides:",
-        &recipe.package.body.provides,
+        &manifest.package.body.provides,
         column,
     );
 
     output.push_str("%description\n");
-    output.push_str(recipe.package.body.description.trim_end_matches('\n'));
+    output.push_str(manifest.package.body.description.trim_end_matches('\n'));
     output.push_str("\n\n");
 
-    for subpackage in &recipe.subpackages {
+    for subpackage in &manifest.subpackages {
         let arg = subpackage_arg(&subpackage.name);
         write_tag(&mut output, "%package", &arg, column);
         write_tag(&mut output, "Summary:", &subpackage.body.summary, column);
@@ -131,7 +131,7 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
 
     // None keeps the RPM-provided action; Some("") deliberately emits an empty
     // main section. Filtering empty replacements like hooks would undo that choice.
-    for (stage, config) in &recipe.build.stages {
+    for (stage, config) in &manifest.build.stages {
         for (suffix, script) in [
             (
                 " -p",
@@ -156,9 +156,9 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
         }
     }
     output.push_str("%files");
-    render_files(&mut output, &recipe.package.body.files);
+    render_files(&mut output, &manifest.package.body.files);
 
-    for subpackage in &recipe.subpackages {
+    for subpackage in &manifest.subpackages {
         write!(output, "\n%files {}", subpackage_arg(&subpackage.name))
             .expect("writing to a String cannot fail");
         render_files(&mut output, &subpackage.body.files);

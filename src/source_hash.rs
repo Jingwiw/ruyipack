@@ -22,8 +22,8 @@ pub(crate) struct Options {
     #[arg(long, required = true)]
     trusted_spec: bool,
     /// Effective RPM Source number, not its position in the file.
-    #[arg(long, default_value_t = 0)]
-    source: u32,
+    #[arg(long = "source", default_value_t = 0, value_name = "SOURCE")]
+    source_number: u32,
     /// Pass an RPM macro definition verbatim, in order.
     #[arg(short = 'D', long = "define", value_name = "MACRO EXPR")]
     defines: Vec<String>,
@@ -36,7 +36,8 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
     let result = (|| {
         let path = fs::canonicalize(&options.spec).map_err(|e| e.to_string())?;
         let original = utf8_file::read(&path).map_err(|e| e.to_string())?;
-        let result = source::calculate(&path, &original, &[options.source], &options.defines)?;
+        let result =
+            source::calculate(&path, &original, &[options.source_number], &options.defines)?;
         source::ensure_unchanged(&path, &original)?;
         Ok::<_, String>((result, path))
     })();
@@ -46,7 +47,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         let display_path = options.spec.to_string_lossy();
         let mut report = match result {
             Ok((value, _)) => {
-                let mut report = serde_json::to_value(&value.sources[&options.source])
+                let mut report = serde_json::to_value(&value.sources[&options.source_number])
                     .expect("serializable download");
                 report["input"] =
                     serde_json::json!({"display_path": display_path, "sha256": value.input_sha256});
@@ -60,16 +61,16 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         };
         report["format_version"] = 1.into();
         report["valid"] = valid.into();
-        report["source"] = options.source.into();
+        report["source"] = options.source_number.into();
         serde_json::to_writer(&mut stdout, &report).map_err(|e| e.to_string())?;
         writeln!(stdout).map_err(|e| e.to_string())?;
     } else {
         let (value, path) = result?;
-        let digest = &value.sources[&options.source].sha256;
+        let digest = &value.sources[&options.source_number].sha256;
         writeln!(stdout, "{digest}").map_err(|e| e.to_string())?;
         let display = path.to_string_lossy();
         let path = shell_words::quote(&display);
-        let assignment = format!("sources.{}.sha256={digest}", options.source);
+        let assignment = format!("sources.{}.sha256={digest}", options.source_number);
         writeln!(io::stderr().lock(),
             "SHA-256 calculated; SPEC unchanged. For an adjacent RemoteAsset marker:\nPreview: ruyipack edit --expect-sha256 {} --set {assignment} --diff -- {path}\nApply: ruyipack edit --expect-sha256 {} --set {assignment} -- {path}", value.input_sha256, value.input_sha256)
             .map_err(|e| e.to_string())?;

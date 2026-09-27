@@ -15,7 +15,7 @@ use std::path::Path;
 
 #[test]
 fn invalid_toml_reports_its_file_line_and_column_in_check_json() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let drafts = prepare(directory.path(), &["ed.spec"], &["package.version"]);
     let path = drafts.join("ed.toml");
     fs::write(&path, "[package]\nversion = \"unterminated\n").unwrap();
@@ -72,7 +72,7 @@ fn incomplete_batch_diagnostics_identify_each_candidate_without_publishing() {
 
 #[test]
 fn static_check_failure_blocks_even_forced_publication() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let source = SPEC.replace("URL:            https://www.gnu.org/software/ed/\n", "");
     assert_ne!(source, SPEC);
     let path = directory.path().join("ed.spec");
@@ -128,7 +128,7 @@ fn static_check_failure_blocks_even_forced_publication() {
 
 #[test]
 fn json_reports_cover_check_prepare_apply_retry_and_partial_failure() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     for (file, exit) in [("ed.spec", 0), ("missing.spec", 1)] {
         let output = command(directory.path())
             .args([
@@ -230,7 +230,7 @@ fn json_reports_cover_check_prepare_apply_retry_and_partial_failure() {
 
 #[test]
 fn upgrade_review_is_visible_without_changing_static_check_success() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     for (assignment, trigger) in [
         ("package.version=2", Some("package.version")),
         (
@@ -283,7 +283,7 @@ fn upgrade_review_is_visible_without_changing_static_check_success() {
 #[test]
 fn edit_reports_bind_original_candidate_and_profile_without_inventing_a_path() {
     use sha2::{Digest, Sha256};
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let source_path = directory.path().join("ed.spec").canonicalize().unwrap();
     let output = command(directory.path())
         .args([

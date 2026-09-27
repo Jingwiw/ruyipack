@@ -231,7 +231,7 @@ const PARSER_ERROR_SPEC_SHA256: &str =
     "e5bf39331ae71060d336c183c55ebf29da41b085e2205c6c20adfb254bead260";
 
 #[test]
-fn check_accepts_the_six_required_tags_without_running_other_rules() {
+fn check_ignores_directory_lint_config() {
     let temp = tempfile::tempdir().expect("create temporary directory");
     let spec = write_file(temp.path(), "demo.spec", COMPLETE_REQUIRED_TAGS);
     write_file(
@@ -267,7 +267,7 @@ RPM001 = \"deny\"
 }
 
 #[test]
-fn check_reports_exactly_the_six_required_tag_rules() {
+fn empty_spec_reports_six_missing_tags() {
     let temp = tempfile::tempdir().expect("create temporary directory");
     write_file(temp.path(), "empty.spec", "");
     write_file(

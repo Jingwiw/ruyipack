@@ -8,8 +8,8 @@
 //! Capture owns AST/range mapping; render validates replacements and preserves other bytes.
 
 mod capture;
-pub(crate) mod fields;
 mod render;
+pub(crate) mod table;
 
 use std::{collections::BTreeMap, ops::Range};
 use toml::Table;
@@ -39,9 +39,9 @@ pub(crate) struct Snapshot {
     source: String,
     document: Table,
     selection: Vec<String>,
-    source_fields: BTreeMap<String, String>,
+    package_context: BTreeMap<String, String>,
     scalars: Vec<Scalar>,
-    digests: BTreeMap<String, Range<usize>>,
+    digest_markers: BTreeMap<String, Range<usize>>,
     lists: BTreeMap<String, List>,
     copyright: Option<Copyright>,
 }

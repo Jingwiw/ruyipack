@@ -9,7 +9,7 @@
 mod build;
 mod packages;
 
-use super::support::{assert_file, quiet_success as success, run};
+use super::support::{assert_file, quiet_success, run};
 
 use std::fs;
 
@@ -26,7 +26,7 @@ fn workspace(source: &str) -> tempfile::TempDir {
 fn renders(source: &str, expected: &str) {
     let directory = workspace(source);
     let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-    success(&output);
+    quiet_success(&output);
     assert_eq!(output.stdout, expected.as_bytes());
 }
 
@@ -53,7 +53,7 @@ fn selected_manifest_controls_the_package_and_default_destination() {
     let directory = workspace(MANIFEST);
     fs::write(directory.path().join("other.toml"), "not valid TOML").unwrap();
     let output = run(directory.path(), &["gen", "ed"]);
-    success(&output);
+    quiet_success(&output);
     assert_eq!(
         fs::read(directory.path().join("ed.spec")).unwrap(),
         SPEC.as_bytes()
@@ -73,7 +73,7 @@ fn selected_manifest_controls_the_package_and_default_destination() {
         directory.path(),
         &["gen", "ed", "--manifest", "inputs/recipe.toml"],
     );
-    success(&explicit);
+    quiet_success(&explicit);
     assert_eq!(
         fs::read(directory.path().join("inputs/ed.spec")).unwrap(),
         SPEC.as_bytes()
@@ -123,7 +123,7 @@ fn changed_input_values_change_the_rendered_facts() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("sample.toml"), source).unwrap();
     let output = run(directory.path(), &["gen", "sample", "--stdout"]);
-    success(&output);
+    quiet_success(&output);
     let expected = SPEC
         .replace("Name:           ed", "Name:           sample")
         .replace("1.22.5", "2.0~rc1")
@@ -275,7 +275,7 @@ fn numbered_sources_keep_their_own_checksums_and_numeric_order() {
     let tenth = extra("10", &"a".repeat(64));
     let directory = workspace(&format!("{MANIFEST}{tenth}{second}"));
     let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-    success(&output);
+    quiet_success(&output);
     let expected = SPEC.replace("BuildSystem:", &format!(
         "#!RemoteAsset:  sha256:{}\nSource2:        https://example.org/extra-2.tar.lz\n\
          #!RemoteAsset:  sha256:{}\nSource10:       https://example.org/extra-10.tar.lz\nBuildSystem:",
@@ -369,7 +369,7 @@ fn generation_reports_identify_real_inputs_and_never_publish() {
     fs::write(&target, "existing manual SPEC\n").unwrap();
     let args = ["gen", "ed", "--check", "--format", "json"];
     let first = run(directory.path(), &args);
-    success(&first);
+    quiet_success(&first);
     let report: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
     assert_eq!(report["format_version"], 2);
     assert_eq!(report["scope"], "manifest-generation-static");
@@ -410,12 +410,12 @@ fn generation_reports_identify_real_inputs_and_never_publish() {
     assert_file(&target, "existing manual SPEC\n");
     assert_file(directory.path().join("ed.toml"), MANIFEST);
     let human = run(directory.path(), &["gen", "ed", "--check"]);
-    success(&human);
+    quiet_success(&human);
     assert!(human.stdout.is_empty());
     let plain = MANIFEST.replace("system = \"autotools\"\n", "");
     fs::write(directory.path().join("ed.toml"), plain).unwrap();
     let result = run(directory.path(), &args);
-    success(&result);
+    quiet_success(&result);
     let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
     assert!(report["build_contract"].is_null());
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
@@ -499,7 +499,7 @@ fn generation_and_editing_use_only_their_selected_authority() {
     );
     fs::write(directory.path().join("ed.toml"), MANIFEST).unwrap();
     let generated = run(directory.path(), &["gen", "ed", "--stdout"]);
-    success(&generated);
+    quiet_success(&generated);
     assert_eq!(generated.stdout, SPEC.as_bytes());
     let conflict = run(directory.path(), &["gen", "ed"]);
     assert_eq!(conflict.status.code(), Some(1));
@@ -516,7 +516,7 @@ fn materials_and_file_lists_compose_without_opening_local_inputs() {
     );
     let dir = workspace(&source);
     let output = run(dir.path(), &["gen", "ed", "--stdout"]);
-    success(&output);
+    quiet_success(&output);
     let spec = String::from_utf8(output.stdout).unwrap();
     for expected in [
         "Source1:        ed.conf\n",

@@ -11,7 +11,7 @@ use std::{borrow::Cow, collections::BTreeSet};
 use serde_json::{Value as Json, json};
 use toml::{Table, Value};
 
-use crate::spec::document::fields::{lookup, lookup_mut, path};
+use crate::spec::document::table::{lookup, lookup_mut, path};
 
 /// Replaces existing string fields without inferring types from their spelling.
 pub(super) fn assign<'a>(

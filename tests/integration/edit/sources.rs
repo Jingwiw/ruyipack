@@ -6,32 +6,15 @@
 
 //! Source context and field selection compose without broadening the edit boundary.
 
-use super::support::{assert_file, rejected, success};
+use super::super::support::{assert_file, rejected, success};
+use super::{SPEC, command, fixture};
+use std::{fs, path::Path, process::Output};
 
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Output, Stdio},
-};
-
-const SPEC: &str = include_str!("../fixtures/ed.spec");
 const URL: &str = "https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz";
 const HASH: &str = "56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc";
 
-fn fixture(source: &str) -> tempfile::TempDir {
-    let directory = tempfile::tempdir().unwrap();
-    fs::write(directory.path().join("ed.spec"), source).unwrap();
-    directory
-}
-
 fn run(directory: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_ruyipack"))
-        .arg("edit")
-        .args(args)
-        .current_dir(directory)
-        .stdin(Stdio::null())
-        .output()
-        .unwrap()
+    command(directory).args(args).output().unwrap()
 }
 
 fn selected_view(directory: &Path, field: &str) -> Output {
@@ -247,7 +230,7 @@ fn selecting_one_source_url_preserves_an_unmapped_sibling_source_and_its_digest(
 
 #[test]
 fn implicit_source_numbers_follow_rpm_before_field_selection() {
-    for case in include_str!("../fixtures/source-numbering.tsv")
+    for case in include_str!("../../fixtures/source-numbering.tsv")
         .lines()
         .filter(|line| !line.starts_with('#') && !line.is_empty())
     {

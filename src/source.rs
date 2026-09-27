@@ -149,14 +149,14 @@ pub(crate) fn calculate(
     } else {
         path.clone()
     };
-    let rpm_version = checked(Command::new("rpmspec").arg("--version"), "rpmspec")?;
+    let rpm_version = run_checked(Command::new("rpmspec").arg("--version"), "rpmspec")?;
     let mut rpm = Command::new("rpmspec");
     rpm.current_dir(directory).env("LC_ALL", "C").arg("--parse");
     for define in defines {
         rpm.arg("--define").arg(define);
     }
     rpm.arg(native_path);
-    let expanded = checked(
+    let expanded = run_checked(
         &mut rpm,
         "native RPM resolution (use target distribution macro packages and repository configuration; pass project-specific macros with --define)",
     )?;
@@ -215,7 +215,7 @@ impl<'url> RemoteSource<'url> {
         let asset = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
         // Like openRuyi's remoteassetify.py, reuse curl rather than another HTTP/TLS stack.
         // Disable curlrc and constrain redirects too; never trust a partially downloaded file.
-        let effective_url = checked(
+        let effective_url = run_checked(
             Command::new("curl")
                 .args([
                     "--disable",
@@ -256,7 +256,7 @@ impl<'url> RemoteSource<'url> {
     }
 }
 
-fn checked(command: &mut Command, stage: &str) -> Result<String, String> {
+fn run_checked(command: &mut Command, stage: &str) -> Result<String, String> {
     let output = command.output().map_err(|e| format!("{stage}: {e}"))?;
     // RPM can exit zero while printing an error. Warnings also leave native
     // completeness unproven; do not quietly turn them into an accepted digest.

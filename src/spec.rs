@@ -7,13 +7,13 @@
 //! Parsed SPEC source and private integrations with the RPM syntax libraries.
 
 mod analyzer;
+mod checks;
 mod diagnostic;
 pub(crate) mod document;
 pub(crate) mod expression;
 pub(crate) mod files;
 pub(crate) mod inspection;
 pub(crate) mod native;
-mod syntax;
 pub(crate) mod verify;
 
 use crate::{
@@ -45,12 +45,12 @@ impl<'src> ParsedSpec<'src> {
         diagnostic::diagnostics(self.source, self.parsed.diagnostics.clone())
     }
 
-    pub(crate) fn findings(&self, rules: &[SelectedRule]) -> Vec<Finding> {
+    pub(crate) fn analyzer_findings(&self, rules: &[SelectedRule]) -> Vec<Finding> {
         analyzer::run(self.source, &self.parsed.spec, rules)
     }
 
-    pub(crate) fn local_checks(&self) -> RuleResult {
-        syntax::check(&self.parsed.spec, self.source)
+    pub(crate) fn policy_checks(&self) -> RuleResult {
+        checks::run(&self.parsed.spec, self.source)
     }
 }
 

@@ -6,7 +6,7 @@
 
 //! Build-system defaults, explicit stages, hooks, and replacement.
 
-use super::{MANIFEST, SPEC, rejected, renders, run, success, workspace};
+use super::{MANIFEST, SPEC, quiet_success, rejected, renders, run, workspace};
 use std::fs;
 
 #[test]
@@ -25,7 +25,7 @@ options = ["-p0"]
 "#;
     let directory = workspace(&format!("{MANIFEST}{extra}"));
     let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-    success(&output);
+    quiet_success(&output);
     let expected = SPEC.replace(
         "BuildRequires:  autoconf\n",
         concat!(
@@ -52,7 +52,7 @@ options = ["-p0"]
         )
         .unwrap();
         let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-        success(&output);
+        quiet_success(&output);
         assert_eq!(output.stdout, SPEC.as_bytes());
     }
 }
@@ -298,14 +298,14 @@ fn generated_vcs_and_scripts_offer_selected_editing_when_full_views_are_unsuppor
     ] {
         let directory = workspace(&manifest);
         let generated = run(directory.path(), &["gen", "ed", "--stdout"]);
-        success(&generated);
+        quiet_success(&generated);
         fs::write(directory.path().join("ed.spec"), &generated.stdout).unwrap();
         let full = run(directory.path(), &["edit", "ed.spec", "--all", "--view"]);
         assert_eq!(full.status.code(), Some(1));
         assert!(full.stdout.is_empty());
         let error = String::from_utf8_lossy(&full.stderr);
         assert!(error.contains("--field package.version --view"), "{error}");
-        success(&run(
+        quiet_success(&run(
             directory.path(),
             &["edit", "ed.spec", "--field", "package.version", "--view"],
         ));

@@ -13,7 +13,7 @@ use rpm_spec::{
 use std::{collections::BTreeMap, ops::Range};
 use toml::{Table, Value};
 
-use super::fields::{insert, lookup, lookup_mut};
+use super::table::{insert, lookup, lookup_mut};
 use super::{
     Copyright, List, Scalar, Snapshot, selected, validate_comments, validate_file_path,
     validate_text,
@@ -42,13 +42,13 @@ impl Snapshot {
             source: source.to_owned(),
             document: Table::new(),
             selection: selection.to_vec(),
-            source_fields: if needs_sources {
-                source_fields(source, parsed)
+            package_context: if needs_sources {
+                package_context(source, parsed)
             } else {
                 BTreeMap::new()
             },
             scalars: Vec::new(),
-            digests: BTreeMap::new(),
+            digest_markers: BTreeMap::new(),
             lists: BTreeMap::new(),
             copyright: None,
         };
@@ -102,7 +102,7 @@ impl Snapshot {
                         raw_value.filter(|value| needs_sources && value.contains('%'))
                     {
                         let fields = snapshot
-                            .source_fields
+                            .package_context
                             .iter()
                             .map(|(name, value)| (name.as_str(), value.as_str()))
                             .collect::<Vec<_>>();
@@ -193,7 +193,7 @@ impl Snapshot {
                                     &field,
                                     Value::String(hash.to_owned()),
                                 )?;
-                                snapshot.digests.insert(field, asset.clone());
+                                snapshot.digest_markers.insert(field, asset.clone());
                             }
                             consumed_assets.push(asset);
                             (format!("{identity}.url"), expected)
@@ -701,7 +701,7 @@ fn validate_coverage(
 
 /// Retains raw main-package context even when an edit projects only Source fields.
 /// Missing and repeated fields are unavailable, not guessed from an arbitrary tag.
-fn source_fields(source: &str, parsed: &ParseResult<Span>) -> BTreeMap<String, String> {
+fn package_context(source: &str, parsed: &ParseResult<Span>) -> BTreeMap<String, String> {
     fn collect(
         source: &str,
         items: &[SpecItem<Span>],

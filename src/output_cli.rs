@@ -106,7 +106,7 @@ impl ConflictHint {
 }
 
 impl OutputActionOptions {
-    pub(crate) fn publish(
+    pub(crate) fn emit(
         &self,
         path: &Path,
         contents: &str,

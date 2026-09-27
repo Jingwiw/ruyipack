@@ -6,7 +6,7 @@
 
 //! Main-package and subpackage names, dependencies, and file ownership.
 
-use super::{MANIFEST, assert_file, rejected, run, success, workspace};
+use super::{MANIFEST, assert_file, quiet_success, rejected, run, workspace};
 use std::fs;
 
 #[test]
@@ -22,7 +22,7 @@ fn main_package_requires_provides_and_noarch_render_and_round_trip() {
     let directory = workspace(&manifest);
     let output = run(directory.path(), &["gen", "ed", "--stdout"]);
     // gen succeeding means the render/verify round trip accepted the new tags.
-    success(&output);
+    quiet_success(&output);
     let spec = String::from_utf8_lossy(&output.stdout);
 
     // BuildArch: noarch sits in the preamble block, immediately before BuildSystem.
@@ -89,7 +89,7 @@ replace = ""
     let source = format!("{source}{extra}");
     let directory = workspace(&source);
     let stdout = run(directory.path(), &["gen", "ed", "--stdout"]);
-    success(&stdout);
+    quiet_success(&stdout);
     assert!(!directory.path().join("ed.spec").exists());
     let generated = String::from_utf8(stdout.stdout.clone()).unwrap();
     let headers: Vec<_> = generated
@@ -145,7 +145,7 @@ replace = ""
     );
     assert!(generated.find("%description    meta").unwrap() < generated.find("%prep -p").unwrap());
     assert!(generated.find("%check\n").unwrap() < generated.find("%files\n").unwrap());
-    success(&run(directory.path(), &["gen", "ed"]));
+    quiet_success(&run(directory.path(), &["gen", "ed"]));
     assert_eq!(
         fs::read(directory.path().join("ed.spec")).unwrap(),
         stdout.stdout

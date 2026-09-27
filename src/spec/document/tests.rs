@@ -145,7 +145,7 @@ fn multiline_description_keeps_the_following_section_unchanged() {
 }
 
 #[test]
-fn ordinary_comment_blocks_can_gain_lines_without_moving() {
+fn comment_growth_preserves_surrounding_bytes() {
     let snapshot = capture(SPEC);
     let mut edited = snapshot.document().clone();
     edited["spec"]["comments"] = Value::Array(vec![
@@ -161,7 +161,7 @@ fn ordinary_comment_blocks_can_gain_lines_without_moving() {
 }
 
 #[test]
-fn source_digest_edits_preserve_bare_markers_and_only_replace_the_selected_digest() {
+fn digest_edits_preserve_bare_markers_until_explicitly_filled() {
     let marker =
         "#!RemoteAsset:  sha256:56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc";
     for original in [marker, "#!RemoteAsset"] {

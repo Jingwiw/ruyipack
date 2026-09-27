@@ -104,7 +104,7 @@ pub(crate) fn run(options: &Options) -> Result<(), InitError> {
     let contents = render(options, &year, author.as_deref())?;
     options
         .output
-        .publish(
+        .emit(
             &directory.join(format!("{}.toml", options.name)),
             &contents,
             output_cli::ConflictHint::WithoutOutputPath,

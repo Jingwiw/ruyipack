@@ -6,30 +6,9 @@
 
 //! Selection is a source projection, not a requirement to map the whole SPEC.
 
-use super::support::{assert_file, success};
-
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Stdio},
-};
-
-const SPEC: &str = include_str!("../fixtures/ed.spec");
-
-fn command(directory: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_ruyipack"));
-    command
-        .arg("edit")
-        .current_dir(directory)
-        .stdin(Stdio::null());
-    command
-}
-
-fn fixture(source: &str) -> tempfile::TempDir {
-    let directory = tempfile::tempdir().unwrap();
-    fs::write(directory.path().join("case.spec"), source).unwrap();
-    directory
-}
+use super::super::support::{assert_file, success};
+use super::{SPEC, command, fixture};
+use std::{fs, path::Path};
 
 fn extended() -> String {
     SPEC.replace(
@@ -54,7 +33,7 @@ fn extended() -> String {
 
 fn view(directory: &Path, field: &str) -> toml::Table {
     let output = command(directory)
-        .args(["case.spec", "--field", field, "--view"])
+        .args(["ed.spec", "--field", field, "--view"])
         .output()
         .unwrap();
     success(&output);
@@ -67,7 +46,7 @@ fn selected_version_preserves_unmapped_tags_macros_and_unselected_conditional_by
     assert!(source.contains("VCS:"));
     let directory = fixture(&source);
     let output = command(directory.path())
-        .args(["case.spec", "--set", "package.version=1.22.6", "--stdout"])
+        .args(["ed.spec", "--set", "package.version=1.22.6", "--stdout"])
         .output()
         .unwrap();
     success(&output);
@@ -77,7 +56,7 @@ fn selected_version_preserves_unmapped_tags_macros_and_unselected_conditional_by
             .replace("Version:        1.22.5", "Version:        1.22.6")
             .as_bytes()
     );
-    assert_file(directory.path().join("case.spec"), &source);
+    assert_file(directory.path().join("ed.spec"), &source);
     assert!(!directory.path().join("macro-was-executed").exists());
     let document = view(directory.path(), "package.version");
     assert_eq!(
@@ -85,7 +64,7 @@ fn selected_version_preserves_unmapped_tags_macros_and_unselected_conditional_by
         toml::from_str::<toml::Table>("[package]\nversion = '1.22.5'\n").unwrap()
     );
     let full = command(directory.path())
-        .args(["case.spec", "--all", "--view"])
+        .args(["ed.spec", "--all", "--view"])
         .output()
         .unwrap();
     assert!(!full.status.success(), "{full:?}");
@@ -106,7 +85,7 @@ fn selected_version_ignores_unselected_duplicate_fields_and_unresolved_source_ma
     assert!(source.contains("Second summary") && source.contains("%{unresolved_source}"));
     let directory = fixture(&source);
     let output = command(directory.path())
-        .args(["case.spec", "--set", "package.version=1.22.6", "--stdout"])
+        .args(["ed.spec", "--set", "package.version=1.22.6", "--stdout"])
         .output()
         .unwrap();
     success(&output);
@@ -133,7 +112,7 @@ fn duplicate_and_conditional_selected_versions_are_rejected_without_output() {
             vec!["--field", "package.version", "--view"],
         ] {
             let output = command(directory.path())
-                .arg("case.spec")
+                .arg("ed.spec")
                 .args(mode)
                 .output()
                 .unwrap();
@@ -145,7 +124,7 @@ fn duplicate_and_conditional_selected_versions_are_rejected_without_output() {
                 "{error}"
             );
         }
-        assert_file(directory.path().join("case.spec"), &source);
+        assert_file(directory.path().join("ed.spec"), &source);
     }
 }
 
@@ -154,7 +133,7 @@ fn parser_errors_anywhere_still_block_a_selected_view() {
     let source = format!("%endif\n{SPEC}");
     let directory = fixture(&source);
     let output = command(directory.path())
-        .args(["case.spec", "--field", "package.version", "--view"])
+        .args(["ed.spec", "--field", "package.version", "--view"])
         .output()
         .unwrap();
     assert!(!output.status.success(), "{output:?}");
@@ -173,7 +152,7 @@ fn selected_draft_schema_and_resume_keep_selection_and_reject_shape_changes() {
     success(
         &command(directory.path())
             .args([
-                "case.spec",
+                "ed.spec",
                 "--field",
                 "package.version",
                 "--prepare",
@@ -182,7 +161,7 @@ fn selected_draft_schema_and_resume_keep_selection_and_reject_shape_changes() {
             .output()
             .unwrap(),
     );
-    let draft = directory.path().join("drafts/case.toml");
+    let draft = directory.path().join("drafts/ed.toml");
     let schema: serde_json::Value = serde_json::from_slice(
         &fs::read(directory.path().join("drafts/.state/schema/0.json")).unwrap(),
     )
@@ -223,7 +202,7 @@ fn selected_draft_schema_and_resume_keep_selection_and_reject_shape_changes() {
         assert!(!output.status.success(), "{output:?}");
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(report["valid"], false);
-        assert_file(directory.path().join("case.spec"), &source);
+        assert_file(directory.path().join("ed.spec"), &source);
     }
     fs::write(&draft, "[package]\nversion = '1.22.6'\n").unwrap();
     success(
@@ -252,12 +231,7 @@ fn selecting_one_copyright_leaf_keeps_its_companion_out_of_draft() {
     let document = view(directory.path(), "spec.copyright-years");
     assert_eq!(document["spec"].as_table().unwrap().len(), 1);
     let output = command(directory.path())
-        .args([
-            "case.spec",
-            "--set",
-            "spec.copyright-years=2026",
-            "--stdout",
-        ])
+        .args(["ed.spec", "--set", "spec.copyright-years=2026", "--stdout"])
         .output()
         .unwrap();
     success(&output);
@@ -274,7 +248,7 @@ fn selected_file_array_preserves_unselected_directives_when_cleared() {
     success(
         &command(directory.path())
             .args([
-                "case.spec",
+                "ed.spec",
                 "--field",
                 "package.files.doc",
                 "--prepare",
@@ -284,7 +258,7 @@ fn selected_file_array_preserves_unselected_directives_when_cleared() {
             .unwrap(),
     );
     fs::write(
-        directory.path().join("drafts/case.toml"),
+        directory.path().join("drafts/ed.toml"),
         "[package.files]\ndoc = []\n",
     )
     .unwrap();

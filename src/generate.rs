@@ -188,7 +188,7 @@ pub(crate) fn run(
     }
     output
         .action
-        .publish(
+        .emit(
             target,
             &rendered.contents,
             output_cli::ConflictHint::WithOutputPath,

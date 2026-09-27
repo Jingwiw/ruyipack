@@ -6,7 +6,7 @@
 
 //! Shared Source/RemoteAsset behavior across real generation and editing commands.
 
-use super::support::{assert_file, quiet_success as success, rejected, run};
+use super::support::{assert_file, quiet_success, rejected, run};
 
 use std::{fs, process::Output};
 
@@ -37,11 +37,11 @@ fn generated_sources_are_viewable_and_round_trip_without_changing_a_byte() {
         let directory = tempfile::tempdir().unwrap();
         fs::write(directory.path().join("ed.toml"), MANIFEST.replace(URL, url)).unwrap();
         let generated = run(directory.path(), &["gen", "ed", "--stdout"]);
-        success(&generated);
+        quiet_success(&generated);
         assert_eq!(generated.stdout, SPEC.replace(URL, url).as_bytes());
         fs::write(directory.path().join("ed.spec"), &generated.stdout).unwrap();
         let view = run(directory.path(), &["edit", "ed.spec", "--all", "--view"]);
-        success(&view);
+        quiet_success(&view);
         let document: toml::Table =
             toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
         assert_eq!(document["sources"]["0"]["url"].as_str(), Some(url));
@@ -55,7 +55,7 @@ fn generated_sources_are_viewable_and_round_trip_without_changing_a_byte() {
                 "--stdout",
             ],
         );
-        success(&unchanged);
+        quiet_success(&unchanged);
         assert_eq!(unchanged.stdout, generated.stdout);
         assert_eq!(
             fs::read(directory.path().join("ed.spec")).unwrap(),
@@ -107,7 +107,7 @@ fn invalid_or_unsupported_sources_can_be_viewed_but_not_published() {
         let spec = SPEC.replace(URL, url);
         fs::write(directory.path().join("ed.spec"), &spec).unwrap();
         let view = run(directory.path(), &["edit", "ed.spec", "--all", "--view"]);
-        success(&view);
+        quiet_success(&view);
         let document: toml::Table =
             toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
         assert_eq!(document["sources"]["0"]["url"].as_str(), Some(url));
@@ -191,7 +191,7 @@ fn generated_bare_sources_remain_editable_without_inventing_a_digest() {
         let mut args = vec!["edit", "ed.spec", "--view"];
         args.extend(fields);
         let view = run(directory.path(), &args);
-        success(&view);
+        quiet_success(&view);
         let document: toml::Table =
             toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
         let source = document["sources"]["0"].as_table().unwrap();
@@ -206,7 +206,7 @@ fn generated_bare_sources_remain_editable_without_inventing_a_digest() {
         directory.path(),
         &["edit", "ed.spec", "--set", &assignment, "--stdout"],
     );
-    success(&preview);
+    quiet_success(&preview);
     assert_eq!(preview.stdout, SPEC.as_bytes());
     assert_file(directory.path().join("ed.spec"), &spec);
     rejected(
@@ -281,7 +281,7 @@ fn existing_http_sources_remain_editable_but_new_generation_requires_https() {
     );
     let spec = SPEC.replace(URL, url);
     fs::write(directory.path().join("ed.spec"), &spec).unwrap();
-    success(&run(
+    quiet_success(&run(
         directory.path(),
         &["edit", "ed.spec", "--all", "--view"],
     ));
@@ -313,11 +313,11 @@ fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
         )
         .unwrap();
         let generated = run(directory.path(), &["gen", "ed", "--stdout"]);
-        success(&generated);
+        quiet_success(&generated);
         assert_eq!(generated.stdout, SPEC.replace(HASH, &digest).as_bytes());
         fs::write(directory.path().join("ed.spec"), &generated.stdout).unwrap();
         let view = run(directory.path(), &["edit", "ed.spec", "--all", "--view"]);
-        success(&view);
+        quiet_success(&view);
         let document: toml::Table =
             toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
         assert_eq!(
@@ -334,7 +334,7 @@ fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
                 "--stdout",
             ],
         );
-        success(&unchanged);
+        quiet_success(&unchanged);
         assert_eq!(unchanged.stdout, generated.stdout);
     }
     for digest in ["g".repeat(64), "a".repeat(63), "a".repeat(65)] {
@@ -354,7 +354,7 @@ fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
         )
         .unwrap();
         let output = run(directory.path(), &["check", "ed.spec", "--format", "json"]);
-        success(&output);
+        quiet_success(&output);
         let report = super::support::json_line(&output);
         assert_eq!(report["evidence"]["status"], "pass");
         let findings = report["findings"].as_array().unwrap();
@@ -368,7 +368,7 @@ fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
                 .contains("invalid sha256")
         );
         let view = run(directory.path(), &["edit", "ed.spec", "--all", "--view"]);
-        success(&view);
+        quiet_success(&view);
         let document: toml::Table =
             toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
         assert_eq!(
@@ -400,7 +400,7 @@ fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
     let directory = tempfile::tempdir().unwrap();
     let source = SPEC.replace('\n', "\r\n");
     fs::write(directory.path().join("ed.spec"), &source).unwrap();
-    success(&run(directory.path(), &["check", "ed.spec"]));
+    quiet_success(&run(directory.path(), &["check", "ed.spec"]));
     assert_file(directory.path().join("ed.spec"), &source);
 }
 
@@ -413,12 +413,12 @@ fn source_context_is_order_independent_and_only_required_when_referenced() {
         .replace(URL, "%{url}/%{name}-%{version}.tar.lz");
     let later = spec.replace("%description", &format!("{line}\n%description"));
     fs::write(directory.path().join("ed.spec"), &later).unwrap();
-    success(&run(
+    quiet_success(&run(
         directory.path(),
         &["edit", "ed.spec", "--all", "--view"],
     ));
     fs::write(directory.path().join("ed.spec"), &spec).unwrap();
-    success(&run(
+    quiet_success(&run(
         directory.path(),
         &["edit", "ed.spec", "--all", "--view"],
     ));
@@ -440,7 +440,7 @@ fn source_context_is_order_independent_and_only_required_when_referenced() {
         "https://example.org/file.tar.lz",
     );
     fs::write(directory.path().join("ed.spec"), &explicit).unwrap();
-    success(&run(
+    quiet_success(&run(
         directory.path(),
         &["edit", "ed.spec", "--all", "--view"],
     ));
@@ -455,7 +455,7 @@ fn source_macros_do_not_recursively_evaluate_package_fields() {
             &format!("Version:        {version}"),
         );
         fs::write(directory.path().join("ed.spec"), spec).unwrap();
-        success(&run(
+        quiet_success(&run(
             directory.path(),
             &["edit", "ed.spec", "--all", "--view"],
         ));
@@ -485,10 +485,10 @@ fn remote_asset_digests_stay_bound_to_the_adjacent_source_identity() {
     );
     fs::write(directory.path().join("ed.toml"), manifest).unwrap();
     let generated = run(directory.path(), &["gen", "ed", "--stdout"]);
-    success(&generated);
+    quiet_success(&generated);
     fs::write(directory.path().join("ed.spec"), &generated.stdout).unwrap();
     let view = run(directory.path(), &["edit", "ed.spec", "--all", "--view"]);
-    success(&view);
+    quiet_success(&view);
     let document: toml::Table = toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
     assert_eq!(document["sources"]["0"]["sha256"].as_str(), Some(HASH));
     assert_eq!(
@@ -505,7 +505,7 @@ fn remote_asset_digests_stay_bound_to_the_adjacent_source_identity() {
             "--stdout",
         ],
     );
-    success(&edited);
+    quiet_success(&edited);
     assert_eq!(
         edited.stdout,
         String::from_utf8(generated.stdout)

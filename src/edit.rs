@@ -41,16 +41,16 @@ struct Input {
 pub(crate) fn run(mut options: Options) -> Result<bool, EditError> {
     if options.from.is_none()
         && !options.all
-        && options.field.is_empty()
+        && options.fields.is_empty()
         && options.set.is_empty()
-        && options.hash_source.is_empty()
+        && options.hash_sources.is_empty()
         && options.format.is_none()
         && !options.check
         && !options.view
         && !options.schema
         && let Some(field) = crate::output_cli::select_edit_field()?
     {
-        options.field.push(field.to_owned());
+        options.fields.push(field.to_owned());
     }
     let options = &options;
     let mut report = json!({"format_version": 2, "scope": if options.prepare.is_some() { "edit-draft" } else { "selected-edit-static" }, "files": [],
@@ -76,9 +76,9 @@ pub(crate) fn run(mut options: Options) -> Result<bool, EditError> {
 fn load_inputs(options: &Options) -> Result<Vec<Input>, EditError> {
     if options.from.is_none()
         && !options.all
-        && options.field.is_empty()
+        && options.fields.is_empty()
         && options.set.is_empty()
-        && options.hash_source.is_empty()
+        && options.hash_sources.is_empty()
     {
         return Err("select what to edit: use --field package.version (opens the editor), --set package.version=VERSION, or --all for a fully supported SPEC. For a read-only overview, use inspect".into());
     }
@@ -96,12 +96,12 @@ fn load_inputs(options: &Options) -> Result<Vec<Input>, EditError> {
                     fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()))?;
                 let source = utf8_file::read(&path).map_err(|e| e.to_string())?;
                 let mut fields = if options.set.is_empty() {
-                    options.field.clone()
+                    options.fields.clone()
                 } else {
                     options.set.iter().map(|(field, _)| field.clone()).collect()
                 };
                 if !options.all {
-                    for number in &options.hash_source {
+                    for number in &options.hash_sources {
                         let field = format!("sources.{number}.sha256");
                         if !fields.contains(&field) {
                             fields.push(field);
@@ -177,7 +177,7 @@ fn execute(options: &Options, report: &mut serde_json::Value) -> Result<bool, Ed
     // Saved drafts already contain the edit; reopening them requires --editor.
     let opens_editor = options.editor.is_some()
         || (options.set.is_empty()
-            && options.hash_source.is_empty()
+            && options.hash_sources.is_empty()
             && !options.check
             && options.from.is_none());
     if opens_editor && matches!(options.format, Some(ReportFormat::Json)) {
@@ -282,7 +282,7 @@ fn create_drafts(
         .iter()
         .map(|item| {
             let mut document = Cow::Borrowed(item.snapshot.document());
-            if let Some(options) = options.filter(|options| !options.hash_source.is_empty()) {
+            if let Some(options) = options.filter(|options| !options.hash_sources.is_empty()) {
                 complete_hashes(item, document.to_mut(), options).map_err(|e| e.to_string())?;
             }
             Ok(document)
@@ -531,7 +531,7 @@ fn read_candidate(item: &Input, options: &Options) -> Result<candidate::Candidat
             )
         })?
     };
-    let source_hashes = if options.hash_source.is_empty() {
+    let source_hashes = if options.hash_sources.is_empty() {
         None
     } else {
         Some(complete_hashes(item, document.to_mut(), options)?)
@@ -556,9 +556,9 @@ fn complete_hashes(
 ) -> Result<crate::source::SourceHashes, EditError> {
     let complete = || -> Result<crate::source::SourceHashes, String> {
         // A saved draft never silently acquires permission to edit another field.
-        for number in &options.hash_source {
+        for number in &options.hash_sources {
             let field = format!("sources.{number}.sha256");
-            if crate::spec::document::fields::lookup(document, &field).is_none() {
+            if crate::spec::document::table::lookup(document, &field).is_none() {
                 return Err(format!(
                     "{field}: prepare a draft that includes this digest field"
                 ));
@@ -573,7 +573,7 @@ fn complete_hashes(
         let hashes = crate::source::calculate(
             &item.path,
             &contents,
-            &options.hash_source,
+            &options.hash_sources,
             &options.defines,
         )?;
         crate::source::ensure_unchanged(&item.path, item.snapshot.source())?;
@@ -588,7 +588,7 @@ fn complete_hashes(
         )
     })?;
     for (number, source) in &hashes.sources {
-        *crate::spec::document::fields::lookup_mut(document, &format!("sources.{number}.sha256"))
+        *crate::spec::document::table::lookup_mut(document, &format!("sources.{number}.sha256"))
             .expect("selected digest was checked before download") =
             toml::Value::String(source.sha256.clone());
     }

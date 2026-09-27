@@ -18,9 +18,9 @@ use std::collections::{BTreeMap, BTreeSet};
 struct ManifestInput {
     spec: SpecMetadata,
     package: PackageInput,
-    #[serde(deserialize_with = "read_materials")]
+    #[serde(deserialize_with = "deserialize_materials")]
     sources: Vec<(u32, Source)>,
-    #[serde(default, deserialize_with = "read_materials")]
+    #[serde(default, deserialize_with = "deserialize_materials")]
     patches: Vec<(u32, Patch)>,
     #[serde(default)]
     build: Build,
@@ -537,7 +537,7 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
 }
 
 /// Reads numeric source keys without silently merging alternate spellings.
-fn read_materials<'de, D, T>(deserializer: D) -> Result<Vec<(u32, T)>, D::Error>
+fn deserialize_materials<'de, D, T>(deserializer: D) -> Result<Vec<(u32, T)>, D::Error>
 where
     D: Deserializer<'de>,
     T: serde::de::DeserializeOwned,

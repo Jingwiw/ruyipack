@@ -9,7 +9,7 @@
 use std::{collections::BTreeMap, ops::Range};
 use toml::{Table, Value};
 
-use super::fields::{lookup, string, strings, validate_shape};
+use super::table::{lookup, string, strings, validate_shape};
 use super::{List, Snapshot, validate_comments, validate_file_path, validate_text};
 
 impl Snapshot {
@@ -20,7 +20,7 @@ impl Snapshot {
     /// Keep digest markers until downloads finish. RPM expands macros even in
     /// comments: removing such a marker afterwards could change Source resolution.
     pub(crate) fn render_before_hashing(&self, edited: &Table) -> Result<String, String> {
-        for (field, range) in &self.digests {
+        for (field, range) in &self.digest_markers {
             if self.source[range.clone()].contains('%') {
                 return Err(format!(
                     "{field}: macro-bearing RemoteAsset cannot be hashed safely; repair the marker first"
@@ -32,7 +32,7 @@ impl Snapshot {
 
     fn render_changes(&self, edited: &Table, with_digests: bool) -> Result<String, String> {
         validate_shape(&self.document, edited)?;
-        let mut fields = self.source_fields.clone();
+        let mut fields = self.package_context.clone();
         for name in ["name", "version", "url"] {
             // An assignment cannot resolve context hidden by includes or ambiguity.
             if fields.contains_key(name)
@@ -57,7 +57,7 @@ impl Snapshot {
                 changes.push((scalar.range.clone(), value.to_owned()));
             }
         }
-        for (field, range) in self.digests.iter().filter(|_| with_digests) {
+        for (field, range) in self.digest_markers.iter().filter(|_| with_digests) {
             let value = string(edited, field)?;
             let profile = crate::profile::load();
             // Empty represents an already-bare marker, never a made-up digest.

@@ -14,7 +14,7 @@ use std::fs;
 
 #[test]
 fn prepared_drafts_round_trip_without_changes() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let drafts = prepare(directory.path(), &["ed.spec"], &[]);
     assert!(drafts.join("ed.toml").is_file());
     assert!(drafts.join(".state/index.json").is_file());
@@ -32,7 +32,7 @@ fn prepared_drafts_round_trip_without_changes() {
 
 #[test]
 fn selected_draft_changes_only_its_selected_fields() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let drafts = prepare(directory.path(), &["ed.spec"], &["package.version"]);
     let path = drafts.join("ed.toml");
     change_version(&path, "1.22.6");
@@ -61,7 +61,7 @@ fn selected_draft_changes_only_its_selected_fields() {
 
 #[test]
 fn selected_draft_requires_every_selected_field() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let drafts = prepare(directory.path(), &["ed.spec"], &["package.version"]);
     fs::write(drafts.join("ed.toml"), "[package]\n").unwrap();
     let output = command(directory.path())
@@ -88,7 +88,7 @@ fn selected_draft_requires_every_selected_field() {
 
 #[test]
 fn all_prepared_files_are_checked_before_any_source_is_written() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     fs::write(directory.path().join("second.spec"), SPEC).unwrap();
     let drafts = prepare(
         directory.path(),
@@ -124,7 +124,7 @@ fn all_prepared_files_are_checked_before_any_source_is_written() {
 
 #[test]
 fn prepared_dependency_edit_changes_only_its_source_value() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let drafts = prepare(directory.path(), &["ed.spec"], &["build-requires"]);
     let path = drafts.join("ed.toml");
     let mut document: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
@@ -147,7 +147,7 @@ fn prepared_dependency_edit_changes_only_its_source_value() {
 
 #[test]
 fn saved_drafts_apply_without_reopening_an_editor() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     fs::write(directory.path().join("second.spec"), SPEC).unwrap();
     let drafts = prepare(
         directory.path(),
@@ -169,7 +169,7 @@ fn saved_drafts_apply_without_reopening_an_editor() {
 
 #[test]
 fn stale_prepared_source_is_not_overwritten() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let drafts = prepare(directory.path(), &["ed.spec"], &["package.version"]);
     change_version(&drafts.join("ed.toml"), "1.22.6");
     let external = format!("{SPEC}# Concurrent change\n");
@@ -192,7 +192,7 @@ fn stale_prepared_source_is_not_overwritten() {
 
 #[test]
 fn stale_draft_does_not_hide_other_files_check_results() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     fs::write(directory.path().join("second.spec"), SPEC).unwrap();
     let drafts = prepare(
         directory.path(),
@@ -226,7 +226,7 @@ fn stale_draft_does_not_hide_other_files_check_results() {
 
 #[test]
 fn explicit_output_cannot_overwrite_its_draft_or_saved_state() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let drafts = prepare(directory.path(), &["ed.spec"], &["package.version"]);
     change_version(&drafts.join("ed.toml"), "1.22.6");
     let mut targets = vec![
@@ -262,7 +262,7 @@ fn explicit_output_cannot_overwrite_its_draft_or_saved_state() {
 fn draft_files_and_saved_originals_are_private() {
     use std::os::unix::fs::PermissionsExt;
 
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let drafts = prepare(directory.path(), &["ed.spec"], &[]);
     for path in [
         "ed.toml",

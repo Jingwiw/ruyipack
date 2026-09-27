@@ -6,17 +6,15 @@
 
 //! CLI boundaries share one executable; each domain remains independently filterable.
 
+mod checks;
 mod cli;
 mod diagnostic_locations;
 mod edit;
-mod edit_selected;
-mod edit_source_selection;
 mod generation;
 mod init;
-mod inspect_json;
+mod inspect;
 mod output;
 #[cfg(unix)]
 mod source_hash;
 mod source_validation;
 mod support;
-mod validation;

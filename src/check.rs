@@ -55,7 +55,7 @@ pub(crate) fn analyze(spec: &ParsedSpec<'_>) -> CheckReport {
     let mut findings = if parser_error {
         Vec::new()
     } else {
-        spec.findings(&selected_rules)
+        spec.analyzer_findings(&selected_rules)
     };
     selected_rules.push(license::RULE);
     selected_rules.extend(metadata::RULES);
@@ -64,7 +64,7 @@ pub(crate) fn analyze(spec: &ParsedSpec<'_>) -> CheckReport {
     if parser_error {
         return CheckReport::incomplete(source, selected_rules, diagnostics);
     }
-    let local = spec.local_checks();
+    let local = spec.policy_checks();
     findings.extend(local.findings);
     CheckReport::analyzed(
         source,

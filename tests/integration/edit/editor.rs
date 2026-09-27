@@ -87,7 +87,7 @@ fn draft_hints_handle_hyphen_paths_shell_characters_and_a_changed_directory() {
 #[cfg(unix)]
 #[test]
 fn quoted_editor_command_edits_toml_without_polluting_spec_stdout() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let editor = script(
         directory.path(),
         "printf 'EDITOR_OUTPUT\\n'\nsed 's/1.22.5/1.22.6/' \"$1\" > \"$1.next\"\nmv \"$1.next\" \"$1\"",
@@ -114,7 +114,7 @@ fn quoted_editor_command_edits_toml_without_polluting_spec_stdout() {
 #[test]
 fn successful_editor_saves_checked_changes_and_cleans_temporary_drafts() {
     for persistent in [false, true] {
-        let directory = fixture();
+        let directory = fixture(SPEC);
         let editor = script(
             directory.path(),
             "sed 's/1.22.5/1.22.6/' \"$1\" > \"$1.next\"\nmv \"$1.next\" \"$1\"",
@@ -157,7 +157,7 @@ fn notification_failure_keeps_only_unapplied_editor_changes() {
     use std::os::{fd::OwnedFd, unix::net::UnixStream};
 
     for args in [&[][..], &["--stdout"][..], &["--output", "copy.spec"][..]] {
-        let directory = fixture();
+        let directory = fixture(SPEC);
         let editor = script(
             directory.path(),
             "sed 's/^summary = .*/summary = \"Updated summary\"/' \"$1\" > \"$1.next\"\nmv \"$1.next\" \"$1\"",
@@ -207,7 +207,7 @@ fn notification_failure_keeps_only_unapplied_editor_changes() {
 #[cfg(unix)]
 #[test]
 fn source_changed_while_editor_runs_is_not_overwritten() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let editor = script(
         directory.path(),
         "printf '# Concurrent change\\n' >> ed.spec\nsed 's/1.22.5/1.22.6/' \"$1\" > \"$1.next\"\nmv \"$1.next\" \"$1\"",
@@ -227,7 +227,7 @@ fn source_changed_while_editor_runs_is_not_overwritten() {
 #[cfg(unix)]
 #[test]
 fn editor_failure_retains_its_changed_draft() {
-    let directory = fixture();
+    let directory = fixture(SPEC);
     let editor = script(
         directory.path(),
         "sed 's/1.22.5/1.22.6/' \"$1\" > \"$1.next\"\nmv \"$1.next\" \"$1\"\nexit 7",
@@ -258,7 +258,7 @@ fn editor_preview_and_copy_retain_only_actual_candidate_changes() {
             vec!["--stdout"],
             vec!["--output", "copy.spec"],
         ] {
-            let directory = fixture();
+            let directory = fixture(SPEC);
             let editor = script(
                 directory.path(),
                 if changed {

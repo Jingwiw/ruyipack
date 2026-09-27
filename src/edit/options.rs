@@ -26,36 +26,36 @@ pub(crate) struct Options {
     )]
     pub specs: Vec<PathBuf>,
     /// Applies saved drafts without opening an editor; --editor reopens them.
-    #[arg(long, value_name = "DIR", conflicts_with_all = ["prepare", "set", "field", "view", "schema"])]
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["prepare", "set", "fields", "view", "schema"])]
     pub from: Option<PathBuf>,
     /// Writes editable TOML files and their source bindings to a directory.
     #[arg(long, value_name = "DIR", conflicts_with_all = ["set", "editor"])]
     pub prepare: Option<PathBuf>,
     /// Sets one existing string field; repeat for more fields.
-    #[arg(long, value_name = "FIELD=VALUE", value_parser = assignment, conflicts_with_all = ["field", "view", "schema", "editor"])]
+    #[arg(long, value_name = "FIELD=VALUE", value_parser = assignment, conflicts_with_all = ["fields", "view", "schema", "editor"])]
     pub set: Vec<(String, String)>,
     /// Recalculate a Source SHA-256 from the pending candidate; repeat for more Sources.
-    #[arg(long, value_name = "N", requires = "trusted_spec", conflicts_with_all = ["view", "schema"])]
-    pub hash_source: Vec<u32>,
+    #[arg(long = "hash-source", value_name = "N", requires = "trusted_spec", conflicts_with_all = ["view", "schema"])]
+    pub hash_sources: Vec<u32>,
     /// Acknowledge native macro execution for --hash-source. Isolate untrusted input.
-    #[arg(long, requires = "hash_source")]
+    #[arg(long, requires = "hash_sources")]
     pub trusted_spec: bool,
     /// Pass an RPM macro definition verbatim, in order, when calculating hashes.
     #[arg(
         short = 'D',
         long = "define",
         value_name = "MACRO EXPR",
-        requires = "hash_source"
+        requires = "hash_sources"
     )]
     pub defines: Vec<String>,
     /// Refuse a single-file operation unless its original SHA-256 matches.
-    #[arg(long, value_name = "HASH", value_parser = expected_digest)]
+    #[arg(long, value_name = "HASH", value_parser = parse_expected_sha256)]
     pub expect_sha256: Option<String>,
     /// Selects a field or table for viewing or editing; repeat to add fields.
-    #[arg(long, value_name = "FIELD")]
-    pub field: Vec<String>,
+    #[arg(long = "field", value_name = "FIELD")]
+    pub fields: Vec<String>,
     /// Explicitly maps every supported field; fails on unsupported constructs.
-    #[arg(long, conflicts_with_all = ["field", "set", "from"])]
+    #[arg(long, conflicts_with_all = ["fields", "set", "from"])]
     pub all: bool,
     /// Prints the editable TOML for one SPEC without opening an editor.
     #[arg(long, conflicts_with = "editor")]
@@ -95,7 +95,7 @@ fn assignment(text: &str) -> Result<(String, String), String> {
     Ok((field.to_owned(), value.to_owned()))
 }
 
-fn expected_digest(value: &str) -> Result<String, &'static str> {
+fn parse_expected_sha256(value: &str) -> Result<String, &'static str> {
     crate::source::validate_sha256(value)?;
     Ok(value.to_ascii_lowercase())
 }

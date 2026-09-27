@@ -6,7 +6,7 @@
 
 //! Pure calculation and static validation of selected SPEC edits.
 
-use crate::spec::document::fields;
+use crate::spec::document::table;
 use crate::{
     check,
     check_report::CheckReport,
@@ -31,13 +31,13 @@ pub(super) fn prepare(snapshot: &Snapshot, document: &Table) -> Result<Candidate
     let report = check::analyze(&parsed);
     let mut review_triggers = Vec::new();
     let before = snapshot.document();
-    if fields::lookup(before, "package.version") != fields::lookup(document, "package.version") {
+    if table::lookup(before, "package.version") != table::lookup(document, "package.version") {
         review_triggers.push("package.version".to_owned());
     }
     if let Some(sources) = document.get("sources").and_then(toml::Value::as_table) {
         for number in sources.keys() {
             let field = format!("sources.{number}.url");
-            if fields::lookup(before, &field) != fields::lookup(document, &field) {
+            if table::lookup(before, &field) != table::lookup(document, &field) {
                 review_triggers.push(field);
             }
         }
