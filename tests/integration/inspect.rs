@@ -250,37 +250,13 @@ fn text_diagnostics_do_not_present_body_local_offsets_as_source_locations() {
 }
 
 #[test]
-fn empty_and_unreadable_inputs_keep_distinct_results() {
+fn empty_input_has_no_inspect_facts() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("input.spec");
     fs::write(&path, "# no tags\n").unwrap();
     let result = report(&command(&path).output().unwrap());
     assert_eq!(result["preamble"], json!([]));
     assert_eq!(result["parser_diagnostics"], json!([]));
-    fs::write(&path, [0xff]).unwrap();
-    for path in [path, directory.path().join("missing.spec")] {
-        for name in ["check", "inspect"] {
-            let output = super::support::command()
-                .arg(name)
-                .arg(&path)
-                .args(["--format", "json"])
-                .output()
-                .unwrap();
-            assert_eq!(output.status.code(), Some(1));
-            assert!(output.stderr.is_empty());
-            let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert_eq!(result["valid"], false);
-            assert_eq!(
-                result["input"]["display_path"],
-                path.to_string_lossy().as_ref()
-            );
-            assert_eq!(result["error"]["code"], "input-read");
-            assert!(result["input"]["sha256"].is_null());
-        }
-    }
-    assert_eq!(
-        fs::read(directory.path().join("input.spec")).unwrap(),
-        [0xff]
-    );
+    assert_file(&path, "# no tags\n");
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
 }

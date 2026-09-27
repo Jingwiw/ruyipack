@@ -371,7 +371,7 @@ fn generation_reports_identify_real_inputs_and_never_publish() {
     let first = run(directory.path(), &args);
     quiet_success(&first);
     let report: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
-    assert_eq!(report["format_version"], 2);
+    assert_eq!(report["format_version"], 3);
     assert_eq!(report["scope"], "manifest-generation-static");
     assert_eq!(report["valid"], true);
     assert_eq!(report["manifest"]["display_path"], "ed.toml");
@@ -461,7 +461,8 @@ fn generation_input_failures_report_the_manifest_without_claiming_a_candidate() 
         assert_eq!(report["valid"], false);
         assert!(report["report"].is_null());
         assert!(report["report_subject"].is_null());
-        assert!(!report["error"].as_str().unwrap().is_empty());
+        assert_eq!(report["error"]["code"], "generation-failed");
+        assert!(!report["error"]["message"].as_str().unwrap().is_empty());
         assert_eq!(report["manifest"]["display_path"], "ed.toml");
         assert!(report["manifest"]["sha256"].is_string());
         assert_file(directory.path().join("ed.toml"), &source);

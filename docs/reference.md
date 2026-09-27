@@ -408,8 +408,10 @@ Missing Source SHA-256 is `RPK005`, a warning in all three commands, not a hard
 failure or evidence of verified source content. Static detection covers adjacent
 bare markers and literal HTTP(S) Source prefixes, not arbitrary macro expansion.
 
-`check` and `inspect` return `valid: false` and `error.code: "input-read"` for
-unreadable/invalid-UTF-8 input in JSON mode, without a fabricated input hash.
+All five reporting commands use an `error` object with `code` and `message`.
+Unreadable/invalid-UTF-8 inputs report `valid: false`, `code: "input-read"`, and
+no fabricated input hash. Generation uses report version 3; `source-hash` uses
+version 2. Codes describe the failing boundary, not text matched from a message.
 Edit JSON is compact; use `jq` to select fields or format it. Check reports already
 include the baseline, so a separate original `check` is unnecessary for comparison.
 Preparation (`scope: "edit-draft"`) returns absolute draft paths, not a validated

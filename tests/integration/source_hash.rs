@@ -100,7 +100,20 @@ printf 'https://cdn.example.org/archive'
         let report = json_line(&output);
         assert_eq!(report["valid"], false);
         assert!(report["sha256"].is_null());
-        assert!(report["error"].as_str().unwrap().contains(message));
+        assert_eq!(
+            report["error"]["code"],
+            if mode == "source-changed" {
+                "source-changed"
+            } else {
+                "source-hash-failed"
+            }
+        );
+        assert!(
+            report["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(message)
+        );
     };
     failed("diagnostic", "native failure");
     assert!(!root.join("curl-args").exists());

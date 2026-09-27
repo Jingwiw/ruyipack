@@ -53,18 +53,7 @@ pub(crate) fn run(
             ));
         }
 
-        let manifest_source = match utf8_file::read(manifest_path) {
-            Ok(source) => source,
-            Err(utf8_file::Utf8FileError::Read { source, .. })
-                if source.kind() == io::ErrorKind::NotFound =>
-            {
-                return Err(GenerateError::ManifestNotForPackage {
-                    requested: requested_name.to_owned(),
-                    path: manifest_path.to_path_buf(),
-                });
-            }
-            Err(source) => return Err(GenerateError::Input(source)),
-        };
+        let manifest_source = utf8_file::read(manifest_path).map_err(GenerateError::Input)?;
         manifest_digest = Some(utf8_file::sha256(&manifest_source));
         let render_error = |source| GenerateError::Render {
             path: manifest_path.to_path_buf(),
@@ -127,7 +116,7 @@ pub(crate) fn run(
         let target = manifest_path.with_file_name(format!("{requested_name}.spec"));
         let valid = candidate.is_some_and(|r| r.report.is_success());
         let report = serde_json::json!({
-            "format_version": 2,
+            "format_version": 3,
             "scope": "manifest-generation-static",
             "valid": valid,
             "manifest": {"display_path": manifest_path.to_string_lossy(), "sha256": manifest_digest},
@@ -137,7 +126,7 @@ pub(crate) fn run(
             "report": candidate.map(|r| r.report.structured(&target)),
             "source_hashes": downloads,
             "authoring_warnings": authoring_warnings,
-            "error": rendered.as_ref().err().map(ToString::to_string),
+            "error": rendered.as_ref().err().map(|error| output_cli::failure(error.code(), error)),
         });
         serde_json::to_writer(io::stdout().lock(), &report).map_err(GenerateError::Json)?;
         writeln!(io::stdout().lock()).map_err(GenerateError::Stdout)?;
@@ -237,7 +226,7 @@ pub(crate) enum GenerateError {
     Read { path: PathBuf, source: io::Error },
     #[error("manifest path conflicts with generated target {}", .0.display())]
     InputIsTarget(PathBuf),
-    #[error("no manifest for requested package {requested:?} was found at {}", .path.display())]
+    #[error("manifest at {} is not for requested package {requested:?}", .path.display())]
     ManifestNotForPackage { requested: String, path: PathBuf },
     #[error("package name {0:?} is not a valid selector; NAME must be one filename component")]
     InvalidPackageSelector(String),
@@ -245,4 +234,20 @@ pub(crate) enum GenerateError {
     Stderr(#[source] io::Error),
     #[error("generated SPEC failed the selected static checks")]
     CheckFailed,
+}
+
+impl GenerateError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Input(_) | Self::Read { .. } => "input-read",
+            Self::SourceHash(_) => "source-hash-failed",
+            Self::Render { .. } => "generation-failed",
+            Self::ManifestNotForPackage { .. } => "package-mismatch",
+            Self::InvalidPackageSelector(_) => "invalid-package-selector",
+            Self::InputIsTarget(_) => "input-is-target",
+            Self::Output(_) => "publication-failed",
+            Self::Json(_) | Self::Stdout(_) | Self::Stderr(_) => "output-write",
+            Self::CheckFailed => "static-check-failed",
+        }
+    }
 }

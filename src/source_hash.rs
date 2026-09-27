@@ -6,7 +6,10 @@
 
 //! CLI presentation for explicitly requested native Source hashing.
 
-use crate::{output_cli::ReportFormat, source, utf8_file};
+use crate::{
+    output_cli::{self, ReportFormat},
+    source, utf8_file,
+};
 use clap::Args;
 use std::{
     fs,
@@ -34,12 +37,14 @@ pub(crate) struct Options {
 
 pub(crate) fn run(options: &Options) -> Result<bool, String> {
     let result = (|| {
-        let path = fs::canonicalize(&options.spec).map_err(|e| e.to_string())?;
-        let original = utf8_file::read(&path).map_err(|e| e.to_string())?;
+        let path = fs::canonicalize(&options.spec)
+            .map_err(|e| ("input-read", format!("{}: {e}", options.spec.display())))?;
+        let original = utf8_file::read(&path).map_err(|e| ("input-read", e.to_string()))?;
         let result =
-            source::calculate(&path, &original, &[options.source_number], &options.defines)?;
-        source::ensure_unchanged(&path, &original)?;
-        Ok::<_, String>((result, path))
+            source::calculate(&path, &original, &[options.source_number], &options.defines)
+                .map_err(|e| ("source-hash-failed", e))?;
+        source::ensure_unchanged(&path, &original).map_err(|e| ("source-changed", e))?;
+        Ok::<_, (&str, String)>((result, path))
     })();
     let valid = result.is_ok();
     let mut stdout = io::stdout().lock();
@@ -55,17 +60,17 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
                     serde_json::to_value(value.native).expect("serializable evidence");
                 report
             }
-            Err(error) => {
-                serde_json::json!({"input": {"display_path": display_path}, "error": error})
+            Err((code, message)) => {
+                serde_json::json!({"input": {"display_path": display_path}, "error": output_cli::failure(code, message)})
             }
         };
-        report["format_version"] = 1.into();
+        report["format_version"] = 2.into();
         report["valid"] = valid.into();
         report["source"] = options.source_number.into();
         serde_json::to_writer(&mut stdout, &report).map_err(|e| e.to_string())?;
         writeln!(stdout).map_err(|e| e.to_string())?;
     } else {
-        let (value, path) = result?;
+        let (value, path) = result.map_err(|(_, message)| message)?;
         let digest = &value.sources[&options.source_number].sha256;
         writeln!(stdout, "{digest}").map_err(|e| e.to_string())?;
         let display = path.to_string_lossy();

@@ -22,6 +22,11 @@ pub(crate) enum ReportFormat {
     Json,
 }
 
+/// Shared error shape; the calling boundary owns the domain-specific code.
+pub(crate) fn failure(code: &str, message: impl std::fmt::Display) -> serde_json::Value {
+    serde_json::json!({"code": code, "message": message.to_string()})
+}
+
 /// File input and output failures shared by the read-only report commands.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ReportError {
@@ -43,7 +48,7 @@ pub(crate) fn read_source(
         Err(error) if matches!(format, ReportFormat::Json) => {
             let report = serde_json::json!({"format_version": 2, "valid": false,
                 "input": {"display_path": path.to_string_lossy()},
-                "error": {"code": "input-read", "message": error.to_string()}});
+                "error": failure("input-read", error)});
             let mut output = io::stdout().lock();
             serde_json::to_writer(&mut output, &report)
                 .map_err(|e| ReportError::Stdout(e.into()))?;

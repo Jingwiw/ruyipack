@@ -13,6 +13,7 @@ use std::path::Path;
 #[serde(rename_all = "kebab-case")]
 pub(super) enum Kind {
     OperationFailed,
+    InputRead,
     UnmappableFields,
     SourceChanged,
     SourceHashFailed,

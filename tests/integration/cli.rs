@@ -525,6 +525,51 @@ fn report_commands_reject_missing_and_non_utf8_inputs() {
 }
 
 #[test]
+fn input_failures_share_machine_error_shape_across_commands() {
+    let temp = tempfile::tempdir().unwrap();
+    let invalid = write_file(temp.path(), "invalid.spec", [0xff]);
+    for path in [invalid.clone(), temp.path().join("missing.spec")] {
+        for args in [
+            vec!["check"],
+            vec!["inspect"],
+            vec!["edit", "--set", "package.version=2", "--check"],
+            vec!["source-hash", "--trusted-spec"],
+            vec!["gen", "demo", "--check", "--manifest"],
+        ] {
+            let output = command()
+                .args(&args)
+                .arg(&path)
+                .args(["--format", "json"])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+            assert!(output.stderr.is_empty(), "{output:?}");
+            let report = json_line(&output);
+            assert_eq!(report["valid"], false);
+            assert_eq!(report["error"]["code"], "input-read", "{args:?}: {report}");
+            assert!(!report["error"]["message"].as_str().unwrap().is_empty());
+            let subject = match args[0] {
+                "gen" => &report["manifest"],
+                "edit" => {
+                    let resolved = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                    assert_eq!(report["error"]["path"], resolved.to_string_lossy().as_ref());
+                    assert_eq!(
+                        report["error"]["selected_fields"],
+                        serde_json::json!(["package.version"])
+                    );
+                    continue;
+                }
+                _ => &report["input"],
+            };
+            assert_eq!(subject["display_path"], path.to_string_lossy().as_ref());
+            assert!(subject["sha256"].is_null());
+        }
+    }
+    assert_eq!(fs::read(&invalid).unwrap(), [0xff]);
+    assert_eq!(entries(temp.path()), [invalid]);
+}
+
+#[test]
 fn inspect_prints_the_main_package_view_without_writing() {
     let temp = tempfile::tempdir().expect("create temporary directory");
     let spec = write_file(

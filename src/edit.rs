@@ -92,9 +92,6 @@ fn load_inputs(options: &Options) -> Result<Vec<Input>, EditError> {
             .specs
             .iter()
             .map(|path| {
-                let path =
-                    fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()))?;
-                let source = utf8_file::read(&path).map_err(|e| e.to_string())?;
                 let mut fields = if options.set.is_empty() {
                     options.fields.clone()
                 } else {
@@ -108,6 +105,16 @@ fn load_inputs(options: &Options) -> Result<Vec<Input>, EditError> {
                         }
                     }
                 }
+                let path = fs::canonicalize(path).map_err(|e| {
+                    EditError::at(
+                        Kind::InputRead,
+                        path,
+                        &fields,
+                        format!("{}: {e}", path.display()),
+                    )
+                })?;
+                let source = utf8_file::read(&path)
+                    .map_err(|e| EditError::at(Kind::InputRead, &path, &fields, e.to_string()))?;
                 input(path, source, fields, None)
             })
             .collect::<Result<Vec<_>, _>>()?
