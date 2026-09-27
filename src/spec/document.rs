@@ -111,10 +111,7 @@ impl Snapshot {
                     let number = if let Tag::Source(explicit) = item.tag
                         && needs_sources
                     {
-                        let number = explicit.or(next_source);
-                        next_source = next_source.and_then(|next| {
-                            number.and_then(|number| number.checked_add(1).map(|n| next.max(n)))
-                        });
+                        let number = super::source_number(&mut next_source, explicit);
                         if number.is_none() && snapshot.selects("sources") {
                             return Err("sources: implicit Source number is uncertain after unsupported or conditional declarations".into());
                         }
@@ -152,13 +149,13 @@ impl Snapshot {
                     }
                     let range = checked_range(source, item.data)?;
                     coverage.push(range.clone());
-                    if !item.qualifiers.is_empty() || item.lang.is_some() {
-                        return Err(
-                            "preamble: qualifiers and localized fields are unsupported".into()
-                        );
-                    }
                     let raw = line(source, &range)?;
                     let (name, value) = raw.split_once(':').ok_or("preamble: missing colon")?;
+                    if !item.qualifiers.is_empty() || item.lang.is_some() {
+                        return Err(format!(
+                            "preamble {name:?}: qualified or localized tag cannot be edited; select a supported field such as --field package.version"
+                        ));
+                    }
                     let value_start = range.start + name.len() + 1 + value.len()
                         - value.trim_start_matches([' ', '\t']).len();
                     let value_end = range.start + raw.trim_end_matches([' ', '\t']).len();
@@ -181,15 +178,18 @@ impl Snapshot {
                                 Tag::Source(Some(number)) => format!("Source{number}"),
                                 _ => "Source".to_owned(),
                             };
+                            let missing_asset = || {
+                                format!(
+                                    "{identity} ({name}): no adjacent RemoteAsset marker; local or unmarked Sources are not editable; select an individual marked Source with --field sources.N"
+                                )
+                            };
                             // RemoteAsset belongs to the immediately following Source.
                             // Requiring byte adjacency avoids stealing a different asset's
                             // digest across blank lines or unrelated comments.
                             let Some(SpecItem::Comment(previous)) =
                                 index.checked_sub(1).and_then(|i| parsed.spec.items.get(i))
                             else {
-                                return Err(format!(
-                                    "{identity}.sha256: missing adjacent RemoteAsset comment"
-                                ));
+                                return Err(missing_asset());
                             };
                             let asset = checked_range(source, previous.data)?;
                             if asset.end != range.start {
@@ -198,6 +198,9 @@ impl Snapshot {
                                 ));
                             }
                             let asset_text = &source[asset.clone()];
+                            if !asset_text.starts_with(profile.remote_asset_bare.as_str()) {
+                                return Err(missing_asset());
+                            }
                             if asset_text.strip_suffix('\n')
                                 != Some(profile.remote_asset_bare.as_str())
                             {
@@ -239,7 +242,14 @@ impl Snapshot {
                     }
                     let (name, span) = match section.as_ref() {
                         Section::Description { subpkg: None, data, .. } => ("description", *data),
-                        Section::Files { subpkg: None, file_lists, data, .. } if file_lists.is_empty() => ("files", *data),
+                        Section::Files { subpkg: None, file_lists, data, .. } => {
+                            if !file_lists.is_empty() {
+                                let range = checked_range(source, *data)?;
+                                let header = source[range].lines().next().unwrap_or("%files");
+                                return Err(format!("package.files: external file list in {header:?} is not editable; select another field such as --field package.version"));
+                            }
+                            ("files", *data)
+                        },
                         Section::Changelog { data, .. } => ("changelog", *data),
                         _ => return Err("section: only simple main-package description, files and changelog are supported".into()),
                     };

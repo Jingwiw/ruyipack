@@ -11,6 +11,7 @@ mod diagnostic;
 pub(crate) mod document;
 pub(crate) mod expression;
 pub(crate) mod inspection;
+pub(crate) mod native;
 mod syntax;
 pub(crate) mod verify;
 
@@ -50,4 +51,12 @@ impl<'src> ParsedSpec<'src> {
     pub(crate) fn local_checks(&self) -> RuleResult {
         syntax::check(&self.parsed.spec, self.source)
     }
+}
+
+/// RPM implicit numbering advances past the greatest explicit number seen.
+/// None preserves uncertainty caused by hidden declarations (or overflow).
+fn source_number(next: &mut Option<u32>, explicit: Option<u32>) -> Option<u32> {
+    let number = explicit.or(*next);
+    *next = next.and_then(|next| number.and_then(|n| n.checked_add(1).map(|n| next.max(n))));
+    number
 }

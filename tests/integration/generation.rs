@@ -993,16 +993,43 @@ fn generation_check_reports_static_failure_without_writing() {
 }
 
 #[test]
-fn generation_input_failures_do_not_claim_a_candidate_report() {
-    let directory = workspace("not valid TOML!");
+fn generation_input_failures_report_the_manifest_without_claiming_a_candidate() {
+    use super::support::json_line;
+    for source in [
+        "not valid TOML!".to_owned(),
+        MANIFEST.replace("system = \"autotools\"", "system = \"unknown\""),
+        MANIFEST.replace("version = \"1.22.5\"", "version = \"\""),
+        MANIFEST.replace(
+            "https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz",
+            "not-a-url",
+        ),
+    ] {
+        let directory = workspace(&source);
+        let result = run(
+            directory.path(),
+            &["gen", "ed", "--check", "--format", "json"],
+        );
+        assert_eq!(result.status.code(), Some(1));
+        assert!(result.stderr.is_empty(), "{result:?}");
+        let report = json_line(&result);
+        assert_eq!(report["valid"], false);
+        assert!(report["report"].is_null());
+        assert!(report["report_subject"].is_null());
+        assert!(!report["error"].as_str().unwrap().is_empty());
+        assert_eq!(report["manifest"]["display_path"], "ed.toml");
+        assert!(report["manifest"]["sha256"].is_string());
+        assert_file(directory.path().join("ed.toml"), &source);
+        assert!(!directory.path().join("ed.spec").exists());
+    }
+    let directory = tempfile::tempdir().unwrap();
     let result = run(
         directory.path(),
         &["gen", "ed", "--check", "--format", "json"],
     );
     assert_eq!(result.status.code(), Some(1));
-    assert!(result.stdout.is_empty());
-    assert!(!result.stderr.is_empty());
-    assert!(!directory.path().join("ed.spec").exists());
+    let report = json_line(&result);
+    assert!(report["manifest"]["sha256"].is_null());
+    assert!(report["report"].is_null());
 }
 
 #[test]

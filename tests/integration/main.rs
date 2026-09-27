@@ -15,6 +15,8 @@ mod generation;
 mod init;
 mod inspect_json;
 mod output;
+#[cfg(unix)]
+mod source_hash;
 mod source_validation;
 mod support;
 mod validation;

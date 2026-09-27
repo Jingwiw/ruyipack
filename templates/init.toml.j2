@@ -67,8 +67,8 @@ url = ""
 sha256 = ""
 # Add sources.1, sources.2, ... for additional remote archives.
 {% if full %}
-# Verify the downloaded file before recording its digest. Changing a URL does not update the digest.
-# A source with no digest is valid but weaker provenance, so generation warns about it.
+# Use source-hash in a prepared RPM environment to calculate the digest; review its resolved URL.
+# Generation warns without a digest; openRuyi requires SHA-256 for HTTP(S) sources.
 # https://openruyi.cn/docs/guide/packaging-guidelines/SourceURL/
 {% endif %}
 

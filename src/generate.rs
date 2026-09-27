@@ -26,18 +26,6 @@ pub(crate) fn run(
     check_only: bool,
     format: Option<ReportFormat>,
 ) -> Result<bool, GenerateError> {
-    // NAME selects a package; it never acts as an implicit manifest path.
-    let mut name_components = Path::new(requested_name).components();
-    let name_is_file_component = matches!(name_components.next(), Some(Component::Normal(_)))
-        && name_components.next().is_none()
-        && !requested_name.contains('/')
-        && !requested_name.contains('\\');
-    if !name_is_file_component {
-        return Err(GenerateError::InvalidPackageSelector(
-            requested_name.to_owned(),
-        ));
-    }
-
     let default_manifest;
     let manifest_path = match manifest_path {
         Some(path) => path,
@@ -47,48 +35,69 @@ pub(crate) fn run(
         }
     };
 
-    let manifest_source = match utf8_file::read(manifest_path) {
-        Ok(source) => source,
-        Err(utf8_file::Utf8FileError::Read { source, .. })
-            if source.kind() == io::ErrorKind::NotFound =>
-        {
+    let mut manifest_digest = None;
+    let rendered = (|| {
+        // NAME selects a package; it never acts as an implicit manifest path.
+        let mut name_components = Path::new(requested_name).components();
+        let name_is_file_component = matches!(name_components.next(), Some(Component::Normal(_)))
+            && name_components.next().is_none()
+            && !requested_name.contains('/')
+            && !requested_name.contains('\\');
+        if !name_is_file_component {
+            return Err(GenerateError::InvalidPackageSelector(
+                requested_name.to_owned(),
+            ));
+        }
+
+        let manifest_source = match utf8_file::read(manifest_path) {
+            Ok(source) => source,
+            Err(utf8_file::Utf8FileError::Read { source, .. })
+                if source.kind() == io::ErrorKind::NotFound =>
+            {
+                return Err(GenerateError::ManifestNotForPackage {
+                    requested: requested_name.to_owned(),
+                    path: manifest_path.to_path_buf(),
+                });
+            }
+            Err(source) => return Err(GenerateError::Input(source)),
+        };
+        manifest_digest = Some(utf8_file::digest(&manifest_source));
+        let rendered = render::run(&manifest_source).map_err(|source| GenerateError::Render {
+            path: manifest_path.to_path_buf(),
+            source,
+        })?;
+        if requested_name != rendered.name {
             return Err(GenerateError::ManifestNotForPackage {
                 requested: requested_name.to_owned(),
                 path: manifest_path.to_path_buf(),
             });
         }
-        Err(source) => return Err(GenerateError::Input(source)),
-    };
-    let rendered = render::run(&manifest_source).map_err(|source| GenerateError::Render {
-        path: manifest_path.to_path_buf(),
-        source,
-    })?;
-    if requested_name != rendered.name {
-        return Err(GenerateError::ManifestNotForPackage {
-            requested: requested_name.to_owned(),
-            path: manifest_path.to_path_buf(),
-        });
-    }
-
-    let default_target = manifest_path.with_file_name(format!("{}.spec", rendered.name));
-    let target = output.path.as_deref().unwrap_or(&default_target);
+        Ok(rendered)
+    })();
     if check_only && matches!(format, Some(ReportFormat::Json)) {
+        let candidate = rendered.as_ref().ok();
+        let target = manifest_path.with_file_name(format!("{requested_name}.spec"));
+        let valid = candidate.is_some_and(|r| r.report.is_success());
         let report = serde_json::json!({
             "format_version": 1,
             "scope": "manifest-generation-static",
-            "valid": rendered.report.is_success(),
-            "manifest": {"display_path": manifest_path.to_string_lossy(), "sha256": utf8_file::digest(&manifest_source)},
+            "valid": valid,
+            "manifest": {"display_path": manifest_path.to_string_lossy(), "sha256": manifest_digest},
             "profile": crate::profile::identity(),
-            "build_contract": rendered.build_contract,
-            "report_subject": "candidate",
-            "report": rendered.report.structured(target),
-            "warnings": rendered.warnings,
+            "build_contract": candidate.and_then(|r| r.build_contract.as_ref()),
+            "report_subject": candidate.map(|_| "candidate"),
+            "report": candidate.map(|r| r.report.structured(&target)),
+            "warnings": candidate.map(|r| r.warnings.as_slice()).unwrap_or_default(),
+            "error": rendered.as_ref().err().map(ToString::to_string),
         });
         serde_json::to_writer(io::stdout().lock(), &report).map_err(GenerateError::Json)?;
         writeln!(io::stdout().lock()).map_err(GenerateError::Stdout)?;
-        return Ok(rendered.report.is_success());
+        return Ok(valid);
     }
+    let rendered = rendered?;
 
+    let default_target = manifest_path.with_file_name(format!("{}.spec", rendered.name));
+    let target = output.path.as_deref().unwrap_or(&default_target);
     // Missing digests are an authoring warning, not a policy-compliance claim.
     for warning in &rendered.warnings {
         writeln!(io::stderr().lock(), "warning: {warning}").map_err(GenerateError::Stderr)?;

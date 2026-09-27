@@ -55,6 +55,7 @@ openRuyi environment. A static `pass` is not a successful package build.
 | `gen NAME` | Generate from `NAME.toml` | Supports manual subpackages and explicit stages; manifest is authoritative |
 | `inspect FILE.spec` | Read tags and parser diagnostics | Syntax, not macro-expanded RPM values |
 | `check FILE.spec` | Run selected static rules | Does not validate Source downloads or the complete package |
+| `source-hash FILE.spec --trusted-spec` | Download and hash one native-resolved Source | Requires a prepared RPM environment and curl; read-only, may execute native macros |
 | `edit FILE.spec --field package.version` | Edit selected fields through TOML | SPEC is authoritative; ambiguous fields are refused, unselected bytes preserved |
 
 Use `ruyipack COMMAND --help` for flags. Start a new package with `init`, complete
@@ -83,7 +84,9 @@ installed binary in temporary files.
 
 In a trusted target environment with Python 3, `rpm`, `rpmspec`, and
 `rpm-config-openruyi`, `./scripts/check-native-sources` checks native Source
-numbering and records RPM/macro identities. It does not build packages.
+numbering and records RPM/macro identities. Pass prepared SPEC paths and
+`--require-package NAME` for additional target checks. Native diagnostics, including
+those with exit status 0, prevent acceptance. This does not build packages.
 
 Keep changes focused and include a regression test for behavior changes. For bug
 reports, include `ruyipack --version`, OS/architecture, the exact command, minimal

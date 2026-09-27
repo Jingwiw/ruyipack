@@ -13,6 +13,7 @@ use clap::{Parser, Subcommand};
 use crate::{
     edit, init,
     output_cli::{self, ReportFormat},
+    source_hash,
 };
 
 #[derive(Parser)]
@@ -29,6 +30,8 @@ pub(crate) enum Command {
     Init(init::Options),
     /// Edits SPEC fields through TOML or command-line assignments.
     Edit(edit::Options),
+    /// Resolves a trusted SPEC with native RPM and downloads one Source to hash it.
+    SourceHash(source_hash::Options),
     /// Checks selected static package metadata and build requirements.
     Check {
         /// RPM SPEC file to check.

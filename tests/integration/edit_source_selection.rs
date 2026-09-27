@@ -419,3 +419,42 @@ fn a_source_url_edit_preserves_its_unselected_damaged_digest() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("review required"));
     assert_file(directory.path().join("ed.spec"), &source);
 }
+
+#[test]
+fn mapping_errors_identify_the_construct_without_blocking_unrelated_fields() {
+    for (source, field, message) in [
+        (
+            SPEC.replace(
+                "BuildSystem:",
+                "# Local packaging file\nSource1: libev.pc\nBuildSystem:",
+            ),
+            "sources",
+            "sources.1 (Source1): no adjacent RemoteAsset",
+        ),
+        (
+            SPEC.replace(
+                "BuildSystem:",
+                "BuildOption(conf): --enable-foo\nBuildSystem:",
+            ),
+            "",
+            "BuildOption(conf)",
+        ),
+        (
+            SPEC.replace("%files", "%files -f %{pyproject_files}"),
+            "package.files",
+            "%files -f %{pyproject_files}",
+        ),
+    ] {
+        let directory = fixture(&source);
+        let args = if field.is_empty() {
+            vec!["ed.spec", "--view"]
+        } else {
+            vec!["ed.spec", "--view", "--field", field]
+        };
+        let output = run(directory.path(), &args);
+        rejected(&output, message);
+        assert!(String::from_utf8_lossy(&output.stderr).contains("--field"));
+        success(&selected_view(directory.path(), "package.version"));
+        assert_file(directory.path().join("ed.spec"), &source);
+    }
+}

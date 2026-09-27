@@ -233,8 +233,40 @@ selections are outside this contract, not inferred.
 
 `pass` means only the selected rules passed; parser warnings may remain.
 Standalone `check` does not check Source URLs/RemoteAsset associations or refresh
-archive digests. No command here downloads sources, checks patches, expands native
-RPM macros, resolves dependencies, audits all credentials, or builds packages.
+archive digests. Static commands do not download sources or expand native RPM
+macros. No command resolves dependencies, verifies patches, or builds packages.
+
+## Computing a Source digest
+
+```sh
+ruyipack source-hash package.spec --trusted-spec --source 0 --format json
+ruyipack source-hash package.spec --trusted-spec -D 'archive_version 2.0'
+```
+
+This is an explicit native/network operation, unlike `gen`, `check`, and `edit`.
+Run it in a prepared target RPM environment with `rpmspec` and `curl`. RPM expands
+**the full SPEC with its real conditions**, using ordered `--define` arguments and
+normal RPM precedence: a later definition inside the SPEC can override a CLI
+value. The JSON records the input hash, native version, definitions, expanded-SPEC
+hash, resolved/effective URLs, byte count and calculated SHA-256. Human output is
+just the digest, suitable for pasting into `sources.0.sha256` in a manifest.
+
+Review the resolved URL, not only the digest. Copy a calculated digest to the
+adjacent `#!RemoteAsset:  sha256:...` line when maintaining a SPEC directly.
+The command does not add or overwrite that line, refresh other Sources, verify
+upstream authenticity, or prove the package builds. It accepts a bare marker or
+no marker; the effective Source number comes from native RPM output, not marker
+presence. `%sourcelist` is not supported by this command.
+
+Native RPM may execute shell/Lua and read includes; `--trusted-spec` acknowledges
+that boundary, not a sandbox guarantee. Use isolation for untrusted inputs.
+Missing build-system macros or any native stderr diagnostic stop calculation;
+no first-branch substitution or fallback URL is guessed. Use the distribution's
+prepared SPEC/macro environment, or explicit, reviewed definitions. HTTP(S) only,
+including redirects; URL credentials are refused. Curl configuration files are
+ignored, but normal proxy/certificate environment settings still apply. Temporary
+downloads are removed and failed downloads never produce a digest. A checksum
+identifies the bytes retrieved in this run, not all future responses from a URL.
 
 ## JSON and inspection
 
@@ -267,8 +299,10 @@ same versioned report, independently of their outer envelope version.
 `--check`, which conflicts with output/preview/overwrite flags. Its input path is
 the intended destination, not an existing-file claim. `build_contract` is null in
 explicit-stage mode. Profile/contract hashes identify embedded TOML, not an entire
-environment or all validation code. Static failure yields JSON and exit 1;
-input/rendering failures may precede any JSON and use stderr.
+environment or all validation code. With `--format json`, input, rendering and
+static failures yield one report and exit 1. Before a candidate exists,
+`report_subject` and `report` are null and `error` explains the failure; unreadable
+input has no SHA-256. CLI argument and output-write failures can precede JSON.
 
 For edit, `original_sha256` identifies the source; the nested input hash identifies
 the candidate (`report_subject`). Paths have no human presentation suffix.
