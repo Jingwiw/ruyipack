@@ -162,11 +162,8 @@ fn vcs_choices_generate_distinct_repository_declarations() {
 }
 
 #[test]
-fn vcs_requires_one_valid_repository_choice_before_publication() {
+fn vcs_rejects_conflicting_or_invalid_assertions_without_guessing() {
     for choice in [
-        "",
-        "no-public-repository = false",
-        "same-as-url = false\nno-public-repository = false",
         "same-as-url = true\nno-public-repository = true",
         "git = \"https://example.org/project\"\nsame-as-url = true",
         "git = \"https://example.org/project\"\nno-public-repository = true",
@@ -194,6 +191,33 @@ fn vcs_requires_one_valid_repository_choice_before_publication() {
         ),
         "unknown field `gti`",
     );
+}
+
+#[test]
+fn unconfirmed_vcs_is_a_warning_not_an_absence_assertion() {
+    let source = MANIFEST.replace("no-public-repository = true", "");
+    let directory = workspace(&source);
+    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("repository status is unconfirmed"));
+    assert_eq!(
+        output.stdout,
+        SPEC.replace("# VCS: No VCS link available\n", "")
+            .as_bytes()
+    );
+    let output = run(
+        directory.path(),
+        &["gen", "ed", "--check", "--format", "json"],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        report["authoring_warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("package.vcs")
+    );
+    assert_file(directory.path().join("ed.toml"), &source);
 }
 
 #[test]
@@ -344,7 +368,7 @@ fn numbered_sources_keep_their_own_checksums_and_numeric_order() {
     }
     rejected(
         &format!("{MANIFEST}{}", extra("extra", &"a".repeat(64))),
-        "source number",
+        "material number",
     );
     rejected(
         &format!(
@@ -352,19 +376,27 @@ fn numbered_sources_keep_their_own_checksums_and_numeric_order() {
             extra("1", &"a".repeat(64)),
             extra("01", &"b".repeat(64))
         ),
-        "duplicate source number 1",
+        "duplicate material number 1",
     );
 }
 
 #[test]
 fn malformed_generated_text_cannot_be_published_even_with_force() {
-    for (before, after) in [
-        ("A line-oriented text editor", "An %{unfinished"),
-        ("\"%{_bindir}/%{name}\"", "\"%{_bindir\""),
-        ("\"lzip\"", "\"lzip >=\""),
+    for (before, after, message) in [
+        (
+            "A line-oriented text editor",
+            "An %{unfinished",
+            "parser diagnostics",
+        ),
+        (
+            "\"%{_bindir}/%{name}\"",
+            "\"%{_bindir\"",
+            "package.files.entries",
+        ),
+        ("\"lzip\"", "\"lzip >=\"", "parser diagnostics"),
     ] {
         let source = MANIFEST.replace(before, after);
-        rejected(&source, "parser diagnostics");
+        rejected(&source, message);
         let directory = workspace(&source);
         let path = directory.path().join("ed.spec");
         fs::write(&path, "# maintained by hand\n").unwrap();
@@ -1059,4 +1091,59 @@ fn generation_and_editing_use_only_their_selected_authority() {
     assert_eq!(conflict.status.code(), Some(1));
     assert_file(&target, &edited);
     assert_file(directory.path().join("ed.toml"), MANIFEST);
+}
+
+#[test]
+fn materials_and_file_lists_compose_without_opening_local_inputs() {
+    let source = MANIFEST.replace("[package.files]", "[package.files]\nlists = [\"%{name}.lang\", \"generated.files\"]")
+        .replace("entries = [", "entries = [\"%config(noreplace) /etc/ed.conf\", \"%dir %{_datadir}/ed\", \"%ghost %attr(0644,root,root) /var/log/ed.log\", \"%exclude %{_bindir}/unused\", \"%defattr(-,root,root,-)\",");
+    let source = format!(
+        "{source}\n[sources.1]\npath = \"ed.conf\"\n[patches.20]\npath = \"2000-first.patch\"\n[patches.0]\npath = \"fix-build.patch\"\n"
+    );
+    let dir = workspace(&source);
+    let output = run(dir.path(), &["gen", "ed", "--stdout"]);
+    success(&output);
+    let spec = String::from_utf8(output.stdout).unwrap();
+    for expected in [
+        "Source1:        ed.conf\n",
+        "Patch0:         fix-build.patch\n",
+        "%files -f %{name}.lang -f generated.files\n",
+        "%config(noreplace) /etc/ed.conf\n",
+        "%exclude %{_bindir}/unused\n",
+        "%defattr(-,root,root,-)\n",
+    ] {
+        assert!(spec.contains(expected), "{expected}: {spec}");
+    }
+    assert_eq!(spec.matches("#!RemoteAsset").count(), 1);
+    assert!(spec.find("Patch20:").unwrap() < spec.find("Patch0:").unwrap());
+    // No source, patch, or generated list is required on the author's machine.
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    for material in [
+        "path = \"a.patch\"\nurl = \"https://example.org/a\"",
+        "path = \"a.patch\"\nsha256 = \"bad\"",
+        "path = \"../a.patch\"",
+    ] {
+        rejected(
+            &format!("{MANIFEST}\n[patches.0]\n{material}\n"),
+            "failed to generate SPEC",
+        );
+    }
+    for row in [
+        "%dir",
+        "%config(bogus) /etc/ed",
+        "%config(noreplace missingok) /etc/ed",
+        "%verify(not,md5) /etc/ed",
+        "%verify(size not md5) /etc/ed",
+        "%unknown %{_bindir}/ed",
+        "%files other",
+        "%post",
+        "%exclude relative",
+    ] {
+        let invalid = MANIFEST.replace("\"%{_bindir}/%{name}\"", &format!("{row:?}"));
+        rejected(&invalid, "package.files.entries");
+    }
+    rejected(
+        &MANIFEST.replace("[package.files]", "[package.files]\nlists = [\"-n\"]"),
+        "package.files.lists",
+    );
 }

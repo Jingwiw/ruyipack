@@ -38,6 +38,7 @@ pub(crate) fn run(
     };
 
     let mut manifest_digest = None;
+    let mut authoring_warnings = Vec::new();
     let mut downloads = hash_sources.then(BTreeMap::new);
     let rendered = (|| {
         // NAME selects a package; it never acts as an implicit manifest path.
@@ -76,6 +77,9 @@ pub(crate) fn run(
                 path: manifest_path.to_path_buf(),
             });
         }
+        if matches!(manifest.package.vcs, render::manifest::Vcs::Unknown) {
+            authoring_warnings.push("package.vcs: repository status is unconfirmed; no repository or absence is inferred. Confirm it before publishing.");
+        }
         let mut rendered = render::run(&manifest).map_err(render_error)?;
         // Validate the whole recipe before network I/O. Both renders consume the
         // same manifest; the second verifies the newly observed digest facts.
@@ -84,12 +88,15 @@ pub(crate) fn run(
         {
             let package = &manifest.package;
             for (number, source) in &mut manifest.sources {
-                if source.sha256.is_some() {
+                let render::manifest::Source::Remote { url, sha256 } = source else {
+                    continue;
+                };
+                if sha256.is_some() {
                     continue;
                 }
                 let downloaded = (|| {
                     let url = crate::spec::expression::substitute_fields(
-                        &source.url,
+                        url,
                         &[
                             ("name", &package.name),
                             ("version", &package.version),
@@ -99,7 +106,7 @@ pub(crate) fn run(
                     source_hash::download(&url)
                 })()
                 .map_err(|e| GenerateError::SourceHash(format!("sources.{number}: {e}")))?;
-                source.sha256 = Some(downloaded.sha256.clone());
+                *sha256 = Some(downloaded.sha256.clone());
                 downloads.insert(*number, downloaded);
             }
             if !downloads.is_empty() {
@@ -129,6 +136,7 @@ pub(crate) fn run(
             "report_subject": candidate.map(|_| "candidate"),
             "report": candidate.map(|r| r.report.structured(&target)),
             "source_hashes": downloads,
+            "authoring_warnings": authoring_warnings,
             "error": rendered.as_ref().err().map(ToString::to_string),
         });
         serde_json::to_writer(io::stdout().lock(), &report).map_err(GenerateError::Json)?;
@@ -136,6 +144,9 @@ pub(crate) fn run(
         return Ok(valid);
     }
     let rendered = rendered?;
+    for warning in &authoring_warnings {
+        writeln!(io::stderr().lock(), "warning: {warning}").map_err(GenerateError::Stderr)?;
+    }
 
     let default_target = manifest_path.with_file_name(format!("{requested_name}.spec"));
     let target = output.path.as_deref().unwrap_or(&default_target);

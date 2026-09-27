@@ -18,8 +18,10 @@ use std::collections::{BTreeMap, BTreeSet};
 struct ManifestInput {
     spec: SpecMetadata,
     package: PackageInput,
-    #[serde(deserialize_with = "read_sources")]
-    sources: BTreeMap<u32, Source>,
+    #[serde(deserialize_with = "read_materials")]
+    sources: Vec<(u32, Source)>,
+    #[serde(default, deserialize_with = "read_materials")]
+    patches: Vec<(u32, Patch)>,
     #[serde(default)]
     build: Build,
     build_requires: BuildRequires,
@@ -53,6 +55,7 @@ struct PackageInput {
     license: String,
     url: String,
     description: String,
+    #[serde(default)]
     vcs: VcsInput,
     // Runtime dependency and capability expressions for the main package.
     #[serde(default)]
@@ -70,7 +73,8 @@ struct PackageInput {
 pub(crate) struct Manifest {
     pub(crate) spec: SpecMetadata,
     pub(crate) package: Package,
-    pub(crate) sources: BTreeMap<u32, Source>,
+    pub(crate) sources: Vec<(u32, Source)>,
+    pub(crate) patches: Vec<(u32, Patch)>,
     pub(crate) build: Build,
     pub(crate) build_requires: BuildRequires,
     pub(crate) subpackages: Vec<Subpackage>,
@@ -116,12 +120,14 @@ pub(crate) struct SpecMetadata {
     pub(crate) contributors: Vec<String>,
 }
 pub(crate) enum Vcs {
+    /// No repository fact has been supplied; never means that none exists.
+    Unknown,
     Git(String),
     SameAsUrl,
     NoPublicRepository,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct VcsInput {
     git: Option<String>,
@@ -138,6 +144,7 @@ fn resolve_vcs(input: &VcsInput) -> Result<Vcs, String> {
             https_url("package.vcs.git", url)?;
             Ok(Vcs::Git(url.to_owned()))
         }
+        (None, false, false) => Ok(Vcs::Unknown),
         (None, true, false) => Ok(Vcs::SameAsUrl),
         (None, false, true) => Ok(Vcs::NoPublicRepository),
         _ => Err(
@@ -146,15 +153,37 @@ fn resolve_vcs(input: &VcsInput) -> Result<Vcs, String> {
         ),
     }
 }
+/// An RPM Source declaration. Local material is not
+/// downloaded or assigned a RemoteAsset marker; generation never opens it.
+#[derive(Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub(crate) enum Source {
+    Remote {
+        url: String,
+        // Missing hashes warn; an explicitly empty hash is invalid.
+        #[serde(default)]
+        sha256: Option<String>,
+    },
+    Local {
+        path: String,
+    },
+}
+
+impl Source {
+    pub(crate) fn value(&self) -> &str {
+        match self {
+            Self::Remote { url, .. } => url,
+            Self::Local { path } => path,
+        }
+    }
+}
+/// Local patch declaration. Keep declaration order for RPM's %autopatch.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Source {
-    pub(crate) url: String,
-    // Absent renders a bare #!RemoteAsset with an openRuyi policy warning.
-    // An explicitly supplied empty string is invalid, not an absent digest.
-    #[serde(default)]
-    pub(crate) sha256: Option<String>,
+pub(crate) struct Patch {
+    pub(crate) path: String,
 }
+
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Build {
@@ -213,6 +242,9 @@ pub(crate) struct Files {
     // "at least one entry" requirement is enforced in validate_body instead.
     #[serde(default)]
     pub(crate) entries: Vec<String>,
+    /// Files generated during the build, passed to RPM as repeated `%files -f`.
+    #[serde(default)]
+    pub(crate) lists: Vec<String>,
 }
 
 /// Validates the fields shared by the main package and every subpackage,
@@ -258,6 +290,7 @@ fn validate_body(
         && files.license.is_empty()
         && files.doc.is_empty()
         && files.entries.is_empty()
+        && files.lists.is_empty()
     {
         messages.push(invalid(
             &format!("{prefix}.files"),
@@ -267,7 +300,7 @@ fn validate_body(
     for (suffix, values) in [
         ("files.license", &files.license),
         ("files.doc", &files.doc),
-        ("files.entries", &files.entries),
+        ("files.lists", &files.lists),
     ] {
         let field = format!("{prefix}.{suffix}");
         for value in values {
@@ -282,11 +315,21 @@ fn validate_body(
             }
         }
     }
+    for path in &files.lists {
+        if path.starts_with('-') || path.starts_with('#') {
+            messages.push(invalid(
+                &format!("{prefix}.files.lists"),
+                "expected a file-list path, not an option or comment",
+            ));
+        }
+    }
     for entry in &files.entries {
-        if !entry.starts_with('/') && !entry.starts_with("%{") {
+        if let Err(error) = single_line(&format!("{prefix}.files.entries"), entry) {
+            messages.push(error);
+        } else if let Err(error) = crate::spec::verify::file_entry(entry) {
             messages.push(invalid(
                 &format!("{prefix}.files.entries"),
-                "paths must start with / or %{",
+                &error.to_string(),
             ));
         }
     }
@@ -296,7 +339,10 @@ fn validate_body(
 /// Reads authoring fields without evaluating RPM macros. Structural errors
 /// abort deserialization; content errors are collected across the manifest.
 pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
-    let input: ManifestInput = toml::from_str(source)?;
+    let mut input: ManifestInput = toml::from_str(source)?;
+    // Source identity is numeric; Patch declaration order is also application
+    // order in native RPM's %autopatch, so never sort patches.
+    input.sources.sort_by_key(|(number, _)| *number);
     let package = &input.package;
     let invalid = |field: &str, reason: &str| format!("{field}: {reason}");
 
@@ -335,21 +381,26 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
             None
         }
     };
-    if !input.sources.contains_key(&0) {
+    if !input.sources.iter().any(|(number, _)| *number == 0) {
         record(Err(invalid("sources", "sources.0 is required")));
     }
     for (number, source) in &input.sources {
-        record(source_url(
-            &format!("sources.{number}.url"),
-            &source.url,
-            package,
-        ));
-        if let Some(sha256) = &source.sha256 {
-            record(
-                crate::source::validate_sha256(sha256)
-                    .map_err(|reason| invalid(&format!("sources.{number}.sha256"), reason)),
-            );
+        let field = format!("sources.{number}");
+        match source {
+            Source::Remote { url, sha256 } => {
+                record(source_url(&format!("{field}.url"), url, package));
+                if let Some(hash) = sha256 {
+                    record(
+                        crate::source::validate_sha256(hash)
+                            .map_err(|reason| invalid(&format!("{field}.sha256"), reason)),
+                    );
+                }
+            }
+            Source::Local { path } => record(local_path(&format!("{field}.path"), path)),
         }
+    }
+    for (number, patch) in &input.patches {
+        record(local_path(&format!("patches.{number}.path"), &patch.path));
     }
     if let Some(system) = &input.build.system
         && crate::profile::buildsystems::contract(system).is_none()
@@ -478,6 +529,7 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
         },
         spec: input.spec,
         sources: input.sources,
+        patches: input.patches,
         build: input.build,
         build_requires: input.build_requires,
         subpackages,
@@ -485,25 +537,43 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
 }
 
 /// Reads numeric source keys without silently merging alternate spellings.
-fn read_sources<'de, D>(deserializer: D) -> Result<BTreeMap<u32, Source>, D::Error>
+fn read_materials<'de, D, T>(deserializer: D) -> Result<Vec<(u32, T)>, D::Error>
 where
     D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
 {
-    let entries = BTreeMap::<String, Source>::deserialize(deserializer)?;
-    let mut sources = BTreeMap::new();
-    for (key, source) in entries {
+    // TOML preserve_order retains the author's Patch sequence. A sorted map
+    // would silently reorder %autopatch even though the numbers stayed intact.
+    let entries = toml::Table::deserialize(deserializer)?;
+    let mut seen = BTreeSet::new();
+    let mut materials = Vec::with_capacity(entries.len());
+    for (key, value) in entries {
         let number = key.parse::<u32>().map_err(|_| {
-            D::Error::custom(format!(
-                "sources.{key}: expected a non-negative source number"
-            ))
+            D::Error::custom(format!("{key}: expected a non-negative material number"))
         })?;
-        if sources.insert(number, source).is_some() {
+        if !seen.insert(number) {
             return Err(D::Error::custom(format!(
-                "duplicate source number {number}"
+                "duplicate material number {number}"
             )));
         }
+        materials.push((number, value.try_into().map_err(D::Error::custom)?));
     }
-    Ok(sources)
+    Ok(materials)
+}
+
+fn local_path(field: &str, path: &str) -> Result<(), String> {
+    single_line(field, path)?;
+    // Declares an RPM input; no local file is opened during generation.
+    if path.chars().any(char::is_whitespace)
+        || path.contains("://")
+        || path.starts_with(['/', '-', '#'])
+        || path.split('/').any(|p| p == "..")
+    {
+        return Err(format!(
+            "{field}: expected a relative material path without whitespace, URL, or parent traversal"
+        ));
+    }
+    Ok(())
 }
 
 fn single_line(field: &str, value: &str) -> Result<(), String> {

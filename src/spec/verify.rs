@@ -14,15 +14,17 @@ use super::ParsedSpec;
 use crate::profile::Profile;
 use crate::render::{
     RenderError,
-    manifest::{Files, Manifest, PackageBody, Stage, SubpackageName, Vcs},
+    manifest::{Files, Manifest, PackageBody, Source, Stage, SubpackageName, Vcs},
 };
 use rpm_spec::{
     ast::{
         BuildScriptKind, BuildScriptPlacement, ChangelogItem, CommentStyle, FileDirective,
-        FilesContent, PackageName, PreambleContent, PreambleItem, Section, Span, SpecItem,
-        SubpkgRef, Tag, TagValue, Text, TextSegment,
+        FileEntry, FilesContent, PackageName, PreambleContent, PreambleItem, Section, Span,
+        SpecItem, SubpkgRef, Tag, TagValue, Text, TextSegment,
     },
-    parser::{Input, ParserState, deps::parse_dep_expr, text::parse_text},
+    parser::{
+        Input, ParserState, deps::parse_dep_expr, files::parse_files_content, text::parse_text,
+    },
 };
 
 type ExpectedTag = (Tag, Option<&'static str>, TagValue);
@@ -79,7 +81,14 @@ pub(crate) fn run(
         tags.push((
             Tag::Source(Some(*number)),
             None,
-            TagValue::Text(text(&source.url)?),
+            TagValue::Text(text(source.value())?),
+        ));
+    }
+    for (number, patch) in &recipe.patches {
+        tags.push((
+            Tag::Patch(Some(*number)),
+            None,
+            TagValue::Text(text(&patch.path)?),
         ));
     }
     for (stage, config) in &recipe.build.stages {
@@ -100,26 +109,31 @@ pub(crate) fn run(
     )?;
     tags.extend(body_tags(&package.body, "package")?);
 
+    let mut patch_order = recipe.patches.iter().map(|(number, _)| *number);
     let mut comments = Vec::new();
     let mut sections = Vec::new();
     for (index, item) in parsed.spec.items.iter().enumerate() {
         match item {
             SpecItem::Preamble(item) => {
+                if let Tag::Patch(Some(number)) = item.tag {
+                    check(
+                        patch_order.next() == Some(number),
+                        "Patch application order",
+                    )?;
+                }
                 let field = format!("{:?}", item.tag);
                 match_tag(item, &mut tags, &field)?;
-                if let Tag::Source(Some(number)) = item.tag {
-                    let expected = format!(
-                        "{}\n",
-                        profile.remote_asset(recipe.sources[&number].sha256.as_deref())
-                    );
-                    // A correct digest on a different Source line is still the wrong source identity.
+                if let Tag::Source(Some(number)) = item.tag
+                    && let Some((_, Source::Remote { sha256, .. })) =
+                        recipe.sources.iter().find(|(n, _)| *n == number)
+                {
+                    let expected = format!("{}\n", profile.remote_asset(sha256.as_deref()));
+                    // The hook consumes exact bytes adjacent to this material, not just any matching comment.
                     let previous = index.checked_sub(1).and_then(|i| parsed.spec.items.get(i));
-                    // The hook reads exact marker bytes; the AST removes optional comment whitespace.
                     check(
                         matches!(previous, Some(SpecItem::Comment(comment))
                         if comment.style == CommentStyle::Hash
-                            && source.get(comment.data.start_byte..comment.data.end_byte)
-                                == Some(expected.as_str())),
+                        && source.get(comment.data.start_byte..comment.data.end_byte) == Some(expected.as_str())),
                         &format!("sources.{number}.sha256"),
                     )?;
                 }
@@ -154,10 +168,10 @@ pub(crate) fn run(
     if matches!(package.vcs, Vcs::NoPublicRepository) {
         expected_comments.push(hash_comment(&profile.no_public_vcs_comment)?);
     }
-    for source in recipe.sources.values() {
-        expected_comments.push(hash_comment(
-            &profile.remote_asset(source.sha256.as_deref()),
-        )?);
+    for (_, source) in &recipe.sources {
+        if let Source::Remote { sha256, .. } = source {
+            expected_comments.push(hash_comment(&profile.remote_asset(sha256.as_deref()))?);
+        }
     }
     check(
         comments.iter().copied().eq(expected_comments.iter()),
@@ -335,7 +349,13 @@ fn file_section(
         return Err(mismatch(field));
     };
     check(
-        subpkg.as_ref() == expected_subpkg && file_lists.is_empty(),
+        subpkg.as_ref() == expected_subpkg
+            && *file_lists
+                == expected
+                    .lists
+                    .iter()
+                    .map(|s| text(s))
+                    .collect::<Result<Vec<_>, _>>()?,
         field,
     )?;
     // The pinned parser overwrites earlier package arguments in a %files
@@ -345,15 +365,27 @@ fn file_section(
         .get(data.start_byte..data.end_byte)
         .and_then(|section| section.lines().next())
         .ok_or_else(|| mismatch(field))?;
-    let words: Vec<_> = header.split_whitespace().collect();
-    let header_matches = match (words.as_slice(), expected_subpkg) {
-        (["%files"], None) => true,
-        (["%files", name], Some(SubpkgRef::Relative(expected)))
-        | (["%files", "-n", name], Some(SubpkgRef::Absolute(expected))) => text(name)? == *expected,
-        _ => false,
-    };
-    check(header_matches, field)?;
-    files(content, expected, field)
+    let mut words = header.split_whitespace();
+    check(words.next() == Some("%files"), field)?;
+    if let Some(expected) = expected_subpkg {
+        if matches!(expected, SubpkgRef::Absolute(_)) {
+            check(words.next() == Some("-n"), field)?;
+        }
+        let name = words.next().ok_or_else(|| mismatch(field))?;
+        let expected = match expected {
+            SubpkgRef::Relative(t) | SubpkgRef::Absolute(t) => t,
+            _ => return Err(mismatch(field)),
+        };
+        check(text(name)? == *expected, field)?;
+    }
+    for list in &expected.lists {
+        check(
+            words.next() == Some("-f") && words.next() == Some(list.as_str()),
+            field,
+        )?;
+    }
+    check(words.next().is_none(), field)?;
+    files(content, source, expected, field)
 }
 
 fn build_scripts<'a>(
@@ -428,31 +460,49 @@ fn build_scripts<'a>(
     Ok(())
 }
 
-fn files(content: &[FilesContent<Span>], files: &Files, field: &str) -> Result<(), RenderError> {
+fn files(
+    content: &[FilesContent<Span>],
+    source: &str,
+    files: &Files,
+    field: &str,
+) -> Result<(), RenderError> {
     let mut expected = Vec::new();
     for (directive, paths) in [
         (FileDirective::License, &files.license),
         (FileDirective::Doc, &files.doc),
     ] {
         if !paths.is_empty() {
-            expected.push((vec![directive], text(&paths.join(" "))?));
+            expected.push((vec![directive], Some(text(&paths.join(" "))?), None));
         }
     }
     for path in &files.entries {
-        expected.push((Vec::new(), text(path)?));
+        let entry = file_entry(path)?;
+        expected.push((
+            entry.directives,
+            entry.path.map(|p| p.path),
+            Some(path.as_str()),
+        ));
     }
     let mut expected = expected.into_iter();
     for item in content {
         match item {
             FilesContent::Blank => {}
             FilesContent::Entry(entry) => {
-                let (directives, path) = expected.next().ok_or_else(|| mismatch(field))?;
+                let (directives, path, raw) = expected.next().ok_or_else(|| mismatch(field))?;
+                // Unknown flag tokens can disappear from the rpm-spec AST.
+                // Authored native rows must also retain their original bytes.
+                if let Some(raw) = raw {
+                    check(
+                        source
+                            .get(entry.data.start_byte..entry.data.end_byte)
+                            .map(|s| s.trim_end_matches('\n'))
+                            == Some(raw),
+                        field,
+                    )?;
+                }
                 check(
                     entry.directives == directives
-                        && entry
-                            .path
-                            .as_ref()
-                            .is_some_and(|actual| actual.path == path),
+                        && entry.path.as_ref().map(|p| &p.path) == path.as_ref(),
                     field,
                 )?;
             }
@@ -460,6 +510,107 @@ fn files(content: &[FilesContent<Span>], files: &Files, field: &str) -> Result<(
         }
     }
     check(expected.next().is_none(), field)
+}
+
+/// A bounded file row, not an arbitrary SPEC section or macro statement.
+/// Keep native directive spelling rather than inventing a second flags schema.
+pub(crate) fn file_entry(value: &str) -> Result<FileEntry<Span>, RenderError> {
+    fn parse(value: &str) -> Result<FileEntry<Span>, RenderError> {
+        let state = ParserState::new();
+        let input = format!("{value}\n");
+        let (rest, mut items) =
+            parse_files_content(&state, Input::new(&input)).map_err(|_| mismatch("file entry"))?;
+        check(
+            rest.fragment().is_empty() && state.diagnostics.borrow().is_empty(),
+            "file entry",
+        )?;
+        match items.pop() {
+            Some(FilesContent::Entry(entry)) if items.is_empty() => Ok(entry),
+            _ => Err(mismatch("file entry")),
+        }
+    }
+    // rpm-spec 0.4.1 preserves %exclude as macro text instead of a directive.
+    // Validate its payload separately; the full spelling remains in comparison
+    // and is covered by the native RPM regression.
+    let payload = value.strip_prefix("%exclude ").unwrap_or(value);
+    // The pinned parser silently drops unknown config/verify flags.
+    // Check only these bounded vocabularies before that information is lost.
+    for (prefix, allowed) in [
+        ("%config(", &["noreplace", "missingok"][..]),
+        (
+            "%verify(",
+            &[
+                "not",
+                "md5",
+                "filedigest",
+                "size",
+                "link",
+                "user",
+                "group",
+                "mtime",
+                "mode",
+                "rdev",
+                "caps",
+            ][..],
+        ),
+    ] {
+        for rest in payload.split(prefix).skip(1) {
+            let (flags, _) = rest
+                .split_once(')')
+                .ok_or_else(|| mismatch("file directive flags"))?;
+            let flags: Vec<_> = if prefix == "%config(" {
+                flags.split(',').map(str::trim).collect()
+            } else {
+                flags.split_whitespace().collect()
+            };
+            check(
+                !flags.is_empty()
+                    && flags.iter().enumerate().all(|(i, flag)| {
+                        let flag = flag.to_ascii_lowercase();
+                        allowed.contains(&flag.as_str())
+                            && (flag != "not" || i == 0 && flags.len() > 1)
+                    }),
+                "file directive flags",
+            )?;
+        }
+    }
+    let entry = parse(payload)?;
+    check(
+        !payload.starts_with('%') || payload.starts_with("%{") || !entry.directives.is_empty(),
+        "unsupported file directive",
+    )?;
+    let relative = entry
+        .directives
+        .iter()
+        .any(|d| matches!(d, FileDirective::Doc | FileDirective::License));
+    match &entry.path {
+        Some(path) => {
+            let valid = match path.path.segments.first() {
+                Some(TextSegment::Literal(s)) => relative || s.starts_with('/'),
+                Some(TextSegment::Macro(m)) => !matches!(m.kind, rpm_spec::ast::MacroKind::Plain),
+                _ => false,
+            };
+            check(
+                valid,
+                "file paths must start with / or %{ (except doc/license)",
+            )?;
+            if !relative && let Some(path) = path.path.literal_str() {
+                check(
+                    !path.chars().any(char::is_whitespace),
+                    "one file path per entry",
+                )?;
+            }
+        }
+        None => check(
+            matches!(entry.directives.as_slice(), [FileDirective::Defattr(_)]),
+            "file directive requires a path",
+        )?,
+    }
+    if payload == value {
+        Ok(entry)
+    } else {
+        parse(value)
+    }
 }
 
 /// Parses expressions for comparison without evaluating or rewriting their macros.

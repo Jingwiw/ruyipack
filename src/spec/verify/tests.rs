@@ -17,11 +17,46 @@ const MANIFEST: &str = include_str!("../../../examples/ed/ed.toml");
 
 #[test]
 fn rejects_changed_facts_even_when_the_spec_still_parses() {
-    let recipe = manifest::parse(MANIFEST).unwrap();
+    let input = MANIFEST
+        .replace("[package.files]", "[package.files]\nlists = [\"ed.lang\"]")
+        .replace(
+            "entries = [",
+            "entries = [\"%config(noreplace) /etc/ed.conf\",",
+        );
+    let input = format!(
+        "{input}\n[sources.1]\npath = \"ed.conf\"\n[patches.0]\npath = \"fix.patch\"\n[patches.7]\npath = \"second.patch\"\n"
+    );
+    let recipe = manifest::parse(&input).unwrap();
     let profile = profile::load();
     let original = spec::render(&recipe, profile);
     for (before, after, field) in [
         ("Name:           ed", "Name:           another", "Name"),
+        (
+            "Source1:        ed.conf",
+            "Source1:        another.conf",
+            "Source",
+        ),
+        (
+            "Patch0:         fix.patch",
+            "Patch1:         fix.patch",
+            "Patch",
+        ),
+        (
+            "%files -f ed.lang",
+            "%files -f another.lang",
+            "package.files",
+        ),
+        (
+            "%files -f ed.lang",
+            "%files -n hidden -f ed.lang",
+            "package.files",
+        ),
+        (
+            "Patch0:         fix.patch\nPatch7:         second.patch",
+            "Patch7:         second.patch\nPatch0:         fix.patch",
+            "Patch application order",
+        ),
+        ("%config(noreplace)", "%config", "package.files"),
         ("1.22.5", "1.22.6", "Version"),
         ("%autorelease", "2%{?dist}", "Release"),
         ("A line-oriented text editor", "Another editor", "Summary"),

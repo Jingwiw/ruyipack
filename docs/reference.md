@@ -42,7 +42,7 @@ See [ed.toml](../examples/ed/ed.toml) for a complete manifest.
 
 ### Repository and Sources
 
-Choose exactly one entry in `[package.vcs]`:
+Choose an entry in `[package.vcs]` only when the fact is known:
 
 | Entry | Generated result |
 | --- | --- |
@@ -50,16 +50,41 @@ Choose exactly one entry in `[package.vcs]`:
 | `same-as-url = true` | Omit VCS; `package.url` already names the source repository |
 | `no-public-repository = true` | Emit the profile's no-repository comment |
 
-Addresses are checked locally, not contacted. Empty/conflicting choices fail.
+Omit the table or leave it empty while the repository status is unknown. Generation
+warns (also in JSON `authoring_warnings`), emits no VCS assertion, and never turns
+an unknown or failed lookup into `no-public-repository`. Conflicting choices fail.
+Addresses and declarations are not verified remotely. A generated candidate is not
+proof of VCS policy compliance; confirm the declaration before publishing.
+The ed example demonstrates an explicit input declaration, not verified upstream
+repository evidence; do not infer that declaration from its historical CVS TODO.
 
-Each `[sources.N]` has `url` and optional `sha256`. Generation writes explicit
-Source numbers in numeric order. `sources.0` is the primary archive used by the
+Each `[sources.N]` chooses exactly one material form:
+`url` with optional `sha256` for a remote resource, or `path` for a local input.
+`[patches.N]` accepts a local `path` only. Local paths receive no RemoteAsset
+marker or hash; gen does not read, copy, or confirm these files. URL/path combinations and hashes on local material fail.
+Source and Patch numbers have independent namespaces. Sources are sorted numerically;
+Patches retain TOML declaration order, because native `%autopatch` uses that order.
+Patch declarations are placed after BuildSystem; application, strip level, and patch order remain the
+responsibility of the prep stage/declarative RPM machinery. Follow openRuyi's
+four-digit patch filename categories and document patch purpose in its header;
+generation does not inspect patch content or test applicability.
+
+For example:
+
+```toml
+[sources.1]
+path = "example.service"
+[patches.2000]
+path = "2000-fix-build.patch"
+```
+
+`sources.0` is the primary archive used by the
 Autotools default unpacking step. A missing digest produces a bare `#!RemoteAsset`
 and warning, not an error. This output does not meet openRuyi's SHA-256 requirement
 for HTTP(S) sources. An empty digest fails. Digests must be 64 hexadecimal digits;
 case is preserved. By default, archives are not downloaded or verified.
 
-After filling the scaffold, use `gen NAME --hash-sources` to download Sources
+After filling the scaffold, use `gen NAME --hash-sources` to download remote Sources
 whose `sha256` is absent and fill their digests in the generated SPEC. Existing
 digests are retained, not downloaded or verified; remove a digest from the TOML
 when you intend to recalculate it. This explicit option requires curl, not RPM.
@@ -143,12 +168,35 @@ complete name and uses `-n` consistently in `%package`, `%description`, and
 `%files`. Names must be literal RPM names with no resulting main/subpackage
 collisions. Each subpackage needs nonempty summary and description. Requires and
 Provides use the main package's expression rules; files accept `license`, `doc`,
-and `entries`. Empty/omitted subpackage files emit an empty `%files` for a
-metapackage; the main package needs at least one file.
+`entries`, and `lists`. Empty/omitted subpackage files emit an empty `%files`
+for a metapackage; the main package needs at least one entry or external list.
 
 Per-subpackage license/URL/architecture, conditional declarations, and
 macro-generated families are unsupported. File ownership still needs build-time
 verification.
+
+### Native file entries and generated lists
+
+Main and subpackage `files` use the same fields. `license` and `doc` remain
+shortcuts; ordered `entries` also accept native file rows such as `%dir`,
+`%config(noreplace)`, `%ghost %attr(0644,root,root)`, `%verify`, `%exclude`, and
+`%defattr`. Do not put conditions, sections, or arbitrary macro statements there.
+The renderer preserves row order and the verifier compares directives and paths.
+The `license`/`doc` shortcuts are emitted before `entries`. When order matters
+(for example around `%defattr`), put all affected rows in `entries` instead.
+
+```toml
+[package.files]
+license = ["COPYING"]
+lists = ["%{name}.lang", "generated.files"]
+entries = ["%dir %{_datadir}/example", "%config(noreplace) %{_sysconfdir}/example.conf"]
+```
+
+`lists` emits repeated `%files -f` arguments, without guessing the package name or
+adding an implicit list. It can be the only content of a files section. These
+lists are produced/read during the RPM build, never opened by gen. File existence,
+macro expansion, final ownership, and list contents still need native build
+validation. `%files -l` and conditional file sections are not supported.
 
 ## Edit
 

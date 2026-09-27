@@ -191,6 +191,10 @@ printf '%s' "$last"
         .as_table_mut()
         .unwrap()
         .insert("1".into(), known);
+    manifest["sources"].as_table_mut().unwrap().insert(
+        "2".into(),
+        toml::Value::Table([("path".into(), "ed.conf".into())].into_iter().collect()),
+    );
     let original = toml::to_string(&manifest).unwrap();
     fs::write(root.join("ed.toml"), &original).unwrap();
     let offline = run(&["gen", "ed", "--stdout"], "fail");

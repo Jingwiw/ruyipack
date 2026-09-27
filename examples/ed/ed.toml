@@ -28,6 +28,8 @@ superseded by full-screen editors such as GNU Emacs or GNU Moe.
 """
 
 [package.vcs]
+# Illustrates an explicit declaration; ed repository status has not been verified.
+# Do not infer absence from a TODO or failed lookup. Leave empty while unknown.
 no-public-repository = true
 
 [sources.0]

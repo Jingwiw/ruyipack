@@ -476,7 +476,6 @@ fn gen_reports_every_unfilled_scaffold_field_at_once() {
         "package.license",
         "package.url",
         "package.description",
-        "package.vcs",
         "sources.0.url",
         "package.files",
     ] {

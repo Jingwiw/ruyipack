@@ -49,16 +49,17 @@ description = '''
 {% endif %}
 
 [package.vcs]
-# Choose exactly one: a public Git clone URL, homepage is that repository, or no public repository.
+# Leave empty while unconfirmed; gen warns without claiming no repository exists.
+# Choose one only from known facts: clone URL, same repository URL, or confirmed absence.
 # git = "https://example.org/owner/project.git"
 # same-as-url = true
-# no-public-repository = true
+# no-public-repository = true  # Only after confirming this, not after a failed lookup.
 {% if full %}
 # A source archive URL or project web page is not necessarily a Git clone URL.
 # Do not select no-public-repository just because the repository address is not yet known.
 {% endif %}
 
-# Source archives --------------------------------------------------------------
+# Sources and patches ---------------------------------------------------------
 [sources.0]
 # HTTPS archive URL; %{name}, %{version}, and %{url} refer to the package fields above.
 url = ""
@@ -69,6 +70,12 @@ url = ""
 # gen is offline by default and warns without a digest; --hash-sources explicitly downloads missing ones.
 # A supplied empty/invalid digest fails. openRuyi requires SHA-256 for HTTP(S) sources.
 # https://openruyi.cn/docs/guide/packaging-guidelines/SourceURL/
+# Local materials use path instead of url; gen does not read or download them.
+# [sources.1]
+# path = "example.conf"
+# Patch declaration order is application order; document its purpose in the patch header.
+# [patches.0]
+# path = "0000-fix-build.patch"
 {% endif %}
 
 # Build dependencies -----------------------------------------------------------
@@ -97,8 +104,10 @@ rpm = [{% for dependency in requirements %}{{ dependency | toml }}{% if not loop
 # Paths relative to the build directory, copied as license/documentation files.
 # license = ["COPYING"]
 # doc = ["README"]
-# Installed paths, without %{buildroot}; for example "%{_bindir}/%{name}".
+# Installed paths or native file directives, without %{buildroot}.
+# entries = ["%{_bindir}/%{name}", "%config(noreplace) %{_sysconfdir}/example.conf"]
 entries = []
+# Generated file lists (not read by gen): lists = ["%{name}.lang"]
 {% if full %}
 # Inspect the installation result and list the files owned by this package; do not guess from the source tree.
 # A nonempty license/doc list also contributes packaged files, but does not replace the installed payload.
@@ -109,7 +118,7 @@ entries = []
 # package name, use that name as the key and set full-name = true.
 # Each subpackage requires its own nonempty summary and description.
 # requires and provides are optional lists of RPM expressions, as for the main package.
-# files supports license, doc, and entries; omit it or leave it empty for a package with no files.
+# files supports license, doc, entries, and lists; omit it or leave it empty for a package with no files.
 # [subpackages.devel]
 # full-name = false
 # summary = "Development files for %{name}"

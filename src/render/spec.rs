@@ -6,7 +6,7 @@
 
 //! Complete SPEC text rendering.
 
-use super::manifest::{Manifest, Vcs};
+use super::manifest::{Manifest, Source, Vcs};
 use crate::profile::Profile;
 use std::fmt::Write as _;
 
@@ -46,19 +46,21 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
     write_tag(&mut output, "URL:", &recipe.package.url, column);
     match &recipe.package.vcs {
         Vcs::Git(url) => write_tag(&mut output, "VCS:", &format!("git:{url}"), column),
-        Vcs::SameAsUrl => {}
+        Vcs::Unknown | Vcs::SameAsUrl => {}
         Vcs::NoPublicRepository => {
             writeln!(output, "{}", profile.no_public_vcs_comment)
                 .expect("writing to a String cannot fail");
         }
     }
     for (number, source) in &recipe.sources {
-        writeln!(output, "{}", profile.remote_asset(source.sha256.as_deref()))
-            .expect("writing to a String cannot fail");
+        if let Source::Remote { sha256, .. } = source {
+            writeln!(output, "{}", profile.remote_asset(sha256.as_deref()))
+                .expect("writing to a String cannot fail");
+        }
         write_tag(
             &mut output,
             &format!("Source{number}:"),
-            &source.url,
+            source.value(),
             column,
         );
     }
@@ -69,6 +71,10 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
     // Do not also inline the profile's guidance: that would replace those defaults.
     if let Some(system) = &recipe.build.system {
         write_tag(&mut output, "BuildSystem:", system, column);
+    }
+    // openRuyi places patches after BuildSystem, before options and dependencies.
+    for (number, patch) in &recipe.patches {
+        write_tag(&mut output, &format!("Patch{number}:"), &patch.path, column);
     }
     output.push('\n');
 
@@ -149,11 +155,11 @@ pub(crate) fn render(recipe: &Manifest, profile: &Profile) -> String {
             output.push('\n');
         }
     }
-    output.push_str("%files\n");
+    output.push_str("%files");
     render_files(&mut output, &recipe.package.body.files);
 
     for subpackage in &recipe.subpackages {
-        writeln!(output, "\n%files {}", subpackage_arg(&subpackage.name))
+        write!(output, "\n%files {}", subpackage_arg(&subpackage.name))
             .expect("writing to a String cannot fail");
         render_files(&mut output, &subpackage.body.files);
     }
@@ -177,6 +183,10 @@ fn subpackage_arg(name: &crate::render::manifest::SubpackageName) -> String {
 }
 
 fn render_files(output: &mut String, files: &crate::render::manifest::Files) {
+    for list in &files.lists {
+        write!(output, " -f {list}").expect("writing to a String cannot fail");
+    }
+    output.push('\n');
     if !files.license.is_empty() {
         writeln!(output, "%license {}", files.license.join(" "))
             .expect("writing to a String cannot fail");
