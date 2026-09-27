@@ -57,19 +57,34 @@ pub(crate) fn run(mut options: Options) -> Result<bool, EditError> {
         "operation": if options.prepare.is_some() { "prepare" } else if options.check { "check" } else { "apply" }});
     let result = execute(options, &mut report);
     if !matches!(options.format, Some(ReportFormat::Json)) {
-        return result;
+        return result.map(|(success, _)| success);
     }
-    let success = match result {
-        Ok(success) => success,
+    let (success, written) = match result {
+        Ok((success, outcomes)) => (
+            success,
+            outcomes
+                .into_iter()
+                .filter_map(|outcome| match outcome {
+                    file_output::EditOutcome::Written(path) => Some(path),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+        ),
         Err(error) => {
+            let written = error.written_paths().to_vec();
             report["error"] = serde_json::to_value(error).expect("serializable error");
-            false
+            (false, written)
         }
     };
     report["valid"] = success.into();
     // A failed report write is an I/O error, not a new business result to serialize.
     let text = serde_json::to_string(&report).map_err(|e| e.to_string())?;
-    write_stdout(&(text + "\n"))?;
+    write_stdout(&(text + "\n")).map_err(|mut error| {
+        if !written.is_empty() {
+            error.push_str(&format!("\nFiles already written: {written:?}\nInspect these files and their current SHA-256 before retrying; publication was not rolled back."));
+        }
+        error
+    })?;
     Ok(success)
 }
 
@@ -152,7 +167,10 @@ fn load_inputs(options: &Options) -> Result<Vec<Input>, EditError> {
     Ok(inputs)
 }
 
-fn execute(options: &Options, report: &mut serde_json::Value) -> Result<bool, EditError> {
+fn execute(
+    options: &Options,
+    report: &mut serde_json::Value,
+) -> Result<(bool, Vec<file_output::EditOutcome>), EditError> {
     let mut inputs = load_inputs(options)?;
     if options.view || options.schema {
         let view = inputs[0].snapshot.document();
@@ -162,7 +180,7 @@ fn execute(options: &Options, report: &mut serde_json::Value) -> Result<bool, Ed
             toml::to_string_pretty(view).map_err(|e| e.to_string())?
         };
         write_stdout(&text)?;
-        return Ok(true);
+        return Ok((true, Vec::new()));
     }
     if let Some(dir) = &options.prepare {
         let created = create_drafts(dir, &inputs, Some(options))?;
@@ -171,7 +189,7 @@ fn execute(options: &Options, report: &mut serde_json::Value) -> Result<bool, Ed
                 "source": item.path.to_string_lossy(), "original_sha256": utf8_file::sha256(item.snapshot.source()),
                 "draft": path.to_string_lossy(),
             })).collect();
-            return Ok(true);
+            return Ok((true, Vec::new()));
         }
         let dir = created[0]
             .parent()
@@ -179,7 +197,7 @@ fn execute(options: &Options, report: &mut serde_json::Value) -> Result<bool, Ed
         let display = dir.to_string_lossy();
         let quoted = shell_words::quote(&display);
         writeln!(io::stderr().lock(), "Drafts: {display}\nCheck: ruyipack edit --from={quoted} --check\nPreview: ruyipack edit --from={quoted} --diff").map_err(|e| e.to_string())?;
-        return Ok(true);
+        return Ok((true, Vec::new()));
     }
     // Saved drafts already contain the edit; reopening them requires --editor.
     let opens_editor = options.editor.is_some()
@@ -244,7 +262,7 @@ fn execute(options: &Options, report: &mut serde_json::Value) -> Result<bool, Ed
                 )
                 .map_err(|e| e.to_string())?;
             }
-            Ok(result.success)
+            Ok((result.success, result.outcomes))
         }
     }
 }

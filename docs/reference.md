@@ -420,7 +420,9 @@ Publication `outcomes` report `written`,
 `unchanged`, or `skipped`, actual destination paths, and known resulting hashes.
 On partial I/O failure, `valid` is false and `written` lists confirmed writes;
 remaining files are not claimed complete. A missing receipt does not prove no write
-occurred (for example, stdout may fail afterwards). Old drafts remain stale after
+occurred. If stdout fails after publication, stderr names confirmed writes when
+it is still writable; publication is not undone. Neither channel is guaranteed
+when both are closed. Old drafts remain stale after
 application; use a new read or the receipt, not a forced stale-draft retry.
 
 For edit, `baseline_report` records the original checks; `introduced_static_blockers`

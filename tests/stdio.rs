@@ -116,6 +116,66 @@ fn disconnected_standard_streams_return_errors_without_panicking() {
         .unwrap();
     assert_eq!(result.status.code(), Some(1), "{result:?}");
 
+    // Publishing succeeded even if its acknowledgement cannot reach the caller.
+    // An exit code alone must not invite a blind replay against the old input.
+    let original = fs::read(directory.path().join("ed.spec")).unwrap();
+    assert_eq!(original, include_bytes!("fixtures/ed.spec"));
+    let digest = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(&original))
+    };
+    let result = Command::new(env!("CARGO_BIN_EXE_ruyipack"))
+        .current_dir(directory.path())
+        .args([
+            "edit",
+            "ed.spec",
+            "--set",
+            "package.version=1.22.6",
+            "--format",
+            "json",
+        ])
+        .stdout(closed_pipe())
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(1));
+    let stderr = String::from_utf8(result.stderr).unwrap();
+    assert!(stderr.contains("Files already written:"), "{stderr}");
+    assert!(
+        stderr.contains(
+            fs::canonicalize(directory.path().join("ed.spec"))
+                .unwrap()
+                .to_str()
+                .unwrap()
+        ),
+        "{stderr}"
+    );
+    let changed = fs::read(directory.path().join("ed.spec")).unwrap();
+    assert_eq!(
+        changed,
+        String::from_utf8(original)
+            .unwrap()
+            .replace("1.22.5", "1.22.6")
+            .as_bytes()
+    );
+    let retry = Command::new(env!("CARGO_BIN_EXE_ruyipack"))
+        .current_dir(directory.path())
+        .args([
+            "edit",
+            "ed.spec",
+            "--expect-sha256",
+            &digest,
+            "--set",
+            "package.version=1.22.7",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(retry.status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&retry.stdout).unwrap();
+    assert_eq!(report["error"]["code"], "source-changed");
+    assert_eq!(fs::read(directory.path().join("ed.spec")).unwrap(), changed);
+
     fs::write(directory.path().join("ed.spec"), "hand edited\n").unwrap();
     let result = gen_command(directory.path())
         .arg("--skip-existing")

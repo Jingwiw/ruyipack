@@ -7,7 +7,7 @@
 //! Stable categories for failures that change how an edit can proceed.
 
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -52,6 +52,13 @@ impl EditError {
         let mut result = Self::from(error.to_string());
         result.publication = Some(Box::new(error));
         result
+    }
+
+    pub(super) fn written_paths(&self) -> &[PathBuf] {
+        match self.publication.as_deref() {
+            Some(crate::file_output::OutputError::Partial { written, .. }) => written,
+            _ => &[],
+        }
     }
 
     /// Publication facts take precedence over rereading files that may have changed again.
