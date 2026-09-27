@@ -20,9 +20,9 @@ use super::{
 };
 use crate::spec::ParsedSpec;
 
-impl Snapshot {
+impl<'src> Snapshot<'src> {
     pub(crate) fn capture_selected(
-        spec: &ParsedSpec<'_>,
+        spec: &ParsedSpec<'src>,
         selection: &[String],
     ) -> Result<Self, String> {
         let source = spec.source;
@@ -39,7 +39,7 @@ impl Snapshot {
         }
         let needs_sources = selected(selection, "sources");
         let mut snapshot = Self {
-            source: source.to_owned(),
+            source: source.into(),
             document: Table::new(),
             selection: selection.to_vec(),
             package_context: if needs_sources {

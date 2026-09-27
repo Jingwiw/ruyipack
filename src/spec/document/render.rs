@@ -12,7 +12,7 @@ use toml::{Table, Value};
 use super::table::{lookup, string, strings, validate_shape};
 use super::{List, Snapshot, validate_comments, validate_file_path, validate_text};
 
-impl Snapshot {
+impl Snapshot<'_> {
     pub(crate) fn render(&self, edited: &Table) -> Result<String, String> {
         self.render_changes(edited, true)
     }

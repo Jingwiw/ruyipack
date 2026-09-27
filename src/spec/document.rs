@@ -11,7 +11,7 @@ mod capture;
 mod render;
 pub(crate) mod table;
 
-use std::{collections::BTreeMap, ops::Range};
+use std::{borrow::Cow, collections::BTreeMap, ops::Range};
 use toml::Table;
 
 struct Scalar {
@@ -35,8 +35,9 @@ struct Copyright {
 /// Original bytes plus replacement ranges for one fixed field selection.
 /// Capturing proves a field can be located, not that its old value is valid;
 /// rendering validates the selected replacement so damaged values remain repairable.
-pub(crate) struct Snapshot {
-    source: String,
+pub(crate) struct Snapshot<'src> {
+    // Long-lived edits own their source; candidate verification only borrows it.
+    source: Cow<'src, str>,
     document: Table,
     selection: Vec<String>,
     package_context: BTreeMap<String, String>,
@@ -46,7 +47,20 @@ pub(crate) struct Snapshot {
     copyright: Option<Copyright>,
 }
 
-impl Snapshot {
+impl Snapshot<'_> {
+    pub(crate) fn into_owned(self) -> Snapshot<'static> {
+        Snapshot {
+            source: Cow::Owned(self.source.into_owned()),
+            document: self.document,
+            selection: self.selection,
+            package_context: self.package_context,
+            scalars: self.scalars,
+            digest_markers: self.digest_markers,
+            lists: self.lists,
+            copyright: self.copyright,
+        }
+    }
+
     pub(crate) fn source(&self) -> &str {
         &self.source
     }

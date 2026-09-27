@@ -32,7 +32,7 @@ use toml::Table;
 
 struct Input {
     path: PathBuf,
-    snapshot: Snapshot,
+    snapshot: Snapshot<'static>,
     baseline: crate::check_report::CheckReport,
     draft: Option<PathBuf>,
 }
@@ -345,7 +345,7 @@ fn input(
         .map_err(|error| EditError::at(Kind::UnmappableFields, &path, &fields, error))?;
     Ok(Input {
         path,
-        snapshot,
+        snapshot: snapshot.into_owned(),
         baseline: crate::check::analyze(&parsed),
         draft,
     })

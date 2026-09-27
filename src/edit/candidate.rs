@@ -21,7 +21,7 @@ pub(super) struct Candidate {
     pub source_hashes: Option<crate::source::SourceHashes>,
 }
 
-pub(super) fn prepare(snapshot: &Snapshot, document: &Table) -> Result<Candidate, String> {
+pub(super) fn prepare(snapshot: &Snapshot<'_>, document: &Table) -> Result<Candidate, String> {
     let contents = snapshot.render(document)?;
     let parsed = ParsedSpec::parse(&contents);
     let observed = Snapshot::capture_selected(&parsed, snapshot.selection())?;

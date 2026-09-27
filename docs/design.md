@@ -55,7 +55,8 @@ modules, not a promised Rust library API.
 
 Edit execution returns per-file checks and the publication result, including
 partial failures. JSON is derived afterward; draft retention and failed-output
-recovery use those same facts.
+recovery use those same facts. Candidate verification borrows its rendered text;
+only a long-lived edit snapshot takes ownership of the source.
 
 ## Facts, decisions, and evidence
 

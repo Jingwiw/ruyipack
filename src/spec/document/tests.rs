@@ -16,7 +16,7 @@ const DEPENDENCIES: &str =
     "Name: demo\nBuildRequires:\tfirst\nBuildRequires:  second\n\n%description\nA demo.\n";
 const SPEC: &str = include_str!("../../../tests/fixtures/ed.spec");
 
-fn capture(source: &str) -> Snapshot {
+fn capture(source: &str) -> Snapshot<'_> {
     Snapshot::capture_selected(&ParsedSpec::parse(source), &[]).unwrap()
 }
 
