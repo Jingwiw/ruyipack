@@ -18,6 +18,7 @@ pub(super) struct Candidate {
     pub contents: String,
     pub report: CheckReport,
     pub review_triggers: Vec<String>,
+    pub source_hashes: Option<crate::source_hash::SourceHashes>,
 }
 
 pub(super) fn prepare(snapshot: &Snapshot, document: &Table) -> Result<Candidate, String> {
@@ -45,5 +46,6 @@ pub(super) fn prepare(snapshot: &Snapshot, document: &Table) -> Result<Candidate
         contents,
         report,
         review_triggers,
+        source_hashes: None,
     })
 }

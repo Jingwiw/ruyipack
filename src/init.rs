@@ -101,13 +101,7 @@ pub(crate) fn run(options: &Options) -> Result<(), InitError> {
             "Git author is unavailable or unsuitable for a SPEC header; fill spec.contributors",
         )?;
     }
-    let contents = render(
-        &options.name,
-        &year,
-        author.as_deref(),
-        options.comments,
-        options.build_system.as_deref(),
-    )?;
+    let contents = render(options, &year, author.as_deref())?;
     options
         .output
         .publish(
@@ -172,13 +166,9 @@ fn git_author(directory: &Path) -> Option<String> {
     Some(author)
 }
 
-fn render(
-    name: &str,
-    year: &str,
-    author: Option<&str>,
-    comments: Comments,
-    system: Option<&str>,
-) -> Result<String, minijinja::Error> {
+fn render(options: &Options, year: &str, author: Option<&str>) -> Result<String, minijinja::Error> {
+    let name = &options.name;
+    let system = options.build_system.as_deref();
     let mut env = Environment::new();
     env.set_undefined_behavior(UndefinedBehavior::Strict);
     env.set_trim_blocks(true);
@@ -211,7 +201,7 @@ fn render(
         system,
         requirements,
         stages,
-        full => matches!(comments, Comments::Full),
+        full => matches!(options.comments, Comments::Full),
     ))
 }
 

@@ -947,7 +947,7 @@ fn invalid_cli_combinations_fail_before_editing() {
 }
 
 #[test]
-fn check_json_versions_success_and_early_errors() {
+fn json_reports_cover_check_prepare_apply_retry_and_partial_failure() {
     let directory = fixture();
     for (file, exit) in [("ed.spec", 0), ("missing.spec", 1)] {
         let output = command(directory.path())
@@ -979,6 +979,73 @@ fn check_json_versions_success_and_early_errors() {
         }
     }
     unchanged(directory.path());
+    let prepared = command(directory.path())
+        .args([
+            "ed.spec",
+            "--field",
+            "package.version",
+            "--prepare",
+            "drafts",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    success(&prepared);
+    let receipt: serde_json::Value = serde_json::from_slice(&prepared.stdout).unwrap();
+    let draft = Path::new(receipt["files"][0]["draft"].as_str().unwrap());
+    change_version(draft, "2");
+    let applied = command(directory.path())
+        .args(["--from", "drafts", "--format", "json"])
+        .output()
+        .unwrap();
+    success(&applied);
+    let receipt: serde_json::Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(receipt["outcomes"][0]["status"], "written");
+    assert_file(directory.path().join("ed.spec"), &version_source("2"));
+    let repeated = command(directory.path())
+        .args(["ed.spec", "--set", "package.version=2", "--format", "json"])
+        .output()
+        .unwrap();
+    success(&repeated);
+    let receipt: serde_json::Value = serde_json::from_slice(&repeated.stdout).unwrap();
+    assert_eq!(receipt["outcomes"][0]["status"], "unchanged");
+    let stale = command(directory.path())
+        .args(["--from", "drafts", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(stale.status.code(), Some(1));
+    let receipt: serde_json::Value = serde_json::from_slice(&stale.stdout).unwrap();
+    assert_eq!(receipt["files"][0]["error"]["code"], "source-changed");
+    assert_file(directory.path().join("ed.spec"), &version_source("2"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let locked = directory.path().join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::write(locked.join("second.spec"), SOURCE).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+        let partial = command(directory.path())
+            .args([
+                "ed.spec",
+                "locked/second.spec",
+                "--set",
+                "package.version=3",
+                "--format",
+                "json",
+            ])
+            .output()
+            .unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(partial.status.code(), Some(1));
+        assert!(partial.stderr.is_empty());
+        let receipt: serde_json::Value = serde_json::from_slice(&partial.stdout).unwrap();
+        let written = fs::canonicalize(directory.path().join("ed.spec")).unwrap();
+        assert_eq!(receipt["written"], serde_json::json!([written]));
+        assert_eq!(receipt["valid"], false);
+        assert_file(written, &version_source("3"));
+        assert_file(locked.join("second.spec"), SOURCE);
+    }
 }
 
 #[test]

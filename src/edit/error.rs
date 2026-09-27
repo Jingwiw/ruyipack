@@ -15,6 +15,7 @@ pub(super) enum Kind {
     OperationFailed,
     UnmappableFields,
     SourceChanged,
+    SourceHashFailed,
     InvalidDraft,
     InvalidAssignment,
     InvalidCandidate,

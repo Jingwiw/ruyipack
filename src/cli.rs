@@ -63,6 +63,10 @@ Without a usable terminal or an explicit action, conflicting output is an error.
         /// Manifest to read; defaults to NAME.toml in the current directory.
         #[arg(long, value_name = "PATH")]
         manifest: Option<PathBuf>,
+        /// Download Sources with no SHA-256 and fill the generated SPEC; never changes the TOML.
+        /// Existing digests are retained, not downloaded or verified. Requires curl, not RPM.
+        #[arg(long)]
+        hash_sources: bool,
         /// Checks generation without writing SPEC files or consulting output conflicts.
         #[arg(long, conflicts_with_all = ["path", "stdout", "diff", "force", "skip_existing"])]
         check: bool,
@@ -81,16 +85,13 @@ mod tests {
     use clap::error::ErrorKind;
 
     #[test]
-    fn report_format_requires_an_actual_check() {
+    fn report_format_does_not_mix_with_payload_outputs() {
         let edit_modes: &[&[&str]] = &[
-            &["--prepare", "drafts"],
             &["--view"],
             &["--schema"],
             &["--diff"],
             &["--stdout"],
-            &["--output", "other.spec"],
             &["--editor", "vim"],
-            &["--output", "other.spec", "--force"],
         ];
         let gen_modes: &[&[&str]] = &[
             &["--output", "other.spec"],
@@ -109,10 +110,22 @@ mod tests {
             };
             for format in ["human", "json"] {
                 assert!(parse(&["--check", "--format", format]).is_ok());
-                assert_eq!(
-                    parse(&["--format", format]).err().map(|error| error.kind()),
-                    Some(ErrorKind::MissingRequiredArgument)
-                );
+                if command == "gen" {
+                    assert_eq!(
+                        parse(&["--format", format]).err().map(|error| error.kind()),
+                        Some(ErrorKind::MissingRequiredArgument)
+                    );
+                } else {
+                    for action in [
+                        vec!["--prepare", "drafts"],
+                        vec!["--set", "package.version=2"],
+                        vec!["--output", "other.spec", "--force"],
+                    ] {
+                        let mut args = vec!["--format", format];
+                        args.extend(action);
+                        assert!(parse(&args).is_ok());
+                    }
+                }
                 for mode in modes {
                     assert!(parse(mode).is_ok(), "{command} {mode:?}");
                     let mut args = vec!["--format", format];

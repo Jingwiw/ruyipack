@@ -16,6 +16,9 @@ workspace database, execution framework, or a persistent package-wide mode to do
 - `gen` reads the selected manifest and embedded profile/build defaults. The SPEC
   is derived output. Existing output is only consulted for publication conflicts
   or a requested diff, never merged back into the manifest.
+  Explicit `--hash-sources` fills missing digests in that same in-memory manifest
+  before final rendering. It does not add a TOML output or write/read an intermediate
+  file; `init` remains an offline authoring scaffold, not a parallel fact-input path.
 - `edit` reads the selected SPEC and replaces supported field ranges. It does not
   read or update a neighboring manifest, even if the filenames match.
 - Drafts are proposals tied to original SPEC bytes, not another authority.
@@ -36,6 +39,7 @@ regenerating. No filename heuristic chooses an authority or synchronizes files.
 | `file_output` | Written/unchanged/skipped paths, typed partial failures | `edit` formats results and retains recovery information |
 | `check` | Findings and explicit incomplete reasons | `check`, `gen`, and `edit` reports |
 | `profile::buildsystems` | Embedded system names, requirements, stage guidance and identity | `init`, manifest validation, generation reports and RPK004 |
+| `source_hash` | Resolved URLs and digests of actual downloads | `gen` fills missing manifest digests in memory; `edit` fills selected native-resolved candidate digests; `source-hash` reports without writing |
 | `edit::drafts` | Draft storage layout and output protection | Saved and interactive editing |
 
 Read `generate.rs` and `edit.rs` for orchestration, then `render.rs`,

@@ -61,7 +61,7 @@ fn comment_modes_share_fields_and_filled_scaffolds_use_gen() {
         Some(time::OffsetDateTime::now_utc().year().to_string().as_str())
     );
     assert_eq!(scaffold["package"]["version"].as_str(), Some(""));
-    assert_eq!(scaffold["sources"]["0"]["sha256"].as_str(), Some(""));
+    assert!(scaffold["sources"]["0"].get("sha256").is_none());
     assert!(scaffold["package"]["vcs"].as_table().unwrap().is_empty());
     assert!(scaffold.get("build").is_none());
     assert!(scaffold.get("subpackages").is_none());
@@ -478,7 +478,6 @@ fn gen_reports_every_unfilled_scaffold_field_at_once() {
         "package.description",
         "package.vcs",
         "sources.0.url",
-        "sources.0.sha256",
         "package.files",
     ] {
         assert!(

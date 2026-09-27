@@ -28,7 +28,7 @@ pub(super) fn assign<'a>(
             .ok_or_else(|| format!("{field}: unknown field"))?;
         if !target.is_str() {
             return Err(format!(
-                "{field}: direct assignment requires a string field; use the editor for arrays or groups"
+                "{field}: direct assignment requires a string field; use --field {field} --prepare DIR for arrays or groups, edit the TOML, then use --from DIR"
             ));
         }
         *target = Value::String(value.clone());

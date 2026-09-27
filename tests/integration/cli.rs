@@ -86,6 +86,13 @@ fn json_reports_accept_non_utf8_paths_in_success_and_failure() {
         (
             &["edit"][..],
             &spec,
+            &["--set", "package.version=1.22.5"][..],
+            0,
+            "/outcomes/0/path",
+        ),
+        (
+            &["edit"][..],
+            &spec,
             &["--check", "--set", "package.version="][..],
             1,
             "/files/0/error/path",

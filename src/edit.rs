@@ -43,6 +43,7 @@ pub(crate) fn run(mut options: Options) -> Result<bool, EditError> {
         && !options.all
         && options.field.is_empty()
         && options.set.is_empty()
+        && options.hash_source.is_empty()
         && options.format.is_none()
         && !options.check
         && !options.view
@@ -52,32 +53,32 @@ pub(crate) fn run(mut options: Options) -> Result<bool, EditError> {
         options.field.push(field.to_owned());
     }
     let options = &options;
-    if !(options.check && matches!(options.format, Some(ReportFormat::Json))) {
-        return execute(options);
+    let mut report = json!({"format_version": 2, "scope": if options.prepare.is_some() { "edit-draft" } else { "selected-edit-static" }, "files": [],
+        "operation": if options.prepare.is_some() { "prepare" } else if options.check { "check" } else { "apply" }});
+    let result = execute(options, &mut report);
+    if !matches!(options.format, Some(ReportFormat::Json)) {
+        return result;
     }
-    let (success, report) = match load_inputs(options) {
-        Ok(inputs) => {
-            let checked = check_candidates(&inputs, &options.set);
-            let success = checked.iter().all(|item| item.error.is_none());
-            let records = checked.iter().map(CheckedInput::record).collect::<Vec<_>>();
-            (
-                success,
-                json!({"format_version": 2, "scope": "selected-edit-static", "valid": success, "files": records}),
-            )
+    let success = match result {
+        Ok(success) => success,
+        Err(error) => {
+            report["error"] = serde_json::to_value(error).expect("serializable error");
+            false
         }
-        Err(error) => (
-            false,
-            json!({"format_version": 2, "scope": "selected-edit-static", "valid": false, "files": [], "error": error}),
-        ),
     };
+    report["valid"] = success.into();
     // A failed report write is an I/O error, not a new business result to serialize.
-    let text = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+    let text = serde_json::to_string(&report).map_err(|e| e.to_string())?;
     write_stdout(&(text + "\n"))?;
     Ok(success)
 }
 
 fn load_inputs(options: &Options) -> Result<Vec<Input>, EditError> {
-    if options.from.is_none() && !options.all && options.field.is_empty() && options.set.is_empty()
+    if options.from.is_none()
+        && !options.all
+        && options.field.is_empty()
+        && options.set.is_empty()
+        && options.hash_source.is_empty()
     {
         return Err("select what to edit: use --field package.version (opens the editor), --set package.version=VERSION, or --all for a fully supported SPEC. For a read-only overview, use inspect".into());
     }
@@ -94,15 +95,40 @@ fn load_inputs(options: &Options) -> Result<Vec<Input>, EditError> {
                 let path =
                     fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()))?;
                 let source = utf8_file::read(&path).map_err(|e| e.to_string())?;
-                let fields = if options.set.is_empty() {
+                let mut fields = if options.set.is_empty() {
                     options.field.clone()
                 } else {
                     options.set.iter().map(|(field, _)| field.clone()).collect()
                 };
+                if !options.all {
+                    for number in &options.hash_source {
+                        let field = format!("sources.{number}.sha256");
+                        if !fields.contains(&field) {
+                            fields.push(field);
+                        }
+                    }
+                }
                 input(path, source, fields, None)
             })
             .collect::<Result<Vec<_>, _>>()?
     };
+    if let Some(expected) = &options.expect_sha256 {
+        let [item] = inputs.as_slice() else {
+            return Err("--expect-sha256 requires exactly one SPEC".into());
+        };
+        let actual = utf8_file::digest(item.snapshot.source());
+        if &actual != expected {
+            return Err(EditError::at(
+                Kind::SourceChanged,
+                &item.path,
+                item.snapshot.selection(),
+                format!(
+                    "{}: expected SHA-256 {expected}, found {actual}; no files written",
+                    item.path.display()
+                ),
+            ));
+        }
+    }
     if inputs.is_empty() {
         return Err("no SPEC files selected".into());
     }
@@ -119,7 +145,7 @@ fn load_inputs(options: &Options) -> Result<Vec<Input>, EditError> {
     Ok(inputs)
 }
 
-fn execute(options: &Options) -> Result<bool, EditError> {
+fn execute(options: &Options, report: &mut serde_json::Value) -> Result<bool, EditError> {
     let mut inputs = load_inputs(options)?;
     if options.view || options.schema {
         let view = inputs[0].snapshot.document();
@@ -132,7 +158,14 @@ fn execute(options: &Options) -> Result<bool, EditError> {
         return Ok(true);
     }
     if let Some(dir) = &options.prepare {
-        let created = create_drafts(dir, &inputs)?;
+        let created = create_drafts(dir, &inputs, Some(options))?;
+        if matches!(options.format, Some(ReportFormat::Json)) {
+            report["files"] = inputs.iter().zip(&created).map(|(item, path)| json!({
+                "source": item.path.to_string_lossy(), "original_sha256": utf8_file::digest(item.snapshot.source()),
+                "draft": path.to_string_lossy(),
+            })).collect();
+            return Ok(true);
+        }
         let dir = created[0]
             .parent()
             .expect("created drafts have an absolute parent");
@@ -143,7 +176,13 @@ fn execute(options: &Options) -> Result<bool, EditError> {
     }
     // Saved drafts already contain the edit; reopening them requires --editor.
     let opens_editor = options.editor.is_some()
-        || (options.set.is_empty() && !options.check && options.from.is_none());
+        || (options.set.is_empty()
+            && options.hash_source.is_empty()
+            && !options.check
+            && options.from.is_none());
+    if opens_editor && matches!(options.format, Some(ReportFormat::Json)) {
+        return Err("JSON reports require an explicit non-interactive action: --set, --hash-source, --prepare, --from, or --check".into());
+    }
     let mut temporary = None;
     if opens_editor {
         for item in &inputs {
@@ -159,7 +198,7 @@ fn execute(options: &Options) -> Result<bool, EditError> {
                 .prefix("ruyipack-edit-")
                 .tempdir()
                 .map_err(|e| e.to_string())?;
-            let created = create_drafts(dir.path(), &inputs)?;
+            let created = create_drafts(dir.path(), &inputs, None)?;
             for (item, draft) in inputs.iter_mut().zip(created) {
                 item.draft = Some(draft);
             }
@@ -173,14 +212,18 @@ fn execute(options: &Options) -> Result<bool, EditError> {
             return Err(retain(error.into(), temporary, &inputs));
         }
     }
-    match apply(options, &inputs) {
+    match apply(options, &inputs, report) {
         Err(error) => Err(retain(error, temporary, &inputs)),
         Ok(result) => {
             // Finalize drafts from publication facts before fallible notifications.
             let retained = temporary
                 .filter(|_| result.has_unapplied_changes())
                 .map(tempfile::TempDir::keep);
-            for outcome in &result.outcomes {
+            for outcome in result
+                .outcomes
+                .iter()
+                .filter(|_| !matches!(options.format, Some(ReportFormat::Json)))
+            {
                 outcome
                     .write_human(&mut io::stderr().lock())
                     .map_err(|e| e.to_string())?;
@@ -230,19 +273,34 @@ fn input(
     })
 }
 
-fn create_drafts(dir: &Path, inputs: &[Input]) -> Result<Vec<PathBuf>, String> {
+fn create_drafts(
+    dir: &Path,
+    inputs: &[Input],
+    options: Option<&Options>,
+) -> Result<Vec<PathBuf>, String> {
     let documents = inputs
         .iter()
         .map(|item| {
+            let mut document = Cow::Borrowed(item.snapshot.document());
+            if let Some(options) = options.filter(|options| !options.hash_source.is_empty()) {
+                complete_hashes(item, document.to_mut(), options).map_err(|e| e.to_string())?;
+            }
+            Ok(document)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let sources = inputs
+        .iter()
+        .zip(&documents)
+        .map(|(item, document)| {
             (
                 item.path.as_path(),
                 item.snapshot.source(),
                 item.snapshot.selection(),
-                item.snapshot.document(),
+                document.as_ref(),
             )
         })
         .collect::<Vec<_>>();
-    drafts::create(dir, &documents)
+    drafts::create(dir, &sources)
 }
 
 // Keep each input attached to its candidate/error; reports and publication consume
@@ -273,6 +331,7 @@ impl CheckedInput<'_> {
                 "original_sha256": utf8_file::digest(item.snapshot.source()), "report_subject": "candidate",
                 "profile": crate::profile::identity(), "changed": candidate.contents != item.snapshot.source(),
                 "review_triggers": candidate.review_triggers, "review_required": review_required,
+                "source_hashes": candidate.source_hashes,
                 "baseline_report": item.baseline.structured(&item.path),
                 "introduced_static_blockers": candidate.report.introduced_static_blockers(&item.baseline),
                 "report": candidate.report.structured(&item.path)})
@@ -300,14 +359,11 @@ impl ApplyResult<'_> {
     }
 }
 
-fn check_candidates<'a>(
-    inputs: &'a [Input],
-    assignments: &[(String, String)],
-) -> Vec<CheckedInput<'a>> {
+fn check_candidates<'a>(inputs: &'a [Input], options: &Options) -> Vec<CheckedInput<'a>> {
     inputs
         .iter()
         .map(|item| {
-            let (candidate, error) = match read_candidate(item, assignments) {
+            let (candidate, error) = match read_candidate(item, options) {
                 Ok(candidate) => {
                     let error = (!candidate.report.is_success()).then(|| {
                         EditError::at(
@@ -335,7 +391,11 @@ fn check_candidates<'a>(
         .collect()
 }
 
-fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, EditError> {
+fn apply<'a>(
+    options: &Options,
+    inputs: &'a [Input],
+    report: &mut serde_json::Value,
+) -> Result<ApplyResult<'a>, EditError> {
     if let Some(output) = &options.output {
         let paths = inputs
             .iter()
@@ -343,24 +403,30 @@ fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, 
             .collect::<Vec<_>>();
         drafts::protect_output(output, &paths)?;
     }
-    let checked = check_candidates(inputs, &options.set);
+    let checked = check_candidates(inputs, options);
     let success = checked.iter().all(|item| item.error.is_none());
-    for item in &checked {
-        if let Some(candidate) = item.candidate.as_ref() {
-            let path = &item.input.path;
-            if !candidate.review_triggers.is_empty() {
-                writeln!(io::stderr().lock(),
-                    "{} (candidate): review required after changing {}: source content and recorded SHA-256, patch applicability, and native build have not been verified",
+    let json = matches!(options.format, Some(ReportFormat::Json));
+    if json {
+        report["files"] = checked.iter().map(CheckedInput::record).collect();
+    }
+    if !json {
+        for item in &checked {
+            if let Some(candidate) = item.candidate.as_ref() {
+                let path = &item.input.path;
+                if !candidate.review_triggers.is_empty() {
+                    writeln!(io::stderr().lock(),
+                    "{} (candidate): review required after changing {}: source authenticity, unrefreshed digests, patch applicability, and native build have not been verified",
                     path.display(), candidate.review_triggers.join(", "))
                     .map_err(|e| e.to_string())?;
+                }
+                candidate
+                    .report
+                    .write_human(
+                        Path::new(&format!("{} (candidate)", path.display())),
+                        &mut io::stderr().lock(),
+                    )
+                    .map_err(|e| e.to_string())?;
             }
-            candidate
-                .report
-                .write_human(
-                    Path::new(&format!("{} (candidate)", path.display())),
-                    &mut io::stderr().lock(),
-                )
-                .map_err(|e| e.to_string())?;
         }
     }
     let changed_sources = checked
@@ -373,21 +439,23 @@ fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, 
         })
         .collect();
     if options.check {
-        for item in &checked {
-            writeln!(
-                io::stdout().lock(),
-                "{}: {}",
-                item.input.path.display(),
-                if item.error.is_none() {
-                    "valid"
-                } else {
-                    "invalid"
-                }
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        for error in checked.iter().filter_map(|item| item.error.as_ref()) {
-            writeln!(io::stderr().lock(), "error: {error}").map_err(|e| e.to_string())?;
+        if !json {
+            for item in &checked {
+                writeln!(
+                    io::stdout().lock(),
+                    "{}: {}",
+                    item.input.path.display(),
+                    if item.error.is_none() {
+                        "valid"
+                    } else {
+                        "invalid"
+                    }
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            for error in checked.iter().filter_map(|item| item.error.as_ref()) {
+                writeln!(io::stderr().lock(), "error: {error}").map_err(|e| e.to_string())?;
+            }
         }
         return Ok(ApplyResult {
             success,
@@ -427,13 +495,36 @@ fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, 
     } else {
         file_output::EditMode::Write
     };
-    let outcomes = file_output::run_edits(
+    let publication = file_output::run_edits(
         &files,
         options.output.as_deref(),
         mode,
         crate::output_cli::select_edit_action,
-    )
-    .map_err(EditError::publication)?;
+    );
+    if json {
+        match &publication {
+            Ok(outcomes) => {
+                report["outcomes"] = outcomes.iter().zip(&files).map(|(outcome, file)| {
+                    let (status, path, sha256) = match outcome {
+                        file_output::EditOutcome::Written(path) => ("written", path, Some(utf8_file::digest(file.contents))),
+                        file_output::EditOutcome::Unchanged(path) => ("unchanged", path, Some(utf8_file::digest(file.contents))),
+                        file_output::EditOutcome::Skipped(path) => ("skipped", path, None),
+                    };
+                    json!({"source": file.source_path.to_string_lossy(), "status": status, "path": path.to_string_lossy(), "sha256": sha256})
+                }).collect();
+            }
+            Err(file_output::OutputError::Partial { written, .. }) => {
+                report["written"] = json!(
+                    written
+                        .iter()
+                        .map(|path| path.to_string_lossy())
+                        .collect::<Vec<_>>()
+                )
+            }
+            Err(_) => {}
+        }
+    }
+    let outcomes = publication.map_err(EditError::publication)?;
     Ok(ApplyResult {
         success,
         changed_sources,
@@ -441,10 +532,7 @@ fn apply<'a>(options: &Options, inputs: &'a [Input]) -> Result<ApplyResult<'a>, 
     })
 }
 
-fn read_candidate(
-    item: &Input,
-    assignments: &[(String, String)],
-) -> Result<candidate::Candidate, EditError> {
+fn read_candidate(item: &Input, options: &Options) -> Result<candidate::Candidate, EditError> {
     if !utf8_file::is_unchanged(&item.path, item.snapshot.source())
         .map_err(|e| format!("{}: {e}", item.path.display()))?
     {
@@ -458,7 +546,7 @@ fn read_candidate(
             ),
         ));
     }
-    let document = if let Some(path) = &item.draft {
+    let mut document = if let Some(path) = &item.draft {
         let text = drafts::read_text(path)?;
         let edited: Table = toml::from_str(&text).map_err(|e: toml::de::Error| {
             let offset = e.span().map_or(0, |span| span.start).min(text.len());
@@ -474,7 +562,7 @@ fn read_candidate(
         })?;
         Cow::Owned(edited)
     } else {
-        fields::assign(item.snapshot.document(), assignments).map_err(|e| {
+        fields::assign(item.snapshot.document(), &options.set).map_err(|e| {
             EditError::at(
                 Kind::InvalidAssignment,
                 &item.path,
@@ -483,7 +571,12 @@ fn read_candidate(
             )
         })?
     };
-    candidate::prepare(&item.snapshot, &document).map_err(|error| {
+    let source_hashes = if options.hash_source.is_empty() {
+        None
+    } else {
+        Some(complete_hashes(item, document.to_mut(), options)?)
+    };
+    let mut candidate = candidate::prepare(&item.snapshot, &document).map_err(|error| {
         let path = item.draft.as_deref().unwrap_or(&item.path);
         EditError::at(
             Kind::InvalidCandidate,
@@ -491,7 +584,55 @@ fn read_candidate(
             item.snapshot.selection(),
             format!("{}: {error}", path.display()),
         )
-    })
+    })?;
+    candidate.source_hashes = source_hashes;
+    Ok(candidate)
+}
+
+fn complete_hashes(
+    item: &Input,
+    document: &mut Table,
+    options: &Options,
+) -> Result<crate::source_hash::SourceHashes, EditError> {
+    let complete = || -> Result<crate::source_hash::SourceHashes, String> {
+        // A saved draft never silently acquires permission to edit another field.
+        for number in &options.hash_source {
+            let field = format!("sources.{number}.sha256");
+            if crate::spec::document::fields::lookup(document, &field).is_none() {
+                return Err(format!(
+                    "{field}: prepare a draft that includes this digest field"
+                ));
+            }
+            if options.set.iter().any(|(key, _)| key == &field) {
+                return Err(format!(
+                    "{field}: choose either --set or --hash-source, not both"
+                ));
+            }
+        }
+        let contents = item.snapshot.render_before_hashing(document)?;
+        let hashes = crate::source_hash::calculate(
+            &item.path,
+            &contents,
+            &options.hash_source,
+            &options.defines,
+        )?;
+        crate::source_hash::unchanged(&item.path, item.snapshot.source())?;
+        Ok(hashes)
+    };
+    let hashes = complete().map_err(|e| {
+        EditError::at(
+            Kind::SourceHashFailed,
+            &item.path,
+            item.snapshot.selection(),
+            e,
+        )
+    })?;
+    for (number, source) in &hashes.sources {
+        *crate::spec::document::fields::lookup_mut(document, &format!("sources.{number}.sha256"))
+            .expect("selected digest was checked before download") =
+            toml::Value::String(source.sha256.clone());
+    }
+    Ok(hashes)
 }
 
 fn retain(

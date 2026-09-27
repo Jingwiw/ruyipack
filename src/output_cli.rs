@@ -33,6 +33,27 @@ pub(crate) enum ReportError {
     Stderr(#[source] io::Error),
 }
 
+/// A read failure is a business result in JSON mode, not an absent report.
+pub(crate) fn read_source(
+    path: &Path,
+    format: ReportFormat,
+) -> Result<Option<String>, ReportError> {
+    match crate::utf8_file::read(path) {
+        Ok(source) => Ok(Some(source)),
+        Err(error) if matches!(format, ReportFormat::Json) => {
+            let report = serde_json::json!({"format_version": 2, "valid": false,
+                "input": {"display_path": path.to_string_lossy()},
+                "error": {"code": "input-read", "message": error.to_string()}});
+            let mut output = io::stdout().lock();
+            serde_json::to_writer(&mut output, &report)
+                .map_err(|e| ReportError::Stdout(e.into()))?;
+            writeln!(output).map_err(ReportError::Stdout)?;
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 #[derive(Args)]
 pub(crate) struct OutputOptions {
     /// Selects the output file, or the comparison target with --diff.

@@ -7,6 +7,7 @@
 //! Manifest selection and checked SPEC generation.
 
 use std::{
+    collections::BTreeMap,
     fs,
     io::{self, Write},
     path::{Component, Path, PathBuf},
@@ -15,13 +16,14 @@ use std::{
 use crate::{
     file_output,
     output_cli::{self, ReportFormat},
-    render, utf8_file,
+    render, source_hash, utf8_file,
 };
 
 /// Generates the SPEC owned by one manifest.
 pub(crate) fn run(
     requested_name: &str,
     manifest_path: Option<&Path>,
+    hash_sources: bool,
     output: &output_cli::OutputOptions,
     check_only: bool,
     format: Option<ReportFormat>,
@@ -36,6 +38,7 @@ pub(crate) fn run(
     };
 
     let mut manifest_digest = None;
+    let mut downloads = hash_sources.then(BTreeMap::new);
     let rendered = (|| {
         // NAME selects a package; it never acts as an implicit manifest path.
         let mut name_components = Path::new(requested_name).components();
@@ -62,15 +65,53 @@ pub(crate) fn run(
             Err(source) => return Err(GenerateError::Input(source)),
         };
         manifest_digest = Some(utf8_file::digest(&manifest_source));
-        let rendered = render::run(&manifest_source).map_err(|source| GenerateError::Render {
+        let render_error = |source| GenerateError::Render {
             path: manifest_path.to_path_buf(),
             source,
-        })?;
-        if requested_name != rendered.name {
+        };
+        let mut manifest = render::manifest::parse(&manifest_source).map_err(render_error)?;
+        if requested_name != manifest.package.name {
             return Err(GenerateError::ManifestNotForPackage {
                 requested: requested_name.to_owned(),
                 path: manifest_path.to_path_buf(),
             });
+        }
+        let mut rendered = render::run(&manifest).map_err(render_error)?;
+        // Validate the whole recipe before network I/O. Both renders consume the
+        // same manifest; the second verifies the newly observed digest facts.
+        if let Some(downloads) = &mut downloads
+            && rendered.report.is_success()
+        {
+            let package = &manifest.package;
+            for (number, source) in &mut manifest.sources {
+                if source.sha256.is_some() {
+                    continue;
+                }
+                let downloaded = (|| {
+                    let url = crate::spec::expression::substitute_fields(
+                        &source.url,
+                        &[
+                            ("name", &package.name),
+                            ("version", &package.version),
+                            ("url", &package.url),
+                        ],
+                    )?;
+                    source_hash::download(&url)
+                })()
+                .map_err(|e| GenerateError::SourceHash(format!("sources.{number}: {e}")))?;
+                source.sha256 = Some(downloaded.sha256.clone());
+                downloads.insert(*number, downloaded);
+            }
+            if !downloads.is_empty() {
+                if utf8_file::read(manifest_path).map_err(GenerateError::Input)? != manifest_source
+                {
+                    return Err(GenerateError::SourceHash(
+                        "manifest changed during source hashing; rerun against the new input"
+                            .into(),
+                    ));
+                }
+                rendered = render::run(&manifest).map_err(render_error)?;
+            }
         }
         Ok(rendered)
     })();
@@ -87,6 +128,7 @@ pub(crate) fn run(
             "build_contract": candidate.and_then(|r| r.build_contract.as_ref()),
             "report_subject": candidate.map(|_| "candidate"),
             "report": candidate.map(|r| r.report.structured(&target)),
+            "source_hashes": downloads,
             "error": rendered.as_ref().err().map(ToString::to_string),
         });
         serde_json::to_writer(io::stdout().lock(), &report).map_err(GenerateError::Json)?;
@@ -95,7 +137,7 @@ pub(crate) fn run(
     }
     let rendered = rendered?;
 
-    let default_target = manifest_path.with_file_name(format!("{}.spec", rendered.name));
+    let default_target = manifest_path.with_file_name(format!("{requested_name}.spec"));
     let target = output.path.as_deref().unwrap_or(&default_target);
     rendered
         .report
@@ -103,6 +145,16 @@ pub(crate) fn run(
         .map_err(GenerateError::Stderr)?;
     if !rendered.report.is_success() {
         return Err(GenerateError::CheckFailed);
+    }
+    if let Some(downloads) = &downloads
+        && !downloads.is_empty()
+    {
+        writeln!(
+            io::stderr().lock(),
+            "Calculated {} missing Source SHA-256 digest(s); manifest unchanged.",
+            downloads.len()
+        )
+        .map_err(GenerateError::Stderr)?;
     }
 
     if check_only {
@@ -154,6 +206,8 @@ fn reject_input_alias(manifest_path: &Path, target: &Path) -> Result<(), Generat
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum GenerateError {
+    #[error("source hashing failed: {0}")]
+    SourceHash(String),
     #[error("failed to write generation report: {0}")]
     Json(#[source] serde_json::Error),
     #[error("failed to write output to stdout: {0}")]

@@ -10,14 +10,15 @@ use std::{io, path::Path};
 
 use crate::{
     check,
-    output_cli::{ReportError, ReportFormat},
+    output_cli::{ReportError, ReportFormat, read_source},
     spec::ParsedSpec,
-    utf8_file,
 };
 
 /// Checks the selected static rules in one SPEC.
 pub(crate) fn run(path: &Path, format: ReportFormat) -> Result<bool, ReportError> {
-    let source = utf8_file::read(path)?;
+    let Some(source) = read_source(path, format)? else {
+        return Ok(false);
+    };
     let report = check::analyze(&ParsedSpec::parse(&source));
 
     match format {

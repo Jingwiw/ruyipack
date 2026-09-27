@@ -15,7 +15,7 @@ use std::path::PathBuf;
     group(ArgGroup::new("edit_action").args([
         "prepare", "view", "schema", "check", "diff", "stdout", "output"
     ])),
-    after_help = "Opens selected SPEC fields as TOML in $VISUAL, $EDITOR, or vim.\nChoose fields interactively, or use --field / --set. Use --all only for fully supported SPECs.\nUse --set FIELD=VALUE repeatedly for string fields.\nUse --prepare DIR for persistent drafts.\nAfter the editor exits, checked edits are written to the source SPEC files.\nUse --diff to preview without writing; --from DIR applies saved drafts.\nChanging Version or Source does not refresh recorded digests or verify patches.\nReview them before building or submitting the package.\nExamples:\n  ruyipack edit ed.spec --set package.version=1.22 --diff\n  ruyipack edit ed.spec --field package.version --editor 'code --wait'\n  ruyipack edit ed.spec make.spec --field package.version --prepare drafts\n  ruyipack edit --from drafts --check\n  ruyipack edit --from drafts --diff\n  ruyipack edit --from drafts"
+    after_help = "Opens selected SPEC fields as TOML in $VISUAL, $EDITOR, or vim.\nChoose fields interactively, or use --field / --set. Use --all only for fully supported SPECs.\nUse --set FIELD=VALUE repeatedly for string fields.\nUse --prepare DIR for persistent drafts.\nCommon fields: package.version, build-requires.rpm (array), sources.N.url, sources.N.sha256.\nUse --hash-source N --trusted-spec to calculate and fill a Source digest.\nAfter the editor exits, checked edits are written to the source SPEC files.\nUse --diff to preview without writing; --from DIR applies saved drafts.\nChanging Version or Source only refreshes explicitly selected --hash-source digests; patches are not verified.\nReview them before building or submitting the package.\nExamples:\n  ruyipack edit ed.spec --set package.version=1.22 --diff\n  ruyipack edit ed.spec --field package.version --editor 'code --wait'\n  ruyipack edit ed.spec make.spec --field package.version --prepare drafts\n  ruyipack edit --from drafts --check\n  ruyipack edit --from drafts --diff\n  ruyipack edit --from drafts"
 )]
 pub(crate) struct Options {
     /// SPEC files to edit.
@@ -34,6 +34,23 @@ pub(crate) struct Options {
     /// Sets one existing string field; repeat for more fields.
     #[arg(long, value_name = "FIELD=VALUE", value_parser = assignment, conflicts_with_all = ["field", "view", "schema", "editor"])]
     pub set: Vec<(String, String)>,
+    /// Recalculate a Source SHA-256 from the pending candidate; repeat for more Sources.
+    #[arg(long, value_name = "N", requires = "trusted_spec", conflicts_with_all = ["view", "schema"])]
+    pub hash_source: Vec<u32>,
+    /// Acknowledge native macro execution for --hash-source. Isolate untrusted input.
+    #[arg(long, requires = "hash_source")]
+    pub trusted_spec: bool,
+    /// Pass an RPM macro definition verbatim, in order, when calculating hashes.
+    #[arg(
+        short = 'D',
+        long = "define",
+        value_name = "MACRO EXPR",
+        requires = "hash_source"
+    )]
+    pub defines: Vec<String>,
+    /// Refuse a single-file operation unless its original SHA-256 matches.
+    #[arg(long, value_name = "HASH", value_parser = expected_digest)]
+    pub expect_sha256: Option<String>,
     /// Selects a field or table for viewing or editing; repeat to add fields.
     #[arg(long, value_name = "FIELD")]
     pub field: Vec<String>,
@@ -49,9 +66,8 @@ pub(crate) struct Options {
     /// Checks all drafts without writing SPEC files or opening an editor.
     #[arg(long, conflicts_with = "editor")]
     pub check: bool,
-    /// Selects the check report format.
-    // Conflicts can waive `requires`, so reject non-check modes on this option too.
-    #[arg(long, value_enum, requires = "check", conflicts_with_all = ["prepare", "view", "schema", "diff", "stdout", "output", "editor", "force"])]
+    /// Selects the check, draft preparation, or publication report format.
+    #[arg(long, value_enum, conflicts_with_all = ["view", "schema", "diff", "stdout", "editor"])]
     pub format: Option<ReportFormat>,
     /// Prints source-to-candidate diffs without writing SPEC files.
     #[arg(long)]
@@ -77,6 +93,11 @@ fn assignment(text: &str) -> Result<(String, String), String> {
         return Err("FIELD cannot be empty".into());
     }
     Ok((field.to_owned(), value.to_owned()))
+}
+
+fn expected_digest(value: &str) -> Result<String, &'static str> {
+    crate::source::validate_sha256(value)?;
+    Ok(value.to_ascii_lowercase())
 }
 
 #[cfg(test)]

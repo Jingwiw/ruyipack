@@ -78,3 +78,11 @@ pub(crate) fn validate_sha256(value: &str) -> Result<(), &'static str> {
         Err("expected 64 hexadecimal digits")
     }
 }
+
+/// New manifests require HTTPS; existing SPEC editing also accepts HTTP.
+pub(crate) fn require_https(field: &str, scheme: Scheme) -> Result<(), String> {
+    if scheme != Scheme::Https {
+        return Err(format!("{field}: expected an HTTPS URL"));
+    }
+    Ok(())
+}

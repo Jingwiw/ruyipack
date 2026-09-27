@@ -151,8 +151,7 @@ fn resolve_vcs(input: &VcsInput) -> Result<Vcs, String> {
 pub(crate) struct Source {
     pub(crate) url: String,
     // Absent renders a bare #!RemoteAsset with an openRuyi policy warning.
-    // An empty string is still rejected, so a blank scaffold field is not a
-    // silent opt-in to the bare form.
+    // An explicitly supplied empty string is invalid, not an absent digest.
     #[serde(default)]
     pub(crate) sha256: Option<String>,
 }
@@ -523,7 +522,7 @@ fn source_url(field: &str, value: &str, package: &PackageInput) -> Result<(), St
         ],
     )
     .map_err(|reason| format!("{field}: {reason}"))?;
-    require_https(field, scheme)
+    crate::source::require_https(field, scheme)
 }
 
 fn https_url(field: &str, value: &str) -> Result<(), String> {
@@ -531,12 +530,5 @@ fn https_url(field: &str, value: &str) -> Result<(), String> {
     crate::source::reject_credentials(value).map_err(|reason| format!("{field}: {reason}"))?;
     let scheme =
         crate::source::validate_url(value).map_err(|reason| format!("{field}: {reason}"))?;
-    require_https(field, scheme)
-}
-
-fn require_https(field: &str, scheme: crate::source::Scheme) -> Result<(), String> {
-    if scheme != crate::source::Scheme::Https {
-        return Err(format!("{field}: expected an HTTPS URL"));
-    }
-    Ok(())
+    crate::source::require_https(field, scheme)
 }

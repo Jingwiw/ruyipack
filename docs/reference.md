@@ -57,7 +57,23 @@ Source numbers in numeric order. `sources.0` is the primary archive used by the
 Autotools default unpacking step. A missing digest produces a bare `#!RemoteAsset`
 and warning, not an error. This output does not meet openRuyi's SHA-256 requirement
 for HTTP(S) sources. An empty digest fails. Digests must be 64 hexadecimal digits;
-case is preserved. Archive contents are not downloaded or verified.
+case is preserved. By default, archives are not downloaded or verified.
+
+After filling the scaffold, use `gen NAME --hash-sources` to download Sources
+whose `sha256` is absent and fill their digests in the generated SPEC. Existing
+digests are retained, not downloaded or verified; remove a digest from the TOML
+when you intend to recalculate it. This explicit option requires curl, not RPM.
+It uses the package fields below, without executing macros. Invalid manifests
+fail before downloading; download failures or changes to the input TOML during
+hashing prevent publication. The final SPEC is reparsed and checked as usual.
+
+Completion changes the same in-memory manifest used by the renderer: it never
+writes the author TOML or an intermediate TOML. `--stdout` / `--diff` preview
+the completed SPEC; `--check --format json` writes no files and includes actual
+downloads in `source_hashes` (null when not requested, empty when none performed).
+These options still download when combined with `--hash-sources`. Repeating the
+command downloads again while hashes remain absent in the author TOML; no hidden
+cache or writeback pins them. A calculated digest is not source authentication.
 
 Source expressions may use `%{name}`, `%{version}`, and `%{url}` only when the
 referenced package values are unambiguous static literals. Expressions and
@@ -137,7 +153,7 @@ verification.
 ## Edit
 
 `edit FILE.spec` in a terminal asks what to edit; it does not attempt a full conversion.
-Scripts must specify `--field`, `--set`, or `--all`. Use `--all --view` only when every
+Scripts specify `--field`, `--set`, `--hash-source`, or `--all`. Use `--all --view` only when every
 construct is supported; `inspect` is the read-only overview.
 
 Use `--field FIELD` for an editor view, `--set FIELD=VALUE` for string assignments,
@@ -167,6 +183,9 @@ value preserves a bare marker but cannot erase an existing digest.
 Version or Source URL changes produce `review_triggers` and `review_required`
 (source/digests, patches, native build). They do not turn a static pass into a
 failure. Empty lists mean no triggering change, not that external checks ran.
+Use `--expect-sha256 HASH` for a single-file edit based on an earlier read or
+`source-hash` result. A mismatch refuses the operation; publication still checks
+for subsequent changes. This binds the SPEC bytes, not external macros or URLs.
 
 ### Persistent drafts
 
@@ -251,8 +270,8 @@ ruyipack source-hash package.spec --trusted-spec --source 0 --format json
 ruyipack source-hash package.spec --trusted-spec -D 'archive_version 2.0'
 ```
 
-This is an explicit native/network operation, unlike `gen`, `check`, and `edit`.
-Run it in a prepared target RPM environment with `rpmspec` and `curl`. RPM expands
+Source hashing is explicit; ordinary generation, checking and editing stay offline.
+Run native hashing in a prepared target RPM environment with `rpmspec` and `curl`. RPM expands
 **the full SPEC with its real conditions**, using ordered `--define` arguments and
 normal RPM precedence: a later definition inside the SPEC can override a CLI
 value. The JSON records the input hash, native version, definitions, expanded-SPEC
@@ -261,10 +280,10 @@ the digest on stdout and copyable preview/apply commands on stderr.
 JSON failures return `valid: false`, an error and exit 1, without a fabricated digest.
 CLI argument and output-write failures may precede JSON.
 
-Review the resolved URL, not only the digest. Use `edit --set sources.0.sha256=HASH --diff`
-to review the adjacent RemoteAsset change, then omit `--diff` to apply it.
-The command does not add or overwrite that line, refresh other Sources, verify
-upstream authenticity, or prove the package builds. It accepts a bare marker or
+Review the resolved URL, not only the digest. The copyable edit commands include
+`--expect-sha256`, so an intervening SPEC change cannot silently receive a stale
+hash. `source-hash` itself never writes the SPEC or refreshes other Sources,
+verifies upstream authenticity, or proves the package builds. It accepts a bare marker or
 no marker; the effective Source number comes from native RPM output, not marker
 presence. `%sourcelist` is not supported by this command.
 
@@ -277,6 +296,30 @@ including redirects; URL credentials are refused. Curl configuration files are
 ignored, but normal proxy/certificate environment settings still apply. Temporary
 downloads are removed and failed downloads never produce a digest. A checksum
 identifies the bytes retrieved in this run, not all future responses from a URL.
+
+### Complete digests while editing
+
+```sh
+ruyipack edit package.spec --set package.version=2.0 --hash-source 0 --trusted-spec --diff
+# Review, then omit --diff to write; add --format json for a publication receipt.
+ruyipack edit package.spec --hash-source 0 --trusted-spec --prepare drafts
+```
+
+Repeat `--hash-source N` for multiple Sources; use `-D 'MACRO EXPR'` for the same
+native overrides as `source-hash`. Native resolution sees the pending Version/URL
+edits **before** downloads. Digest comments are filled afterwards, then the same
+candidate parsing, static checks and source-change protections run before publication.
+For saved drafts, the digest must already be selected; hashing never widens their
+scope. Bare adjacent RemoteAsset markers can gain a digest; unmarked/local or
+ambiguous Source mappings are still refused. Download failure leaves SPECs unchanged.
+
+Pending edits use a private same-named SPEC with the original working directory.
+The report records this and the expanded-SPEC hash. Path-dependent `__file_name`
+expressions are refused on temporary candidates; use a reviewed saved copy instead.
+External includes/macros and remote responses are not frozen by an input digest.
+Hashing proves the retrieved bytes, not authenticity, patch applicability or a build.
+A selected digest marker containing `%` must be repaired first: RPM expands macros
+even in comments, and replacing that marker after hashing could change resolution.
 
 ## JSON and inspection
 
@@ -296,7 +339,7 @@ spans without hiding messages. This does not establish general semantic accuracy
 | --- | --- |
 | `check --format json` | Report v2: input identity, parser, selected rules, `spec-static` evidence, findings and `parser_diagnostics` |
 | `gen NAME --check --format json` | Envelope v2, `manifest-generation-static`: manifest/profile/selected build-contract hashes and candidate report (including warnings) |
-| `edit ... --check --format json` | Envelope v2, `selected-edit-static`: per-file original hash, candidate report, review lists and structured errors |
+| `edit ... --format json` | Envelope v2: `operation` is `check`, `prepare`, or `apply`; original/candidate identities, reports, draft paths or publication outcomes |
 
 Static reports carry `evidence.incomplete_reasons` as a deterministic, deduplicated
 list, including when `status` is `fail`. Reasons distinguish `parser-error`,
@@ -318,6 +361,19 @@ Missing Source SHA-256 is `RPK005`, a warning in all three commands, not a hard
 failure or evidence of verified source content. Static detection covers adjacent
 bare markers and literal HTTP(S) Source prefixes, not arbitrary macro expansion.
 
+`check` and `inspect` return `valid: false` and `error.code: "input-read"` for
+unreadable/invalid-UTF-8 input in JSON mode, without a fabricated input hash.
+Edit JSON is compact; use `jq` to select fields or format it. Check reports already
+include the baseline, so a separate original `check` is unnecessary for comparison.
+Preparation (`scope: "edit-draft"`) returns absolute draft paths, not a validated
+candidate. `valid` describes the requested operation, not package quality.
+Publication `outcomes` report `written`,
+`unchanged`, or `skipped`, actual destination paths, and known resulting hashes.
+On partial I/O failure, `valid` is false and `written` lists confirmed writes;
+remaining files are not claimed complete. A missing receipt does not prove no write
+occurred (for example, stdout may fail afterwards). Old drafts remain stale after
+application; use a new read or the receipt, not a forced stale-draft retry.
+
 For edit, `baseline_report` records the original checks; `introduced_static_blockers`
 compares blocking rule facts, ignoring shifted positions (`null` when unresolved
 checks prevent attribution). Pre-existing errors are identified before opening the editor and on failure; they still block publication.
@@ -325,7 +381,7 @@ For edit, `original_sha256` identifies the source; the nested input hash identif
 the candidate (`report_subject`). Paths have no human presentation suffix.
 Errors have `code`, `message`, and optional `path`/`selected_fields`; selection is
 operation scope, not necessarily the offending field. Codes include
-`unmappable-fields`, `source-changed`, `invalid-draft`,
+`unmappable-fields`, `source-changed`, `source-hash-failed`, `invalid-draft`,
 `invalid-assignment`, `invalid-candidate`, `static-check-failed`, and the fallback
 `operation-failed`. CLI argument errors can precede JSON. Diagnostics use lowercase
 severity names and remain inside JSON rather than stderr.

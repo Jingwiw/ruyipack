@@ -16,12 +16,11 @@ use crate::{
 };
 
 /// Renders one manifest without file or terminal I/O.
-pub(crate) fn run(source: &str) -> Result<RenderedSpec, RenderError> {
-    let manifest = manifest::parse(source)?;
+pub(crate) fn run(manifest: &manifest::Manifest) -> Result<RenderedSpec, RenderError> {
     let profile = crate::profile::load();
-    let contents = spec::render(&manifest, profile);
+    let contents = spec::render(manifest, profile);
     let parsed = ParsedSpec::parse(&contents);
-    verify::run(&parsed, &manifest, profile)?;
+    verify::run(&parsed, manifest, profile)?;
     let report = check::analyze(&parsed);
     let build_contract = manifest
         .build
@@ -30,14 +29,12 @@ pub(crate) fn run(source: &str) -> Result<RenderedSpec, RenderError> {
         .and_then(crate::profile::buildsystems::contract_identity);
     Ok(RenderedSpec {
         build_contract,
-        name: manifest.package.name,
         contents,
         report,
     })
 }
 pub(crate) struct RenderedSpec {
     pub(crate) build_contract: Option<crate::profile::Identity>,
-    pub(crate) name: String,
     pub(crate) contents: String,
     pub(crate) report: CheckReport,
 }

@@ -259,10 +259,24 @@ fn empty_and_unreadable_inputs_keep_distinct_results() {
     assert_eq!(result["parser_diagnostics"], json!([]));
     fs::write(&path, [0xff]).unwrap();
     for path in [path, directory.path().join("missing.spec")] {
-        let output = command(&path).output().unwrap();
-        assert_eq!(output.status.code(), Some(1));
-        assert!(output.stdout.is_empty());
-        assert!(!output.stderr.is_empty());
+        for name in ["check", "inspect"] {
+            let output = super::support::command()
+                .arg(name)
+                .arg(&path)
+                .args(["--format", "json"])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1));
+            assert!(output.stderr.is_empty());
+            let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(result["valid"], false);
+            assert_eq!(
+                result["input"]["display_path"],
+                path.to_string_lossy().as_ref()
+            );
+            assert_eq!(result["error"]["code"], "input-read");
+            assert!(result["input"]["sha256"].is_null());
+        }
     }
     assert_eq!(
         fs::read(directory.path().join("input.spec")).unwrap(),

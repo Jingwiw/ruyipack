@@ -7,15 +7,16 @@
 //! File and terminal boundary for main-package tag inspection.
 
 use crate::{
-    output_cli::{ReportError, ReportFormat},
+    output_cli::{ReportError, ReportFormat, read_source},
     spec::{ParsedSpec, inspection::Inspection},
-    utf8_file,
 };
 use std::{io, path::Path};
 
 /// Reads one SPEC and prints its parser diagnostics and main-package tag view.
-pub(crate) fn run(path: &Path, format: ReportFormat) -> Result<(), ReportError> {
-    let source = utf8_file::read(path)?;
+pub(crate) fn run(path: &Path, format: ReportFormat) -> Result<bool, ReportError> {
+    let Some(source) = read_source(path, format)? else {
+        return Ok(false);
+    };
     let view = Inspection::new(ParsedSpec::parse(&source));
     let mut output = io::stdout().lock();
     match format {
@@ -26,5 +27,6 @@ pub(crate) fn run(path: &Path, format: ReportFormat) -> Result<(), ReportError> 
         }
         ReportFormat::Json => view.write_json(path, &mut output),
     }
-    .map_err(ReportError::Stdout)
+    .map_err(ReportError::Stdout)?;
+    Ok(true)
 }
