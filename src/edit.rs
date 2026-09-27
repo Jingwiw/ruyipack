@@ -37,6 +37,25 @@ struct Input {
     draft: Option<PathBuf>,
 }
 
+impl Input {
+    fn ensure_unchanged(&self) -> Result<(), EditError> {
+        let error =
+            |code, message| EditError::at(code, &self.path, self.snapshot.selection(), message);
+        if !utf8_file::is_unchanged(&self.path, self.snapshot.source())
+            .map_err(|e| error(Kind::InputRead, format!("{}: {e}", self.path.display())))?
+        {
+            return Err(error(
+                Kind::SourceChanged,
+                format!(
+                    "{}: source changed; prepare a fresh draft",
+                    self.path.display()
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Builds and checks every candidate before publishing any file.
 pub(crate) fn run(mut options: Options) -> Result<bool, EditError> {
     if options.from.is_none()
@@ -302,17 +321,17 @@ fn create_drafts(
     dir: &Path,
     inputs: &[Input],
     options: Option<&Options>,
-) -> Result<Vec<PathBuf>, String> {
+) -> Result<Vec<PathBuf>, EditError> {
     let documents = inputs
         .iter()
         .map(|item| {
             let mut document = Cow::Borrowed(item.snapshot.document());
             if let Some(options) = options.filter(|options| !options.hash_sources.is_empty()) {
-                complete_hashes(item, document.to_mut(), options).map_err(|e| e.to_string())?;
+                complete_hashes(item, document.to_mut(), options)?;
             }
             Ok(document)
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Result<Vec<_>, EditError>>()?;
     let sources = inputs
         .iter()
         .zip(&documents)
@@ -325,7 +344,7 @@ fn create_drafts(
             )
         })
         .collect::<Vec<_>>();
-    drafts::create(dir, &sources)
+    drafts::create(dir, &sources).map_err(Into::into)
 }
 
 fn candidate_record(item: &Input, candidate: &candidate::Candidate) -> serde_json::Value {
@@ -518,19 +537,7 @@ fn apply<'a>(
 }
 
 fn read_candidate(item: &Input, options: &Options) -> Result<candidate::Candidate, EditError> {
-    if !utf8_file::is_unchanged(&item.path, item.snapshot.source())
-        .map_err(|e| format!("{}: {e}", item.path.display()))?
-    {
-        return Err(EditError::at(
-            Kind::SourceChanged,
-            &item.path,
-            item.snapshot.selection(),
-            format!(
-                "{}: source changed; prepare a fresh draft",
-                item.path.display()
-            ),
-        ));
-    }
+    item.ensure_unchanged()?;
     let mut document = if let Some(path) = &item.draft {
         let text = drafts::read_text(path)?;
         let edited: Table = toml::from_str(&text).map_err(|e: toml::de::Error| {
@@ -595,14 +602,12 @@ fn complete_hashes(
             }
         }
         let contents = item.snapshot.render_before_hashing(document)?;
-        let hashes = crate::source::calculate(
+        crate::source::calculate(
             &item.path,
             &contents,
             &options.hash_sources,
             &options.defines,
-        )?;
-        crate::source::ensure_unchanged(&item.path, item.snapshot.source())?;
-        Ok(hashes)
+        )
     };
     let hashes = complete().map_err(|e| {
         EditError::at(
@@ -612,6 +617,7 @@ fn complete_hashes(
             e,
         )
     })?;
+    item.ensure_unchanged()?;
     for (number, source) in &hashes.sources {
         *crate::spec::document::table::lookup_mut(document, &format!("sources.{number}.sha256"))
             .expect("selected digest was checked before download") =
@@ -637,7 +643,7 @@ fn retain(
                 !utf8_file::is_unchanged(&item.path, item.snapshot.source()).unwrap_or(false)
             }) {
                 format!(
-                    "{error}\nDrafts retained: {}\nSources changed; review the written files and prepare fresh drafts before retrying.",
+                    "{error}\nDrafts retained: {}\nSources changed or could not be rechecked; review the written files and prepare fresh drafts before retrying.",
                     path.display()
                 )
             } else {
@@ -723,7 +729,11 @@ mod tests {
         });
         assert!(std::error::Error::source(&error).is_some());
         let error = retain(error, Some(temporary), &inputs);
-        assert!(error.message.contains("Sources changed;"));
+        assert!(
+            error
+                .message
+                .contains("Sources changed or could not be rechecked;")
+        );
         assert!(!error.message.contains("Resume:"));
         assert!(retained.is_dir());
         let copy_failure = EditError::publication(OutputError::Partial {

@@ -186,13 +186,6 @@ pub(crate) fn calculate(
     })
 }
 
-pub(crate) fn ensure_unchanged(path: &Path, original: &str) -> Result<(), String> {
-    if !utf8_file::is_unchanged(path, original).map_err(|e| e.to_string())? {
-        return Err("SPEC changed during source hashing; rerun against the new input".into());
-    }
-    Ok(())
-}
-
 /// A checked remote URL retains its original spelling for evidence.
 /// Native batches prepare every Source before any download is allowed to start.
 pub(crate) struct RemoteSource<'url> {

@@ -43,7 +43,14 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         let result =
             source::calculate(&path, &original, &[options.source_number], &options.defines)
                 .map_err(|e| ("source-hash-failed", e))?;
-        source::ensure_unchanged(&path, &original).map_err(|e| ("source-changed", e))?;
+        if !utf8_file::is_unchanged(&path, &original)
+            .map_err(|e| ("input-read", format!("{}: {e}", path.display())))?
+        {
+            return Err((
+                "source-changed",
+                "SPEC changed during source hashing; rerun against the new input".into(),
+            ));
+        }
         Ok::<_, (&str, String)>((result, path))
     })();
     let valid = result.is_ok();

@@ -35,6 +35,7 @@ if [ "$MODE" = download-failure ]; then exit 22; fi
 while [ "$1" != --output ]; do shift; done
 printf '\000\377asset\n' > "$2"
 if [ "$MODE" = source-changed ]; then echo changed >> "$LOG/input.spec"; fi
+if [ "$MODE" = unreadable ]; then mv "$LOG/input.spec" "$LOG/original.spec"; mkdir "$LOG/input.spec"; fi
 printf 'https://cdn.example.org/archive'
 "#,
         ),
@@ -94,20 +95,13 @@ printf 'https://cdn.example.org/archive'
     assert!(curl.ends_with("--\nhttps://example.org/archive\n"));
     assert!(curl.contains("--proto-redir\n=http,https\n"));
     fs::remove_file(root.join("curl-args")).unwrap();
-    let failed = |mode: &str, message: &str| {
+    let failed = |mode: &str, code: &str, message: &str| {
         let output = run(mode, true);
         assert_eq!(output.status.code(), Some(1));
         let report = json_line(&output);
         assert_eq!(report["valid"], false);
         assert!(report["sha256"].is_null());
-        assert_eq!(
-            report["error"]["code"],
-            if mode == "source-changed" {
-                "source-changed"
-            } else {
-                "source-hash-failed"
-            }
-        );
+        assert_eq!(report["error"]["code"], code);
         assert!(
             report["error"]["message"]
                 .as_str()
@@ -115,10 +109,15 @@ printf 'https://cdn.example.org/archive'
                 .contains(message)
         );
     };
-    failed("diagnostic", "native failure");
+    failed("diagnostic", "source-hash-failed", "native failure");
     assert!(!root.join("curl-args").exists());
-    failed("download-failure", "curl download");
-    failed("source-changed", "SPEC changed");
+    failed("download-failure", "source-hash-failed", "curl download");
+    failed("source-changed", "source-changed", "SPEC changed");
+    fs::write(root.join("input.spec"), spec).unwrap();
+    failed("unreadable", "input-read", "input.spec");
+    assert_file(root.join("original.spec"), spec);
+    fs::remove_dir(root.join("input.spec")).unwrap();
+    fs::rename(root.join("original.spec"), root.join("input.spec")).unwrap();
     for invalid in [
         "file:///etc/passwd",
         "https://user:secret@example.org/archive",
@@ -159,6 +158,7 @@ while [ "$1" != --output ]; do shift; done
 printf '%s' "$last" > "$2"
 if [ "$MODE" = fail ]; then exit 22; fi
 if [ "$MODE" = drift ]; then echo '# concurrent edit' >> "$LOG/input.spec"; fi
+if [ "$MODE" = unreadable ]; then mv "$LOG/input.spec" "$LOG/original.spec"; mkdir "$LOG/input.spec"; fi
 if [ "$MODE" = manifest-drift ]; then echo '# concurrent edit' >> "$LOG/ed.toml"; fi
 printf '%s' "$last"
 "#,
@@ -436,9 +436,43 @@ printf '%s' "$last"
     );
     assert!(from.status.success(), "{from:?}");
     assert_file(&input, spec);
-    let drifted = run(&args, "drift");
-    assert_eq!(drifted.status.code(), Some(1));
-    assert_file(&input, &(spec.to_owned() + "# concurrent edit\n"));
+    for (mode, code) in [("drift", "source-changed"), ("unreadable", "input-read")] {
+        for prepare in [false, true] {
+            fs::write(&input, spec).unwrap();
+            let request = if prepare {
+                vec![
+                    "edit",
+                    "input.spec",
+                    "--hash-source",
+                    "0",
+                    "--trusted-spec",
+                    "--prepare",
+                    "rejected-drafts",
+                    "--format",
+                    "json",
+                ]
+            } else {
+                [args.as_slice(), &["--format", "json"]].concat()
+            };
+            let rejected = run(&request, mode);
+            assert_eq!(rejected.status.code(), Some(1));
+            let report = json_line(&rejected);
+            let error = if prepare {
+                &report["error"]
+            } else {
+                &report["files"][0]["error"]
+            };
+            assert_eq!(error["code"], code);
+            assert!(!root.join("rejected-drafts").exists());
+            if mode == "unreadable" {
+                assert_file(root.join("original.spec"), spec);
+                fs::remove_dir(&input).unwrap();
+                fs::rename(root.join("original.spec"), &input).unwrap();
+            } else {
+                assert_file(&input, &(spec.to_owned() + "# concurrent edit\n"));
+            }
+        }
+    }
 
     let batch = spec.replace(
         "%description",
