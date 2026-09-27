@@ -67,9 +67,11 @@ not every validation rule or a target environment. Report paths are display text
 (lossy for non-UTF-8 paths), not replayable file identities; hashes identify the
 bytes actually checked. File operations retain native paths.
 
-The `spec-static` stage only proves selected static checks. Native Source-numbering
-checks in `scripts/check-native-sources` are separate evidence, and neither proves
-a package builds. Build evidence needs the actual source, environment, command,
+The `spec-static` stage only proves selected static checks. Native checks in
+`scripts/check-native-sources` are separate evidence: Source-numbering parses do
+not prove a build; the optional generated fixture proves only its bounded build.
+OBS release/changelog services are not tested by its explicit fixture macro values.
+Build evidence needs the actual source, environment, command,
 and resulting artifacts; absent evidence is not success. No universal success
 flag spans these stages. Rule warnings do not imply incompleteness: each rule
 reports unresolved checks explicitly. All incomplete reasons remain visible even

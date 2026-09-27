@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+[spec]
+copyright-years = "2026"
+contributors = ["Jingwiw <wangjingwei@iscas.ac.cn>"]
+
+[package]
+name = "rpk-native"
+version = "1"
+summary = "Native RPM semantic fixture"
+license = "MIT"
+url = "https://example.org/rpk-native"
+description = "Local materials, patch order, stage composition and file ownership."
+noarch = true
+vcs.git = "https://example.org/rpk-native.git"
+files.license = ["LICENSE"]
+files.lists = ["generated.files"]
+files.entries = [
+    "%dir /usr/share/rpk-native",
+    "/usr/share/rpk-native/payload.txt",
+    "/usr/share/rpk-native/stages.txt",
+    "%exclude /usr/share/rpk-native/excluded.txt",
+    "%config(noreplace) /etc/rpk-native.conf",
+    "%ghost %attr(0644,root,root) /var/log/rpk-native.log",
+]
+
+[sources.0]
+path = "rpk-native-1.tar.gz"
+[sources.1]
+path = "rpk-native.conf"
+
+# Declaration order, deliberately not numeric or filename order.
+[patches.20]
+path = "2000-first.patch"
+[patches.0]
+path = "0001-second.patch"
+
+[build-requires]
+rpm = []
+
+[build.stages.prep]
+replace = "%autosetup -p1"
+[build.stages.conf]
+prepend = "printf 'prepend\\n' > stages.txt"
+replace = "printf 'conf\\n' >> stages.txt"
+append = "printf 'append\\n' >> stages.txt"
+[build.stages.build]
+replace = "printf 'build\\n' >> stages.txt"
+[build.stages.install]
+replace = """
+printf 'install\\n' >> stages.txt
+mkdir -p %{buildroot}/usr/share/rpk-native %{buildroot}/etc
+cp payload.txt stages.txt %{buildroot}/usr/share/rpk-native/
+cp %{SOURCE1} %{buildroot}/etc/rpk-native.conf
+for file in listed excluded extras tools; do
+    printf '%s\\n' "$file" > %{buildroot}/usr/share/rpk-native/$file.txt
+done
+printf '/usr/share/rpk-native/listed.txt\\n' > generated.files
+"""
+[build.stages.check]
+replace = """
+grep -qx patched-second payload.txt
+printf 'checked\\n' > %{_topdir}/check-ran
+"""
+
+[subpackages.extras]
+summary = "Suffix-named subpackage"
+description = "Owns only the extras file."
+files.entries = ["/usr/share/rpk-native/extras.txt"]
+
+[subpackages.rpk-native-tools]
+full-name = true
+summary = "Absolutely named subpackage"
+description = "Owns only the tools file."
+files.entries = ["/usr/share/rpk-native/tools.txt"]

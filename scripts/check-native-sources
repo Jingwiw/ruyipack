@@ -5,29 +5,35 @@
 #
 # SPDX-License-Identifier: MulanPSL-2.0
 
-"""Check the shared Source numbering expectations in a trusted openRuyi RPM environment."""
+"""Check Source numbering and generated recipe facts in a trusted openRuyi RPM environment."""
 import argparse
 import hashlib
 import json
 import os
 import pathlib
 import subprocess
+import sys
+import tarfile
 import tempfile
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("spec", nargs="*", type=pathlib.Path, help="also check these prepared, trusted target SPECs without preprocessing")
 parser.add_argument("--require-package", action="append", default=[], help="target macro/build-system package required by this run")
+parser.add_argument("--ruyipack", type=pathlib.Path, help="also generate and build the bounded local semantic fixture")
 args = parser.parse_args()
 os.environ["LC_ALL"] = "C"
 
-def run_checked(command, stage="Native result not accepted"):
+def run_checked(command, stage="Native result not accepted", allow_stderr=False):
     try:
         result = subprocess.run(command, capture_output=True, text=True)
     except OSError as error:
         raise SystemExit(f"{stage}: {error}") from error
     # RPM can report errors on stderr with exit 0; an exit status alone is not evidence.
-    if result.returncode or result.stderr.strip():
+    if result.returncode or (result.stderr.strip() and not allow_stderr):
         raise SystemExit(f"{stage}: {command!r}\nexit={result.returncode}\n{result.stdout}{result.stderr}")
+    if allow_stderr:
+        print(result.stdout, end="")
+        print(result.stderr, end="", file=sys.stderr)
     return result.stdout
 
 root = pathlib.Path(__file__).resolve().parent.parent
@@ -36,7 +42,7 @@ print(packages, end="")
 
 cases = root / "tests/fixtures/source-numbering.tsv"
 with tempfile.TemporaryDirectory(prefix="ruyipack-native-") as directory:
-    print(json.dumps({"rpm": run_checked(["rpm", "--version"]).strip(), "macro_configuration_sha256": hashlib.sha256(run_checked(["rpm", "--showrc"]).encode()).hexdigest(), "preprocessing": "none", "defines": [f"_tmppath {directory}"], "scope": "source-numbering and explicitly supplied SPEC parses"}))
+    print(json.dumps({"rpm": run_checked(["rpm", "--version"]).strip(), "macro_configuration_sha256": hashlib.sha256(run_checked(["rpm", "--showrc"]).encode()).hexdigest(), "preprocessing": "none", "defines": [f"_tmppath {directory}"], "scope": "source-numbering, supplied SPEC parses, and optional generated fixture build"}))
     for case in cases.read_text().splitlines():
         if not case or case.startswith("#"):
             continue
@@ -71,3 +77,52 @@ with tempfile.TemporaryDirectory(prefix="ruyipack-native-") as directory:
         if "%" in facts or not parsed.strip():
             raise SystemExit(f"Native result not accepted: unresolved or missing facts in {path}: {facts!r}")
         print(json.dumps({"spec": str(path), "sha256": hashlib.sha256(source).hexdigest(), "native_identity": facts.strip(), "expanded_sha256": hashlib.sha256(parsed.encode()).hexdigest()}))
+
+    if args.ruyipack:
+        work = pathlib.Path(directory)
+        for name in ["SOURCES", "SPECS", "BUILD", "BUILDROOT", "RPMS", "SRPMS"]:
+            (work / name).mkdir()
+        sources = work / "SOURCES"
+        tree = work / "rpk-native-1"
+        tree.mkdir()
+        (tree / "payload.txt").write_text("baseline\n")
+        (tree / "LICENSE").write_text("MIT fixture\n")
+        with tarfile.open(sources / "rpk-native-1.tar.gz", "w:gz") as archive:
+            archive.add(tree, arcname=tree.name)
+        (sources / "rpk-native.conf").write_text("enabled=yes\n")
+        for name, before, after in [("2000-first.patch", "baseline", "patched-first"), ("0001-second.patch", "patched-first", "patched-second")]:
+            (sources / name).write_text(f"--- a/payload.txt\n+++ b/payload.txt\n@@ -1 +1 @@\n-{before}\n+{after}\n")
+        manifest = root / "tests/native/rpk-native.toml"
+        spec = work / "SPECS/rpk-native.spec"
+        spec.write_text(run_checked([str(args.ruyipack.resolve()), "gen", "rpk-native", "--manifest", str(manifest), "--stdout"], "Generation failed"))
+        # OBS normally supplies release/changelog material. These explicit fixture
+        # values do not validate OBS services or claim a production release identity.
+        defines = ["--define", f"_topdir {work}", "--define", f"_tmppath {work}", "--define", "autorelease 1", "--define", "autochangelog %nil", "--define", "_buildhost ruyipack-native"]
+        print(json.dumps({"ruyipack_sha256": hashlib.sha256(args.ruyipack.read_bytes()).hexdigest(), "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(), "spec_sha256": hashlib.sha256(spec.read_bytes()).hexdigest(), "fixture_defines": defines}))
+        run_checked(["rpmbuild", "-bb", *defines, str(spec)], "Native fixture build failed", allow_stderr=True)
+        if (work / "check-ran").read_text() != "checked\n":
+            raise SystemExit("Native fact mismatch: %check did not run")
+        packages = {}
+        for package in (work / "RPMS").rglob("*.rpm"):
+            identity = run_checked(["rpm", "-qp", "--qf", "%{NAME}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\t%{FILEDIGESTALGO}", str(package)]).split("\t")
+            if identity[1:] != ["1", "1", "noarch", "8"] or identity[0] in packages:
+                raise SystemExit(f"Native fact mismatch: package identity {identity}")
+            listing = run_checked(["rpm", "-qp", "--qf", "[%{FILENAMES}\t%{FILEFLAGS}\t%{FILEDIGESTS}\n]", str(package)])
+            packages[identity[0]] = {path: (int(flags), digest) for path, flags, digest in (line.split("\t") for line in listing.splitlines())}
+        base = "/usr/share/rpk-native/"
+        expected = {
+            "rpk-native": {base + "payload.txt": "patched-second\n", base + "stages.txt": "prepend\nconf\nappend\nbuild\ninstall\n", base + "listed.txt": "listed\n", "/etc/rpk-native.conf": "enabled=yes\n"},
+            "rpk-native-extras": {base + "extras.txt": "extras\n"},
+            "rpk-native-tools": {base + "tools.txt": "tools\n"},
+        }
+        if packages.keys() != expected.keys():
+            raise SystemExit(f"Native fact mismatch: package names {list(packages)}")
+        for name, contents in expected.items():
+            for path, content in contents.items():
+                owners = [owner for owner, files in packages.items() if path in files]
+                if owners != [name] or packages[name][path][1] != hashlib.sha256(content.encode()).hexdigest():
+                    raise SystemExit(f"Native fact mismatch: ownership/content of {path}: {packages}")
+        main = packages["rpk-native"]
+        if any(base + "excluded.txt" in files for files in packages.values()) or not (main["/etc/rpk-native.conf"][0] & 17 == 17 and main["/var/log/rpk-native.log"][0] & 64):
+            raise SystemExit(f"Native fact mismatch: exclude/config/ghost flags: {main}")
+        print(json.dumps({"generated_fixture": "PASS", "packages": packages, "scope": "one local fixture; not ecosystem coverage or OBS service validation"}))

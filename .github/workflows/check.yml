@@ -49,3 +49,24 @@ jobs:
         run: |
           rustc --version --verbose
           cargo test --locked
+
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build RuyiPack
+        run: |
+          rustup toolchain install
+          cargo build --locked
+      - name: Prepare pinned openRuyi environment
+        run: docker build --platform linux/amd64 -f tests/native/Dockerfile -t ruyipack-native .
+      - name: Compare native RPM facts
+        run: |
+          docker run --rm --platform linux/amd64 --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges --user 1000:1000 \
+            --tmpfs /tmp:rw,mode=1777 --tmpfs /var/tmp:rw,mode=1777 \
+            -v "$PWD:/work:ro" ruyipack-native \
+            python3 /work/scripts/check-native-sources --ruyipack /work/target/debug/ruyipack

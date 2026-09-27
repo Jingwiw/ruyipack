@@ -88,8 +88,13 @@ installed binary in temporary files.
 In a trusted target environment with Python 3, `rpm`, `rpmspec`, and
 `rpm-config-openruyi`, `./scripts/check-native-sources` checks native Source
 numbering and records RPM/macro identities. Pass prepared SPEC paths and
-`--require-package NAME` for additional target checks. Native diagnostics, including
-those with exit status 0, prevent acceptance. This does not build packages.
+`--require-package NAME` for additional parses, or `--ruyipack /path/to/ruyipack`
+to generate and build the small local semantic fixture. CI runs this gate in the
+pinned environment in `tests/native/Dockerfile`, offline and without root.
+It checks Patch/stage order, subpackage ownership, file lists and flags—not
+ecosystem build coverage or OBS release/changelog services. Parser diagnostics,
+including those with exit status 0, prevent acceptance. Removed pinned packages
+require an explicit environment update and revalidation, not a skipped gate.
 
 Keep changes focused and include a regression test for behavior changes. For bug
 reports, include `ruyipack --version`, OS/architecture, the exact command, minimal
