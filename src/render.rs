@@ -23,16 +23,6 @@ pub(crate) fn run(source: &str) -> Result<RenderedSpec, RenderError> {
     let parsed = ParsedSpec::parse(&contents);
     verify::run(&parsed, &manifest, profile)?;
     let report = check::analyze(&parsed);
-    // openRuyi requires SHA-256 for HTTP(S) sources. Allow incomplete authoring
-    // output, but report the missing policy requirement rather than certify it.
-    let warnings = manifest
-        .sources
-        .iter()
-        .filter(|(_, source)| source.sha256.is_none())
-        .map(|(number, _)| {
-            format!("sources.{number}: no sha256; openRuyi requires SHA-256 for HTTP(S) sources; rendered a bare #!RemoteAsset")
-        })
-        .collect();
     let build_contract = manifest
         .build
         .system
@@ -43,7 +33,6 @@ pub(crate) fn run(source: &str) -> Result<RenderedSpec, RenderError> {
         name: manifest.package.name,
         contents,
         report,
-        warnings,
     })
 }
 pub(crate) struct RenderedSpec {
@@ -51,7 +40,6 @@ pub(crate) struct RenderedSpec {
     pub(crate) name: String,
     pub(crate) contents: String,
     pub(crate) report: CheckReport,
-    pub(crate) warnings: Vec<String>,
 }
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum RenderError {

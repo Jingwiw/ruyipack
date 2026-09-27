@@ -42,6 +42,9 @@ fn prepare(directory: &Path, names: &[&str], fields: &[&str]) -> PathBuf {
     let drafts = directory.join("drafts");
     let mut command = command(directory);
     command.args(names).arg("--prepare").arg(&drafts);
+    if fields.is_empty() {
+        command.arg("--all");
+    }
     for field in fields {
         command.args(["--field", field]);
     }
@@ -65,7 +68,7 @@ fn change_version(path: &Path, version: &str) {
 fn full_view_exposes_existing_fields_without_writing_files() {
     let directory = fixture();
     let first = command(directory.path())
-        .args(["ed.spec", "--view"])
+        .args(["ed.spec", "--all", "--view"])
         .output()
         .unwrap();
     success(&first);
@@ -439,6 +442,17 @@ fn static_check_failure_blocks_even_forced_publication() {
         report["files"][0]["report"]["findings"][0]["code"],
         "RPM015"
     );
+    assert_eq!(report["files"][0]["introduced_static_blockers"], false);
+    assert_eq!(
+        report["files"][0]["baseline_report"]["evidence"]["status"],
+        "fail"
+    );
+    assert!(
+        report["files"][0]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("pre-existing")
+    );
     assert_file(&path, &source);
 
     let target = directory.path().join("other.spec");
@@ -661,7 +675,21 @@ fn noninteractive_edit_requires_an_explicit_input_mode() {
     let directory = fixture();
     let output = command(directory.path()).arg("ed.spec").output().unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("requires a terminal"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("select what to edit"));
+    let output = command(directory.path())
+        .args(["ed.spec", "--check", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stderr.is_empty());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["valid"], false);
+    assert!(
+        report["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("select what to edit")
+    );
     unchanged(directory.path());
 }
 

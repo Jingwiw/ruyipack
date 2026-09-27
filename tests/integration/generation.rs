@@ -644,7 +644,7 @@ fn generated_vcs_and_scripts_offer_selected_editing_when_full_views_are_unsuppor
         let generated = run(directory.path(), &["gen", "ed", "--stdout"]);
         success(&generated);
         fs::write(directory.path().join("ed.spec"), &generated.stdout).unwrap();
-        let full = run(directory.path(), &["edit", "ed.spec", "--view"]);
+        let full = run(directory.path(), &["edit", "ed.spec", "--all", "--view"]);
         assert_eq!(full.status.code(), Some(1));
         assert!(full.stdout.is_empty());
         let error = String::from_utf8_lossy(&full.stderr);
@@ -925,7 +925,7 @@ fn generation_reports_identify_real_inputs_and_never_publish() {
     let first = run(directory.path(), &args);
     success(&first);
     let report: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
-    assert_eq!(report["format_version"], 1);
+    assert_eq!(report["format_version"], 2);
     assert_eq!(report["scope"], "manifest-generation-static");
     assert_eq!(report["valid"], true);
     assert_eq!(report["manifest"]["display_path"], "ed.toml");

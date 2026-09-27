@@ -42,7 +42,7 @@ fn resizing_nonempty_dependencies_rebuilds_only_the_contiguous_group() {
         (
             "grow",
             &["first", "second", "third"][..],
-            "Name: demo\nBuildRequires:  first\nBuildRequires:  second\nBuildRequires:  third\n\n%description\nA demo.\n",
+            "Name: demo\nBuildRequires:\tfirst\nBuildRequires:  second\nBuildRequires:  third\n\n%description\nA demo.\n",
         ),
         (
             "shrink",
@@ -60,10 +60,10 @@ fn empty_dependencies_remove_the_existing_group() {
 }
 
 #[test]
-fn resizing_separate_dependency_groups_is_rejected() {
+fn annotated_dependency_groups_allow_append_but_not_ambiguous_regrouping() {
     let source = DEPENDENCIES.replace(
         "BuildRequires:  second",
-        "# Another group\nBuildRequires:  second",
+        "# 分组原因保留\nBuildRequires:  second",
     );
     let snapshot = capture(&source);
     assert_eq!(snapshot.render(snapshot.document()).unwrap(), source);
@@ -72,6 +72,21 @@ fn resizing_separate_dependency_groups_is_rejected() {
         .as_array_mut()
         .unwrap()
         .push("third".into());
+    assert_eq!(
+        snapshot.render(&edited).unwrap(),
+        source.replace(
+            "BuildRequires:  second\n",
+            "BuildRequires:  second\nBuildRequires:  third\n"
+        )
+    );
+    edited["build-requires"]["rpm"]
+        .as_array_mut()
+        .unwrap()
+        .remove(0);
+    edited["build-requires"]["rpm"]
+        .as_array_mut()
+        .unwrap()
+        .remove(0);
     assert!(
         snapshot
             .render(&edited)

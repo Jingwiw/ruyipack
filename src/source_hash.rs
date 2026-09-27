@@ -29,12 +29,61 @@ pub(crate) struct Options {
     /// Pass an RPM macro definition verbatim, in order; normal RPM precedence applies.
     #[arg(short = 'D', long = "define", value_name = "MACRO EXPR")]
     defines: Vec<String>,
-    /// Human output is SHA-256 alone; JSON also records URL, input and native context.
+    /// Print SHA-256 on stdout and next steps on stderr, or a JSON success/failure report.
     #[arg(long, value_enum, default_value_t = ReportFormat::Human)]
     format: ReportFormat,
 }
 
-pub(crate) fn run(options: &Options) -> Result<(), String> {
+pub(crate) fn run(options: &Options) -> Result<bool, String> {
+    let result = calculate(options);
+    let valid = result.is_ok();
+    let mut stdout = io::stdout().lock();
+    if matches!(options.format, ReportFormat::Json) {
+        let mut report = serde_json::json!({
+            "format_version": 1, "valid": valid, "source": options.source,
+            "input": { "display_path": options.spec.to_string_lossy() },
+        });
+        match result {
+            Ok(value) => {
+                report["input"]["sha256"] = value.input_sha256.into();
+                report["resolved_url"] = value.resolved_url.into();
+                report["effective_url"] = value.effective_url.into();
+                report["sha256"] = value.sha256.into();
+                report["bytes"] = value.bytes.into();
+                report["native"] = serde_json::json!({"rpm": value.rpm,
+                    "defines": options.defines, "working_directory": value.path.parent(),
+                    "expanded_spec_sha256": value.expanded_sha256});
+            }
+            Err(error) => report["error"] = error.into(),
+        }
+        serde_json::to_writer(&mut stdout, &report).map_err(|e| e.to_string())?;
+        writeln!(stdout).map_err(|e| e.to_string())?;
+    } else {
+        let value = result?;
+        writeln!(stdout, "{}", value.sha256).map_err(|e| e.to_string())?;
+        // Absolute paths also make copy/paste safe after changing directories.
+        let display = value.path.to_string_lossy();
+        let path = shell_words::quote(&display);
+        let assignment = format!("sources.{}.sha256={}", options.source, value.sha256);
+        writeln!(io::stderr().lock(),
+            "SHA-256 calculated; SPEC unchanged. For an adjacent RemoteAsset marker:\nPreview: ruyipack edit --set {assignment} --diff -- {path}\nApply: ruyipack edit --set {assignment} -- {path}")
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(valid)
+}
+
+struct HashedSource {
+    input_sha256: String,
+    resolved_url: String,
+    effective_url: String,
+    sha256: String,
+    bytes: u64,
+    rpm: String,
+    path: PathBuf,
+    expanded_sha256: String,
+}
+
+fn calculate(options: &Options) -> Result<HashedSource, String> {
     let original = utf8_file::read(&options.spec).map_err(|e| e.to_string())?;
     let path = fs::canonicalize(&options.spec).map_err(|e| e.to_string())?;
     let directory = path.parent().ok_or("SPEC has no parent directory")?;
@@ -49,7 +98,7 @@ pub(crate) fn run(options: &Options) -> Result<(), String> {
     rpm.arg(&path);
     let expanded = checked(
         &mut rpm,
-        "native RPM resolution (check target macros and explicit --define inputs)",
+        "native RPM resolution (use the target distribution macro packages and repository configuration; pass project-specific macros with --define; check incomplete RPM diagnostics before downloading)",
     )?;
     let expanded = String::from_utf8(expanded.stdout).map_err(|e| e.to_string())?;
     let resolved_url = spec::native::source_url(&expanded, options.source)?;
@@ -103,24 +152,16 @@ pub(crate) fn run(options: &Options) -> Result<(), String> {
     if utf8_file::read(&path).map_err(|e| e.to_string())? != original {
         return Err("SPEC changed during source hashing; rerun against the new input".into());
     }
-    let sha256 = format!("{:x}", digest.finalize());
-    let mut stdout = io::stdout().lock();
-    if matches!(options.format, ReportFormat::Json) {
-        let report = serde_json::json!({
-            "format_version": 1,
-            "input": { "display_path": options.spec.to_string_lossy(), "sha256": utf8_file::digest(&original) },
-            "source": options.source,
-            "resolved_url": resolved_url,
-            "effective_url": effective_url,
-            "sha256": sha256,
-            "bytes": bytes,
-            "native": { "rpm": rpm_version.trim(), "defines": options.defines, "working_directory": directory.to_string_lossy(), "expanded_spec_sha256": utf8_file::digest(&expanded) },
-        });
-        serde_json::to_writer(&mut stdout, &report).map_err(|e| e.to_string())?;
-        writeln!(stdout).map_err(|e| e.to_string())
-    } else {
-        writeln!(stdout, "{sha256}").map_err(|e| e.to_string())
-    }
+    Ok(HashedSource {
+        input_sha256: utf8_file::digest(&original),
+        resolved_url: resolved_url.to_owned(),
+        effective_url,
+        sha256: format!("{:x}", digest.finalize()),
+        bytes,
+        rpm: rpm_version.trim().to_owned(),
+        path,
+        expanded_sha256: utf8_file::digest(&expanded),
+    })
 }
 
 fn checked(command: &mut Command, stage: &str) -> Result<Output, String> {

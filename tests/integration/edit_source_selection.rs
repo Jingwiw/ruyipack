@@ -447,7 +447,7 @@ fn mapping_errors_identify_the_construct_without_blocking_unrelated_fields() {
     ] {
         let directory = fixture(&source);
         let args = if field.is_empty() {
-            vec!["ed.spec", "--view"]
+            vec!["ed.spec", "--all", "--view"]
         } else {
             vec!["ed.spec", "--view", "--field", field]
         };

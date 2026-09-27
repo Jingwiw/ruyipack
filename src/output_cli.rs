@@ -137,6 +137,34 @@ pub(crate) fn select_edit_action(path: &Path) -> Result<ConflictAction, OutputEr
     choose_conflict_action(path)
 }
 
+/// Choose an editing scope, not an implicit full-SPEC conversion. Scripts must
+/// supply their scope explicitly; they never receive terminal menu output.
+pub(crate) fn select_edit_field() -> Result<Option<&'static str>, String> {
+    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+        return Ok(None);
+    }
+    let choices = [
+        ("package.version", "Version"),
+        (
+            "sources.0",
+            "Source0 URL and SHA-256 (other numbers: --field sources.N)",
+        ),
+        ("build-requires.rpm", "Build dependencies"),
+        ("package.summary", "Summary"),
+        ("package.license", "License"),
+        ("package.files", "File lists"),
+    ];
+    dialoguer::Select::new()
+        .with_prompt("What do you want to edit? (other fields: --field FIELD)")
+        .items(choices.iter().map(|(_, label)| label))
+        .default(0)
+        .report(false)
+        .interact_opt()
+        .map_err(|e| e.to_string())?
+        .map(|index| Some(choices[index].0))
+        .ok_or_else(|| "edit cancelled; no files changed".into())
+}
+
 fn choose_conflict_action(path: &Path) -> Result<ConflictAction, OutputError> {
     let choices = [
         (ConflictAction::Skip, "Keep the current file"),

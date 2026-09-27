@@ -44,6 +44,7 @@ pub(crate) struct Snapshot {
     selection: Vec<String>,
     source_fields: BTreeMap<String, String>,
     scalars: Vec<Scalar>,
+    digests: BTreeMap<String, Range<usize>>,
     lists: BTreeMap<String, List>,
     copyright: Option<Copyright>,
 }
@@ -76,6 +77,7 @@ impl Snapshot {
                 BTreeMap::new()
             },
             scalars: Vec::new(),
+            digests: BTreeMap::new(),
             lists: BTreeMap::new(),
             copyright: None,
         };
@@ -201,19 +203,26 @@ impl Snapshot {
                             if !asset_text.starts_with(profile.remote_asset_bare.as_str()) {
                                 return Err(missing_asset());
                             }
-                            if asset_text.strip_suffix('\n')
-                                != Some(profile.remote_asset_bare.as_str())
+                            let hash = if asset_text.strip_suffix('\n')
+                                == Some(profile.remote_asset_bare.as_str())
                             {
-                                let prefix = profile.remote_asset_prefix.as_str();
-                                // Map recognizable old values; validate selected replacements in render.
-                                asset_text.strip_circumfix(prefix, '\n').ok_or_else(|| {
-                                    format!("{identity}.sha256: unsupported RemoteAsset syntax")
-                                })?;
-                                snapshot.scalar(
-                                    &format!("{identity}.sha256"),
-                                    asset.start + prefix.len()..asset.end - 1,
-                                    false,
+                                ""
+                            } else {
+                                // Map damaged values too, so the selected digest can be repaired.
+                                asset_text
+                                    .strip_circumfix(profile.remote_asset_prefix.as_str(), '\n')
+                                    .ok_or_else(|| {
+                                        format!("{identity}.sha256: unsupported RemoteAsset syntax")
+                                    })?
+                            };
+                            let field = format!("{identity}.sha256");
+                            if snapshot.selects(&field) {
+                                insert(
+                                    &mut snapshot.document,
+                                    &field,
+                                    Value::String(hash.to_owned()),
                                 )?;
+                                snapshot.digests.insert(field, asset.clone());
                             }
                             consumed_assets.push(asset);
                             (format!("{identity}.url"), expected)
@@ -338,11 +347,26 @@ impl Snapshot {
             if scalar.field.starts_with("sources.") && scalar.field.ends_with(".url") {
                 valid_source_url(value, &scalar.field, &fields)?;
             }
-            if scalar.field.ends_with(".sha256") {
-                valid_hash(value, &scalar.field)?;
-            }
             if value != &self.source[scalar.range.clone()] {
                 changes.push((scalar.range.clone(), value.to_owned()));
+            }
+        }
+        for (field, range) in &self.digests {
+            let value = string(edited, field)?;
+            let profile = crate::profile::load();
+            // Empty represents an already-bare marker, never a made-up digest.
+            // Existing digests cannot be erased by accidentally clearing the draft.
+            if value.is_empty()
+                && self.source[range.clone()].trim_end() == profile.remote_asset_bare
+            {
+                continue;
+            }
+            valid_hash(value, field)?;
+            if value != string(&self.document, field)? {
+                changes.push((
+                    range.clone(),
+                    format!("{}\n", profile.remote_asset(Some(value))),
+                ));
             }
         }
         for (field, list) in &self.lists {
@@ -686,6 +710,27 @@ impl Snapshot {
                     changes.push((range.clone(), (*value).to_owned()));
                 }
             }
+        } else if field == "build-requires.rpm"
+            && values.len() > list.items.len()
+            && list
+                .items
+                .iter()
+                .zip(values)
+                .all(|(range, value)| self.source[range.clone()] == **value)
+            && let Some(last) = list.lines.last()
+        {
+            // Append only: leave existing dependency groups and their comments intact.
+            // Other regroupings remain ambiguous and use the contiguous-block rule.
+            let mut added = String::new();
+            if !self.source[last.clone()].ends_with('\n') {
+                added.push('\n');
+            }
+            for value in &values[list.items.len()..] {
+                added.push_str(prefix);
+                added.push_str(value);
+                added.push('\n');
+            }
+            changes.push((last.end..last.end, added));
         } else if values.is_empty() {
             for range in &list.lines {
                 changes.push((range.clone(), String::new()));

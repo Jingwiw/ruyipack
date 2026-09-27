@@ -119,7 +119,7 @@ fn description(field: &str) -> &'static str {
             "Source URL expression; RPM macros remain unexpanded."
         }
         _ if field.starts_with("sources.") && field.ends_with(".sha256") => {
-            "SHA-256 declared by the adjacent RemoteAsset comment; editing does not download or verify the archive."
+            "SHA-256 in the adjacent RemoteAsset comment. Empty means absent: supply 64 hexadecimal digits to add it. Editing does not download the archive."
         }
         _ => "Field from the existing SPEC.",
     }

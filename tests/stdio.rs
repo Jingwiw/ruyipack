@@ -48,7 +48,7 @@ fn disconnected_standard_streams_return_errors_without_panicking() {
         &["inspect", "ed.spec"],
         &["inspect", "ed.spec", "--format", "json"],
         &["gen", "ed", "--stdout"],
-        &["edit", "ed.spec", "--view"],
+        &["edit", "ed.spec", "--all", "--view"],
         &["edit", "ed.spec", "--check", "--format", "json"],
         &[
             "edit",

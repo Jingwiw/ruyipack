@@ -16,6 +16,7 @@ pub(super) fn check(spec: &SpecFile<Span>, source: &str) -> RuleResult {
         result: RuleResult::default(),
         build: BuildRequirements::default(),
         conditional: false,
+        source,
     };
     visitor.visit_spec(spec);
     // Match the top-level comments exposed as spec.license by header editing,
@@ -43,13 +44,14 @@ pub(super) fn check(spec: &SpecFile<Span>, source: &str) -> RuleResult {
     visitor.result
 }
 
-struct CheckVisitor {
+struct CheckVisitor<'a> {
+    source: &'a str,
     result: RuleResult,
     build: BuildRequirements,
     conditional: bool,
 }
 
-impl<'ast> Visit<'ast> for CheckVisitor {
+impl<'ast> Visit<'ast> for CheckVisitor<'_> {
     fn visit_item(&mut self, item: &'ast rpm_spec::ast::SpecItem<Span>) {
         use rpm_spec::ast::SpecItem;
         match item {
@@ -90,6 +92,29 @@ impl<'ast> Visit<'ast> for CheckVisitor {
                     .filter(|_| !self.conditional)
                     .map(|s| s.trim().to_owned());
                 self.build.systems.push((system, span));
+            }
+            Tag::Source(_) => {
+                let profile = crate::profile::load();
+                let before = &self.source[..item.data.start_byte];
+                let previous = before
+                    .strip_suffix('\n')
+                    .unwrap_or(before)
+                    .rsplit('\n')
+                    .next()
+                    .unwrap_or("");
+                let raw = &self.source[item.data.start_byte..item.data.end_byte];
+                let remote = previous == profile.remote_asset_bare
+                    || raw.split_once(':').is_some_and(|(_, value)| {
+                        value.trim_start().starts_with("https://")
+                            || value.trim_start().starts_with("http://")
+                    });
+                if remote && !previous.starts_with(&profile.remote_asset_prefix) {
+                    let rule = crate::check::SOURCE_DIGEST_RULE;
+                    self.result.findings.push(crate::check_report::Finding {
+                        producer: "ruyipack", code: rule.code, severity: rule.severity, span,
+                        message: "Source: no sha256; openRuyi requires SHA-256 for HTTP(S) sources. Calculate it with source-hash in the target RPM environment, then set sources.N.sha256 with edit; a passing static check is not source verification".into(),
+                    });
+                }
             }
             Tag::BuildRequires => {
                 if !self.conditional

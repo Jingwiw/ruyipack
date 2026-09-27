@@ -86,7 +86,7 @@ fn selected_version_preserves_unmapped_tags_macros_and_unselected_conditional_by
         toml::from_str::<toml::Table>("[package]\nversion = '1.22.5'\n").unwrap()
     );
     let full = command(directory.path())
-        .args(["case.spec", "--view"])
+        .args(["case.spec", "--all", "--view"])
         .output()
         .unwrap();
     assert!(!full.status.success(), "{full:?}");

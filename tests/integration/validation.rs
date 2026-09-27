@@ -394,6 +394,18 @@ fn autotools_requirements_are_checked_by_check_gen_and_saved_edits() {
         .unwrap()
         .retain(|value| value.as_str() != Some("autoconf"));
     fs::write(&draft, toml::to_string_pretty(&doc).unwrap()).unwrap();
+    let checked = run(
+        directory.path(),
+        &["edit", "--from", "drafts", "--check", "--format", "json"],
+    );
+    assert_eq!(checked.status.code(), Some(1));
+    assert!(checked.stderr.is_empty());
+    let report: serde_json::Value = serde_json::from_slice(&checked.stdout).unwrap();
+    assert_eq!(report["files"][0]["introduced_static_blockers"], true);
+    assert_eq!(
+        report["files"][0]["baseline_report"]["evidence"]["status"],
+        "pass"
+    );
     for args in [
         vec!["check", "invalid.spec"],
         vec!["gen", "ed", "--force"],

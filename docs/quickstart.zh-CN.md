@@ -37,7 +37,10 @@ ruyipack edit example.spec --set package.version=2.0
 
 完整视图不支持复杂构造时，选择需要的字段；未选内容保留原始字节。
 条件歧义或 Source 隐式编号无法确定时，不要用猜测的编号绕过错误。
-没有 `sha256` 字段的旧 Source 不能通过固定形状草稿直接添加摘要。
+相邻标记为 bare `#!RemoteAsset` 时，`edit --set sources.0.sha256=HASH --diff`
+可预览补入摘要，确认后去掉 `--diff` 写回。缺摘要在生成和检查中均为警告，不是假装已验证。
+终端直接运行 `edit example.spec` 会先选择字段；脚本使用 `--field` / `--set`，
+只有需要完整映射时才用 `--all`。
 
 ## check 通过后还要做什么？
 

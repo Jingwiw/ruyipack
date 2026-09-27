@@ -33,11 +33,25 @@ use toml::Table;
 struct Input {
     path: PathBuf,
     snapshot: Snapshot,
+    baseline: crate::check_report::CheckReport,
     draft: Option<PathBuf>,
 }
 
 /// Builds and checks every candidate before publishing any file.
-pub(crate) fn run(options: &Options) -> Result<bool, EditError> {
+pub(crate) fn run(mut options: Options) -> Result<bool, EditError> {
+    if options.from.is_none()
+        && !options.all
+        && options.field.is_empty()
+        && options.set.is_empty()
+        && options.format.is_none()
+        && !options.check
+        && !options.view
+        && !options.schema
+        && let Some(field) = crate::output_cli::select_edit_field()?
+    {
+        options.field.push(field.to_owned());
+    }
+    let options = &options;
     if !(options.check && matches!(options.format, Some(ReportFormat::Json))) {
         return execute(options);
     }
@@ -63,6 +77,10 @@ pub(crate) fn run(options: &Options) -> Result<bool, EditError> {
 }
 
 fn load_inputs(options: &Options) -> Result<Vec<Input>, EditError> {
+    if options.from.is_none() && !options.all && options.field.is_empty() && options.set.is_empty()
+    {
+        return Err("select what to edit: use --field package.version (opens the editor), --set package.version=VERSION, or --all for a fully supported SPEC. For a read-only overview, use inspect".into());
+    }
     let inputs = if let Some(dir) = &options.from {
         drafts::load(dir)?
             .into_iter()
@@ -128,6 +146,14 @@ fn execute(options: &Options) -> Result<bool, EditError> {
         || (options.set.is_empty() && !options.check && options.from.is_none());
     let mut temporary = None;
     if opens_editor {
+        for item in &inputs {
+            if !item.baseline.is_success() {
+                writeln!(io::stderr().lock(), "{}: pre-existing static issues must be resolved before publication; the editor may repair them", item.path.display()).map_err(|e| e.to_string())?;
+                item.baseline
+                    .write_human(&item.path, &mut io::stderr().lock())
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         if options.from.is_none() {
             let dir = tempfile::Builder::new()
                 .prefix("ruyipack-edit-")
@@ -199,6 +225,7 @@ fn input(
     Ok(Input {
         path,
         snapshot,
+        baseline: crate::check::analyze(&parsed),
         draft,
     })
 }
@@ -246,6 +273,8 @@ impl CheckedInput<'_> {
                 "original_sha256": utf8_file::digest(item.snapshot.source()), "report_subject": "candidate",
                 "profile": crate::profile::identity(), "changed": candidate.contents != item.snapshot.source(),
                 "review_triggers": candidate.review_triggers, "review_required": review_required,
+                "baseline_report": item.baseline.structured(&item.path),
+                "introduced_static_blockers": candidate.report.introduced_static_blockers(&item.baseline),
                 "report": candidate.report.structured(&item.path)})
         } else {
             json!({"source": source, "draft": draft, "valid": false})
@@ -285,7 +314,12 @@ fn check_candidates<'a>(
                             Kind::StaticCheckFailed,
                             &item.path,
                             item.snapshot.selection(),
-                            format!("{}: candidate failed static checks", item.path.display()),
+                            format!("{}: candidate failed static checks: {}. No SPEC files written; repair the reported fields and retry", item.path.display(),
+                                match candidate.report.introduced_static_blockers(&item.baseline) {
+                                    Some(true) => "new or changed static blockers (compare baseline_report in --check --format json)",
+                                    Some(false) => "pre-existing blockers remain; no new static failures introduced",
+                                    None => "static checks remain incomplete; unresolved results cannot be attributed to this edit",
+                                }),
                         )
                     });
                     (Some(candidate), error)

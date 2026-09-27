@@ -15,7 +15,7 @@ use std::path::PathBuf;
     group(ArgGroup::new("edit_action").args([
         "prepare", "view", "schema", "check", "diff", "stdout", "output"
     ])),
-    after_help = "Opens selected SPEC fields as TOML in $VISUAL, $EDITOR, or vim.\nUse --field to edit part of a SPEC; a full view requires all constructs to be supported.\nUse --set FIELD=VALUE repeatedly for string fields.\nUse --prepare DIR for persistent drafts.\nAfter the editor exits, checked edits are written to the source SPEC files.\nUse --diff to preview without writing; --from DIR applies saved drafts.\nChanging Version or Source does not refresh recorded digests or verify patches.\nReview them before building or submitting the package.\nExamples:\n  ruyipack edit ed.spec --set package.version=1.22 --diff\n  ruyipack edit ed.spec --field package.version --editor 'code --wait'\n  ruyipack edit ed.spec make.spec --field package.version --prepare drafts\n  ruyipack edit --from drafts --check\n  ruyipack edit --from drafts --diff\n  ruyipack edit --from drafts"
+    after_help = "Opens selected SPEC fields as TOML in $VISUAL, $EDITOR, or vim.\nChoose fields interactively, or use --field / --set. Use --all only for fully supported SPECs.\nUse --set FIELD=VALUE repeatedly for string fields.\nUse --prepare DIR for persistent drafts.\nAfter the editor exits, checked edits are written to the source SPEC files.\nUse --diff to preview without writing; --from DIR applies saved drafts.\nChanging Version or Source does not refresh recorded digests or verify patches.\nReview them before building or submitting the package.\nExamples:\n  ruyipack edit ed.spec --set package.version=1.22 --diff\n  ruyipack edit ed.spec --field package.version --editor 'code --wait'\n  ruyipack edit ed.spec make.spec --field package.version --prepare drafts\n  ruyipack edit --from drafts --check\n  ruyipack edit --from drafts --diff\n  ruyipack edit --from drafts"
 )]
 pub(crate) struct Options {
     /// SPEC files to edit.
@@ -37,6 +37,9 @@ pub(crate) struct Options {
     /// Selects a field or table for viewing or editing; repeat to add fields.
     #[arg(long, value_name = "FIELD")]
     pub field: Vec<String>,
+    /// Explicitly maps every supported field; fails on unsupported constructs.
+    #[arg(long, conflicts_with_all = ["field", "set", "from"])]
+    pub all: bool,
     /// Prints the editable TOML for one SPEC without opening an editor.
     #[arg(long, conflicts_with = "editor")]
     pub view: bool,

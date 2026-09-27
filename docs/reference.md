@@ -136,6 +136,10 @@ verification.
 
 ## Edit
 
+`edit FILE.spec` in a terminal asks what to edit; it does not attempt a full conversion.
+Scripts must specify `--field`, `--set`, or `--all`. Use `--all --view` only when every
+construct is supported; `inspect` is the read-only overview.
+
 Use `--field FIELD` for an editor view, `--set FIELD=VALUE` for string assignments,
 `--view` to read TOML, or `--schema` to read its JSON Schema. The editor is selected
 from `--editor`, `$VISUAL`, `$EDITOR`, then `vim`; arguments are split without a
@@ -148,14 +152,17 @@ header metadata, comments, and changelog text. Full views require every construc
 to be mapped; VCS tags and build scripts need a selected-field view. Unselected
 bytes stay intact. Parser errors or ambiguous selected fields stop editing.
 Deleting keys or adding unmapped groups fails; supported existing lists can change.
+Appending BuildRequires preserves comment-separated groups; other nonempty size
+changes require a contiguous group.
 
 Unnumbered `Source:` uses its effective RPM number: after `Source3:`, it is 4,
 not 0. Conditions, includes, or unsupported expressions can make implicit numbers
 uncertain; affected Source edits fail rather than guess. Unrelated fields may
 still be edited. Recognizable invalid URL/digest values can be viewed and repaired
 if their ranges are unambiguous; selected replacements must validate. Unselected
-digests are preserved, not certified. A bare RemoteAsset has no digest field to
-select or add.
+digests are preserved, not certified. A bare RemoteAsset exposes an empty `sha256` value;
+`--set sources.0.sha256=HASH` adds a validated digest to that same marker. An empty
+value preserves a bare marker but cannot erase an existing digest.
 
 Version or Source URL changes produce `review_triggers` and `review_required`
 (source/digests, patches, native build). They do not turn a static pass into a
@@ -217,6 +224,7 @@ Editor work is retained after validation failure or when changes remain unapplie
 | RPK002 | Literal Name, Version, Release syntax; `Epoch: 0` is not rejected |
 | RPK003 | Literal project URL syntax; existing HTTP/HTTPS accepted |
 | RPK004 | Profile direct requirements for a single literal BuildSystem; currently Autotools has required tools |
+| RPK005 | Warning for a missing adjacent Source SHA-256; offline authoring can continue |
 
 SPDX covers main/subpackages and conditional branches, not upstream license
 correctness. IDs are case-insensitive, operators uppercase, deprecated IDs valid;
@@ -232,9 +240,9 @@ have no common required-tool set here. Unknown/context-dependent BuildSystem
 selections are outside this contract, not inferred.
 
 `pass` means only the selected rules passed; parser warnings may remain.
-Standalone `check` does not check Source URLs/RemoteAsset associations or refresh
-archive digests. Static commands do not download sources or expand native RPM
-macros. No command resolves dependencies, verifies patches, or builds packages.
+Standalone `check` warns about missing Source digests but does not fully validate
+Source URLs/RemoteAsset associations or refresh archive digests. Static commands
+do not download sources or expand native RPM macros. No command resolves dependencies, verifies patches, or builds packages.
 
 ## Computing a Source digest
 
@@ -249,10 +257,12 @@ Run it in a prepared target RPM environment with `rpmspec` and `curl`. RPM expan
 normal RPM precedence: a later definition inside the SPEC can override a CLI
 value. The JSON records the input hash, native version, definitions, expanded-SPEC
 hash, resolved/effective URLs, byte count and calculated SHA-256. Human output is
-just the digest, suitable for pasting into `sources.0.sha256` in a manifest.
+the digest on stdout and copyable preview/apply commands on stderr.
+JSON failures return `valid: false`, an error and exit 1, without a fabricated digest.
+CLI argument and output-write failures may precede JSON.
 
-Review the resolved URL, not only the digest. Copy a calculated digest to the
-adjacent `#!RemoteAsset:  sha256:...` line when maintaining a SPEC directly.
+Review the resolved URL, not only the digest. Use `edit --set sources.0.sha256=HASH --diff`
+to review the adjacent RemoteAsset change, then omit `--diff` to apply it.
 The command does not add or overwrite that line, refresh other Sources, verify
 upstream authenticity, or prove the package builds. It accepts a bare marker or
 no marker; the effective Source number comes from native RPM output, not marker
@@ -285,7 +295,7 @@ spans without hiding messages. This does not establish general semantic accuracy
 | Report | Contract |
 | --- | --- |
 | `check --format json` | Report v2: input identity, parser, selected rules, `spec-static` evidence, findings and `parser_diagnostics` |
-| `gen NAME --check --format json` | Envelope v1, `manifest-generation-static`: manifest/profile/selected build-contract hashes, warnings, candidate report |
+| `gen NAME --check --format json` | Envelope v2, `manifest-generation-static`: manifest/profile/selected build-contract hashes and candidate report (including warnings) |
 | `edit ... --check --format json` | Envelope v2, `selected-edit-static`: per-file original hash, candidate report, review lists and structured errors |
 
 Static reports carry `evidence.incomplete_reasons` as a deterministic, deduplicated
@@ -304,6 +314,13 @@ static failures yield one report and exit 1. Before a candidate exists,
 `report_subject` and `report` are null and `error` explains the failure; unreadable
 input has no SHA-256. CLI argument and output-write failures can precede JSON.
 
+Missing Source SHA-256 is `RPK005`, a warning in all three commands, not a hard
+failure or evidence of verified source content. Static detection covers adjacent
+bare markers and literal HTTP(S) Source prefixes, not arbitrary macro expansion.
+
+For edit, `baseline_report` records the original checks; `introduced_static_blockers`
+compares blocking rule facts, ignoring shifted positions (`null` when unresolved
+checks prevent attribution). Pre-existing errors are identified before opening the editor and on failure; they still block publication.
 For edit, `original_sha256` identifies the source; the nested input hash identifies
 the candidate (`report_subject`). Paths have no human presentation suffix.
 Errors have `code`, `message`, and optional `path`/`selected_fields`; selection is

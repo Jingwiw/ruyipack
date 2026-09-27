@@ -27,6 +27,13 @@ pub(crate) struct RuleResult {
 const REQUIRED_TAG_LINT_IDS: [&str; 6] =
     ["RPM010", "RPM011", "RPM012", "RPM013", "RPM014", "RPM015"];
 
+// Missing SHA-256 is incomplete authoring, not a generation failure. Keep the
+// same openRuyi warning in check, generation and candidate-edit reports.
+pub(crate) const SOURCE_DIGEST_RULE: SelectedRule = SelectedRule {
+    code: "RPK005",
+    severity: Severity::Warn,
+};
+
 /// Runs the selected static checks without file or terminal I/O.
 pub(crate) fn analyze(spec: &ParsedSpec<'_>) -> CheckReport {
     let source = spec.source();
@@ -50,6 +57,7 @@ pub(crate) fn analyze(spec: &ParsedSpec<'_>) -> CheckReport {
     selected_rules.push(license::RULE);
     selected_rules.extend(metadata::RULES);
     selected_rules.push(build::RULE);
+    selected_rules.push(SOURCE_DIGEST_RULE);
     if parser_error {
         return CheckReport::incomplete(source, selected_rules, diagnostics);
     }

@@ -132,6 +132,37 @@ impl CheckReport {
         matches!(self.status, CheckStatus::Pass)
     }
 
+    /// Positions move after edits. Compare rule facts and multiplicities, not offsets;
+    /// this explains a blocked edit, never weakens its publication gate.
+    pub(crate) fn introduced_static_blockers(&self, baseline: &Self) -> Option<bool> {
+        let new = self
+            .incomplete_reasons
+            .iter()
+            .any(|reason| !baseline.incomplete_reasons.contains(reason))
+            || self
+                .findings
+                .iter()
+                .filter(|finding| finding.severity == Severity::Deny)
+                .any(|finding| {
+                    let same = |other: &&Finding| {
+                        other.severity == Severity::Deny
+                            && other.code == finding.code
+                            && other.producer == finding.producer
+                            && other.message == finding.message
+                    };
+                    self.findings.iter().filter(same).count()
+                        > baseline.findings.iter().filter(same).count()
+                });
+        // Equal incomplete categories do not prove the unresolved facts are equal.
+        if new {
+            Some(true)
+        } else if self.incomplete_reasons.is_empty() {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
     /// Writes human-readable parser diagnostics and static-check findings.
     pub(crate) fn write_human(&self, path: &Path, writer: &mut impl Write) -> io::Result<()> {
         parser_diagnostic::write(path, &self.parser_diagnostics, writer)?;

@@ -6,7 +6,7 @@
 
 //! Subprocess failures must never become a digest; native RPM is checked separately.
 
-use super::support::{assert_file, command, json_line, rejected};
+use super::support::{assert_file, command, json_line};
 use sha2::{Digest, Sha256};
 use std::{fs, os::unix::fs::PermissionsExt};
 
@@ -94,10 +94,18 @@ printf 'https://cdn.example.org/archive'
     assert!(curl.ends_with("--\nhttps://example.org/archive\n"));
     assert!(curl.contains("--proto-redir\n=http,https\n"));
     fs::remove_file(root.join("curl-args")).unwrap();
-    rejected(&run("diagnostic", true), "native failure");
+    let failed = |mode: &str, message: &str| {
+        let output = run(mode, true);
+        assert_eq!(output.status.code(), Some(1));
+        let report = json_line(&output);
+        assert_eq!(report["valid"], false);
+        assert!(report["sha256"].is_null());
+        assert!(report["error"].as_str().unwrap().contains(message));
+    };
+    failed("diagnostic", "native failure");
     assert!(!root.join("curl-args").exists());
-    rejected(&run("download-failure", true), "curl download");
-    rejected(&run("source-changed", true), "SPEC changed");
+    failed("download-failure", "curl download");
+    failed("source-changed", "SPEC changed");
     for invalid in [
         "file:///etc/passwd",
         "https://user:secret@example.org/archive",

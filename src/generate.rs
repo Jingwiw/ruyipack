@@ -79,7 +79,7 @@ pub(crate) fn run(
         let target = manifest_path.with_file_name(format!("{requested_name}.spec"));
         let valid = candidate.is_some_and(|r| r.report.is_success());
         let report = serde_json::json!({
-            "format_version": 1,
+            "format_version": 2,
             "scope": "manifest-generation-static",
             "valid": valid,
             "manifest": {"display_path": manifest_path.to_string_lossy(), "sha256": manifest_digest},
@@ -87,7 +87,6 @@ pub(crate) fn run(
             "build_contract": candidate.and_then(|r| r.build_contract.as_ref()),
             "report_subject": candidate.map(|_| "candidate"),
             "report": candidate.map(|r| r.report.structured(&target)),
-            "warnings": candidate.map(|r| r.warnings.as_slice()).unwrap_or_default(),
             "error": rendered.as_ref().err().map(ToString::to_string),
         });
         serde_json::to_writer(io::stdout().lock(), &report).map_err(GenerateError::Json)?;
@@ -98,11 +97,6 @@ pub(crate) fn run(
 
     let default_target = manifest_path.with_file_name(format!("{}.spec", rendered.name));
     let target = output.path.as_deref().unwrap_or(&default_target);
-    // Missing digests are an authoring warning, not a policy-compliance claim.
-    for warning in &rendered.warnings {
-        writeln!(io::stderr().lock(), "warning: {warning}").map_err(GenerateError::Stderr)?;
-    }
-
     rendered
         .report
         .write_human(target, &mut io::stderr().lock())
