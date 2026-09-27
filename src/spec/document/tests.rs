@@ -161,24 +161,35 @@ fn ordinary_comment_blocks_can_gain_lines_without_moving() {
 }
 
 #[test]
-fn source_digest_edits_touch_only_the_adjacent_digest() {
-    let snapshot = capture(ED);
-    let mut edited = snapshot.document().clone();
-    edited["sources"]["0"]["sha256"] = "a".repeat(64).into();
-    assert_eq!(
-        snapshot.render(&edited).unwrap(),
-        ED.replace(
-            "56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc",
-            &"a".repeat(64)
-        )
-    );
-    edited["sources"]["0"]["sha256"] = "not-a-digest".into();
-    assert!(
-        snapshot
-            .render(&edited)
-            .unwrap_err()
-            .contains("64 hexadecimal digits")
-    );
+fn source_digest_edits_preserve_bare_markers_and_only_replace_the_selected_digest() {
+    let marker =
+        "#!RemoteAsset:  sha256:56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc";
+    for original in [marker, "#!RemoteAsset"] {
+        let source = ED.replace(marker, original);
+        let snapshot = capture(&source);
+        assert_eq!(snapshot.render(snapshot.document()).unwrap(), source);
+        let mut edited = snapshot.document().clone();
+        edited["sources"]["0"]["sha256"] = "a".repeat(64).into();
+        assert_eq!(
+            snapshot.render(&edited).unwrap(),
+            source.replace(
+                original,
+                &format!("#!RemoteAsset:  sha256:{}", "a".repeat(64))
+            )
+        );
+        for invalid in ["not-a-digest", ""] {
+            if invalid.is_empty() && original == "#!RemoteAsset" {
+                continue; // Already checked by the unchanged round trip.
+            }
+            edited["sources"]["0"]["sha256"] = invalid.into();
+            assert!(
+                snapshot
+                    .render(&edited)
+                    .unwrap_err()
+                    .contains("64 hexadecimal digits")
+            );
+        }
+    }
 }
 
 #[test]

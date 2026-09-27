@@ -19,6 +19,14 @@ fn workspace(source: &str) -> tempfile::TempDir {
     directory
 }
 
+#[track_caller]
+fn renders(source: &str, expected: &str) {
+    let directory = workspace(source);
+    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+    success(&output);
+    assert_eq!(output.stdout, expected.as_bytes());
+}
+
 fn rejected(source: &str, message: &str) {
     assert!(
         !message.is_empty(),
@@ -91,17 +99,12 @@ fn package_selector_is_not_a_path() {
 }
 
 #[test]
-fn ed_output_is_fixed_and_independent_of_toml_layout() {
-    let directory = workspace(MANIFEST);
-    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-    success(&output);
-    assert_eq!(output.stdout, SPEC.as_bytes());
+fn toml_layout_does_not_change_the_fixed_spec() {
     let source = MANIFEST.replace("[build]\nsystem = \"autotools\"\n", "");
-    let source = format!("build = {{\n  # TOML 1.1\n  system = \"autotools\",\n}}\n{source}");
-    fs::write(directory.path().join("ed.toml"), source).unwrap();
-    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-    success(&output);
-    assert_eq!(output.stdout, SPEC.as_bytes());
+    renders(
+        &format!("build = {{\n  # TOML 1.1\n  system = \"autotools\",\n}}\n{source}"),
+        SPEC,
+    );
 }
 
 #[test]
@@ -149,14 +152,9 @@ fn vcs_choices_generate_distinct_repository_declarations() {
         ("same-as-url = true", ""),
     ] {
         let source = MANIFEST.replace("no-public-repository = true", choice);
-        let directory = workspace(&source);
-        let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-        success(&output);
-        assert_eq!(
-            output.stdout,
-            SPEC.replace("# VCS: No VCS link available\n", expected)
-                .as_bytes(),
-            "{choice}"
+        renders(
+            &source,
+            &SPEC.replace("# VCS: No VCS link available\n", expected),
         );
     }
 }
@@ -449,9 +447,6 @@ prepend = 'autoreconf -fiv'
 append = "echo configured\n"
 options = ["--enable-nls"]
 "#;
-    let directory = workspace(&format!("{MANIFEST}{extra}"));
-    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-    success(&output);
     let expected = SPEC
         .replace(
             "BuildRequires:  autoconf\n",
@@ -466,33 +461,22 @@ options = ["--enable-nls"]
                 "rm -f %{buildroot}%{_infodir}/dir\n\n%files\n",
             ),
         );
-    assert_eq!(output.stdout, expected.as_bytes());
+    renders(&format!("{MANIFEST}{extra}"), &expected);
 
     // Blank lines and tabs inside a heredoc are script data, not layout to trim.
     let script = "cat <<'END' > generated.txt\n\tindented\n\nEND\n\n";
     for stage in ["prep", "conf", "build", "install", "check"] {
         for (field, flag) in [("prepend", "p"), ("append", "a")] {
             let extra = format!("\n[build.stages.{stage}]\n{field} = '''{script}'''\n");
-            fs::write(
-                directory.path().join("ed.toml"),
-                format!("{MANIFEST}{extra}"),
-            )
-            .unwrap();
-            let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-            success(&output);
             let expected =
                 SPEC.replace("%files\n", &format!("%{stage} -{flag}\n{script}\n%files\n"));
-            assert_eq!(output.stdout, expected.as_bytes());
+            renders(&format!("{MANIFEST}{extra}"), &expected);
         }
     }
-    fs::write(
-        directory.path().join("ed.toml"),
-        format!("{MANIFEST}\n[build.stages.conf]\nprepend = ''\nappend = ''\n"),
-    )
-    .unwrap();
-    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-    success(&output);
-    assert_eq!(output.stdout, SPEC.as_bytes());
+    renders(
+        &format!("{MANIFEST}\n[build.stages.conf]\nprepend = ''\nappend = ''\n"),
+        SPEC,
+    );
 }
 
 #[test]
@@ -524,9 +508,6 @@ fn stage_replacement_preserves_empty_actions_and_hooks() {
                 "\n[build.stages.{stage}]\noptions = []\nprepend = 'echo before'\n\
                  replace = '''{script}'''\nappend = 'echo after'\n"
             );
-            let directory = workspace(&format!("{MANIFEST}{extra}"));
-            let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-            success(&output);
             let body = match script {
                 "" => String::new(),
                 s if s.ends_with('\n') => s.into(),
@@ -539,7 +520,7 @@ fn stage_replacement_preserves_empty_actions_and_hooks() {
                      %{stage} -a\necho after\n\n%files\n"
                 ),
             );
-            assert_eq!(output.stdout, expected.as_bytes(), "{stage}: {script:?}");
+            renders(&format!("{MANIFEST}{extra}"), &expected);
         }
     }
 }
@@ -554,17 +535,15 @@ fn stage_options_and_replacement_are_mutually_exclusive_per_stage() {
             "build.stages.conf: options cannot be combined with replace",
         );
     }
-    let directory = workspace(&format!(
+    let source = format!(
         "{MANIFEST}\n[build.stages.conf]\nreplace = ''\n\
          [build.stages.build]\noptions = ['CC_FOR_BUILD=gcc']\n"
-    ));
-    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-    success(&output);
+    );
     let expected = SPEC.replace("%files\n", "%conf\n\n%files\n").replace(
         "BuildRequires:  autoconf\n",
         "BuildOption(build):  CC_FOR_BUILD=gcc\n\nBuildRequires:  autoconf\n",
     );
-    assert_eq!(output.stdout, expected.as_bytes());
+    renders(&source, &expected);
 }
 
 #[test]
@@ -587,10 +566,7 @@ fn omitted_build_system_adds_no_stages_or_requirements() {
         "\n[build]\n",
         "\n[build.stages.conf]\noptions = []\nprepend = ''\nappend = ''\n",
     ] {
-        let directory = workspace(&format!("{source}{extra}"));
-        let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-        success(&output);
-        assert_eq!(output.stdout, expected.as_bytes(), "{extra}");
+        renders(&format!("{source}{extra}"), &expected);
     }
 }
 
@@ -618,9 +594,6 @@ append = 'echo after-install'
         } else {
             extra.into()
         };
-        let directory = workspace(&format!("{source}{extra}"));
-        let output = run(directory.path(), &["gen", "ed", "--stdout"]);
-        success(&output);
         let main = if main.is_empty() {
             String::new()
         } else {
@@ -633,7 +606,7 @@ append = 'echo after-install'
                  {main}%install -a\necho after-install\n\n%files\n"
             ),
         );
-        assert_eq!(output.stdout, expected.as_bytes());
+        renders(&format!("{source}{extra}"), &expected);
     }
 }
 

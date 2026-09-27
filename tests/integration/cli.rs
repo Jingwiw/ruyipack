@@ -7,7 +7,7 @@
 //! Black-box tests for the `RuyiPack` command-line contract.
 
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
     process::Output,
@@ -518,8 +518,10 @@ fn assert_read_errors(subcommand: &str) {
 }
 
 #[test]
-fn check_rejects_missing_and_non_utf8_inputs() {
-    assert_read_errors("check");
+fn report_commands_reject_missing_and_non_utf8_inputs() {
+    for command in ["check", "inspect"] {
+        assert_read_errors(command);
+    }
 }
 
 #[test]
@@ -635,40 +637,27 @@ Summary: Broken subpackage
 
 #[test]
 fn cli_rejects_invalid_invocations() {
-    let cases = [
-        (Vec::new(), "Usage: ruyipack <COMMAND>"),
+    let cases: &[(&[&str], &str)] = &[
+        (&[], "Usage: ruyipack <COMMAND>"),
+        (&["unknown"], "error: unrecognized subcommand 'unknown'"),
+        (&["inspect"], "Usage: ruyipack inspect <SPEC>"),
+        (&["check"], "Usage: ruyipack check <SPEC>"),
         (
-            vec![OsString::from("unknown")],
-            "error: unrecognized subcommand 'unknown'",
-        ),
-        (
-            vec![OsString::from("inspect")],
-            "Usage: ruyipack inspect <SPEC>",
-        ),
-        (
-            vec![OsString::from("check")],
-            "Usage: ruyipack check <SPEC>",
-        ),
-        (
-            vec![
-                OsString::from("check"),
-                OsString::from("demo.spec"),
-                OsString::from("extra"),
-            ],
+            &["check", "demo.spec", "extra"],
             "error: unexpected argument 'extra' found",
         ),
         (
-            vec![
-                OsString::from("inspect"),
-                OsString::from("demo.spec"),
-                OsString::from("extra"),
-            ],
+            &["inspect", "demo.spec", "extra"],
             "error: unexpected argument 'extra' found",
+        ),
+        (
+            &["inspect", ""],
+            "a value is required for '<SPEC>' but none was supplied",
         ),
     ];
 
-    for (args, expected) in cases {
-        let output = run(&args);
+    for &(args, expected) in cases {
+        let output = run(args);
         assert_eq!(
             output.status.code(),
             Some(2),
@@ -686,81 +675,41 @@ fn cli_rejects_invalid_invocations() {
             output_text(&output.stderr)
         );
     }
-
-    let empty_path = run([OsString::from("inspect"), OsString::new()]);
-    assert_eq!(empty_path.status.code(), Some(2));
-    assert!(empty_path.stdout.is_empty());
-    assert!(
-        output_text(&empty_path.stderr)
-            .contains("a value is required for '<SPEC>' but none was supplied"),
-        "{}",
-        output_text(&empty_path.stderr)
-    );
 }
 
 #[test]
 fn cli_prints_standard_help_and_version() {
-    let help = run([OsStr::new("--help")]);
-    assert!(help.status.success());
-    assert!(help.stderr.is_empty(), "{}", output_text(&help.stderr));
+    let commands = ["init", "gen", "inspect", "check", "source-hash", "edit"];
+    let help = run(["--help"]);
+    super::support::quiet_success(&help);
     let text = output_text(&help.stdout);
-    assert!(text.contains("Usage: ruyipack <COMMAND>"));
-    for name in ["edit", "check", "inspect", "gen", "help"] {
+    for name in commands {
         assert!(
             text.lines()
                 .any(|line| line.split_whitespace().next() == Some(name)),
             "missing command {name}: {text}"
         );
     }
-    for option in ["-h,", "--help", "-V,", "--version"] {
-        assert!(text.contains(option), "missing option {option}: {text}");
-    }
-
-    for name in ["inspect", "check"] {
-        let help = run([OsStr::new(name), OsStr::new("--help")]);
-        assert!(help.status.success(), "{name}: {help:?}");
-        assert!(help.stderr.is_empty(), "{name}: {help:?}");
-        let text = output_text(&help.stdout);
-        assert!(text.contains(&format!("Usage: ruyipack {name} [OPTIONS] <SPEC>")));
-        for detail in [
-            "--format <FORMAT>",
-            "[default: human]",
-            "[possible values: human, json]",
-            "-h,",
-            "--help",
-        ] {
-            assert!(text.contains(detail), "{name}: missing {detail}: {text}");
+    // Check product options, not Clap's wording or help paragraph layout.
+    for (name, options) in [
+        ("inspect", &["--format"] as &[_]),
+        ("check", &["--format"]),
+        ("gen", &["--format", "--check", "--hash-sources"]),
+        ("edit", &["--set", "--field", "--check", "--hash-source"]),
+    ] {
+        let help = run([name, "--help"]);
+        super::support::quiet_success(&help);
+        for option in options {
+            assert!(
+                output_text(&help.stdout).contains(option),
+                "{name}: missing {option}"
+            );
         }
     }
-
-    let gen_help = run([OsStr::new("gen"), OsStr::new("--help")]);
-    assert!(gen_help.status.success());
-    assert!(gen_help.stderr.is_empty());
-    assert!(output_text(&gen_help.stdout).contains("--format"));
-    assert!(output_text(&gen_help.stdout).contains("--check"));
-    for detail in [
-        "NAME.spec beside the manifest",
-        "parent directory must exist",
-        "terminal menu",
-        "even when the files differ",
-    ] {
-        assert!(output_text(&gen_help.stdout).contains(detail), "{detail}");
-    }
-
-    let version = run([OsStr::new("--version")]);
-    assert!(version.status.success());
+    let version = run(["--version"]);
+    super::support::quiet_success(&version);
     assert_eq!(
         output_text(&version.stdout),
         format!("ruyipack {}\n", env!("CARGO_PKG_VERSION"))
     );
-    assert!(
-        version.stderr.is_empty(),
-        "{}",
-        output_text(&version.stderr)
-    );
-}
-
-#[test]
-fn inspect_rejects_missing_and_non_utf8_inputs() {
-    assert_read_errors("inspect");
 }

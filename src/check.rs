@@ -27,8 +27,8 @@ pub(crate) struct RuleResult {
 const REQUIRED_TAG_LINT_IDS: [&str; 6] =
     ["RPM010", "RPM011", "RPM012", "RPM013", "RPM014", "RPM015"];
 
-// Missing SHA-256 is incomplete authoring, not a generation failure. Keep the
-// same openRuyi warning in check, generation and candidate-edit reports.
+// Missing or malformed source digests warn in static checks, so unrelated edits
+// remain possible. Authoring a digest still requires a valid SHA-256.
 pub(crate) const SOURCE_DIGEST_RULE: SelectedRule = SelectedRule {
     code: "RPK005",
     severity: Severity::Warn,

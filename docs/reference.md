@@ -290,7 +290,7 @@ Editor work is retained after validation failure or when changes remain unapplie
 | RPK002 | Literal Name, Version, Release syntax; `Epoch: 0` is not rejected |
 | RPK003 | Literal project URL syntax; existing HTTP/HTTPS accepted |
 | RPK004 | Profile direct requirements for a single literal BuildSystem; currently Autotools has required tools |
-| RPK005 | Warning for a missing adjacent Source SHA-256; offline authoring can continue |
+| RPK005 | Warning for a missing or malformed adjacent Source SHA-256; unrelated edits can continue |
 
 SPDX covers main/subpackages and conditional branches, not upstream license
 correctness. IDs are case-insensitive, operators uppercase, deprecated IDs valid;

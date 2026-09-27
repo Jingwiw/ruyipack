@@ -353,6 +353,20 @@ fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
             SPEC.replace(HASH, &digest),
         )
         .unwrap();
+        let output = run(directory.path(), &["check", "ed.spec", "--format", "json"]);
+        success(&output);
+        let report = super::support::json_line(&output);
+        assert_eq!(report["evidence"]["status"], "pass");
+        let findings = report["findings"].as_array().unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0]["code"], "RPK005");
+        assert_eq!(findings[0]["severity"], "warn");
+        assert!(
+            findings[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("invalid sha256")
+        );
         let view = run(directory.path(), &["edit", "ed.spec", "--all", "--view"]);
         success(&view);
         let document: toml::Table =
@@ -383,6 +397,11 @@ fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
         );
         assert_file(directory.path().join("ed.spec"), SPEC);
     }
+    let directory = tempfile::tempdir().unwrap();
+    let source = SPEC.replace('\n', "\r\n");
+    fs::write(directory.path().join("ed.spec"), &source).unwrap();
+    success(&run(directory.path(), &["check", "ed.spec"]));
+    assert_file(directory.path().join("ed.spec"), &source);
 }
 
 #[test]

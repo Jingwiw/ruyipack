@@ -108,11 +108,27 @@ impl<'ast> Visit<'ast> for CheckVisitor<'_> {
                         value.trim_start().starts_with("https://")
                             || value.trim_start().starts_with("http://")
                     });
-                if remote && !previous.starts_with(&profile.remote_asset_prefix) {
+                let problem = if let Some(hash) =
+                    previous.strip_prefix(&profile.remote_asset_prefix)
+                {
+                    crate::source::validate_sha256(hash.trim()).err().map(|_| {
+                        "Source: invalid sha256; expected 64 hexadecimal digits. Repair the digest before submitting the package"
+                    })
+                } else if remote {
+                    Some(
+                        "Source: no sha256; openRuyi requires SHA-256 for HTTP(S) sources. Calculate it with source-hash in the target RPM environment, then set sources.N.sha256 with edit; a passing static check is not source verification",
+                    )
+                } else {
+                    None
+                };
+                if let Some(problem) = problem {
                     let rule = crate::check::SOURCE_DIGEST_RULE;
                     self.result.findings.push(crate::check_report::Finding {
-                        producer: "ruyipack", code: rule.code, severity: rule.severity, span,
-                        message: "Source: no sha256; openRuyi requires SHA-256 for HTTP(S) sources. Calculate it with source-hash in the target RPM environment, then set sources.N.sha256 with edit; a passing static check is not source verification".into(),
+                        producer: "ruyipack",
+                        code: rule.code,
+                        severity: rule.severity,
+                        span,
+                        message: problem.into(),
                     });
                 }
             }
