@@ -20,8 +20,14 @@ command -v cargo-deny >/dev/null 2>&1 || {
     exit 2
 }
 
+python3 -c 'import jsonschema' 2>/dev/null || {
+    echo "Python 3.11+ and jsonschema are required: python3 -m pip install jsonschema==4.26.0" >&2
+    exit 2
+}
+
 cargo fmt --all -- --check
 cargo test --locked -- --format terse
+python3 scripts/check-manifest-schema "${CARGO_TARGET_DIR:-target}/debug/ruyipack"
 cargo clippy --locked --all-targets -- -D warnings
 reuse lint
 cargo deny --locked check

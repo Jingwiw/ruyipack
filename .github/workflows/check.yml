@@ -24,7 +24,7 @@ jobs:
       - name: Install gate tools
         run: |
           python3 -m venv "$RUNNER_TEMP/reuse"
-          "$RUNNER_TEMP/reuse/bin/python" -m pip install reuse==6.2.0
+          "$RUNNER_TEMP/reuse/bin/python" -m pip install reuse==6.2.0 jsonschema==4.26.0
           echo "$RUNNER_TEMP/reuse/bin" >> "$GITHUB_PATH"
           cargo install cargo-deny --version 0.20.2 --locked
       - name: Check source

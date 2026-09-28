@@ -55,6 +55,7 @@ openRuyi environment. A static `pass` is not a successful package build.
 
 | Command | Use | Important boundary |
 | --- | --- | --- |
+| `schema` | Export the authoring manifest JSON Schema | Editor assistance, not semantic or build validation |
 | `init NAME` | Create a TOML scaffold | Fill in unknown package facts; local name checks are not upstream availability checks |
 | `gen NAME` | Generate from `NAME.toml` | Supports manual subpackages and explicit stages; manifest is authoritative |
 | `inspect FILE.spec` | Read tags and parser diagnostics | Syntax, not macro-expanded RPM values |
@@ -89,8 +90,9 @@ or `--set`; full-view editing only supports a limited subset.
 ./scripts/smoke-test "${CARGO_HOME:-$HOME/.cargo}/bin/ruyipack"
 ```
 
-The gate runs formatting, locked tests, Clippy, REUSE, and cargo-deny. Install
-`reuse` 6.2.0 and `cargo-deny` 0.20.2 separately. The smoke test exercises the
+The gate runs formatting, locked tests, schema/gen comparisons, Clippy, REUSE, and cargo-deny.
+Install Python 3.11+ with `reuse==6.2.0` and `jsonschema==4.26.0`, plus
+`cargo-deny` 0.20.2 separately. The smoke test exercises the
 installed binary in temporary files.
 
 In a trusted target environment with Python 3, `rpm`, `rpmspec`, and

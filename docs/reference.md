@@ -33,6 +33,33 @@ No lookup directory produces a warning; an invalid explicit directory is an erro
 This is not a query of Git, an RPM repository, or upstream package availability.
 TOML output uses the [shared output rules](#output-and-file-safety).
 
+## Manifest editor schema
+
+`ruyipack schema > ruyipack.schema.json` exports the authoring schema from the
+installed binary, without reading a package, downloading anything or writing files
+itself. Put this directive at the start of your manifest (followed by a blank line):
+
+```toml
+#:schema ./ruyipack.schema.json
+
+[package]
+# ...
+```
+
+[Tombi and compatible TOML editors](https://tombi-toml.github.io/tombi/docs/json-schema/)
+use it for completion, field descriptions and structural diagnostics. Paths are
+relative to the manifest. Regenerate the local schema after updating RuyiPack;
+no mutable remote URL or network access is required. `init` does not create a
+sidecar or reference a file that may not exist.
+
+This is **not** `edit --schema`, which describes the selected fields of an existing
+SPEC. Authoring schema checks unknown/missing fields, types, supported build/stage
+names, Source/Patch shapes and supplied SHA-256 syntax. Missing SHA-256 remains
+allowed. RPM expressions, numeric aliases/overflow, required Source0, VCS choices,
+file-list content and other cross-field constraints still require
+`ruyipack gen NAME --offline --check`; schema success is not build validation.
+Unfilled `init` scaffolds intentionally pass structural checks, not generation.
+
 ## Generate
 
 `gen NAME` reads `NAME.toml`, or the file selected by `--manifest`. NAME is a

@@ -93,3 +93,10 @@ Version/Source URL 变化会产生复核提醒；JSON 的 `review_required` 是�
 仅应用自己可信工作区内的草稿。批次不是整体原子事务，失败后先查看已写文件。
 
 更多字段、输出和边界见 [命令与 manifest 参考](reference.md)。
+
+## 编辑器补全
+
+运行 `ruyipack schema > ruyipack.schema.json`，在手写 manifest 首行添加
+`#:schema ./ruyipack.schema.json` 并空一行。Tombi 等 TOML 编辑器即可提供字段补全、
+说明和结构诊断；升级工具后重新导出。缺摘要仍允许，宏和跨字段约束仍需
+`gen NAME --offline --check`。这不是 `edit --schema` 的选中字段编辑投影。

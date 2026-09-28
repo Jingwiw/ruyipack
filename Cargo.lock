@@ -895,6 +895,7 @@ dependencies = [
  "rpm-spec",
  "rpm-spec-analyzer",
  "rustls",
+ "schemars",
  "serde",
  "serde_json",
  "sha2",

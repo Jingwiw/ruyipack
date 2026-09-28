@@ -28,6 +28,8 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// Creates a package manifest template in an existing directory.
     Init(init::Options),
+    /// Prints the authoring manifest JSON Schema for offline editor completion and structural checks.
+    Schema,
     /// Edits SPEC fields through TOML or command-line assignments.
     Edit(edit::Options),
     /// Resolves a Source statically and reports the SHA-256 of its downloaded bytes.

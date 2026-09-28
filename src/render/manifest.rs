@@ -6,31 +6,40 @@
 
 //! Typed authoring input and validation before SPEC rendering.
 
+pub(crate) mod schema;
+
 use super::RenderError;
+use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, de::Error as _};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Deserialized authoring input. Content checks are deferred to `parse` so an
-/// empty scaffold reports every unfilled field at once instead of aborting on
-/// the first table that fails a semantic check.
-#[derive(Deserialize)]
+/// Authoring input for openRuyi SPEC generation. This schema checks structure,
+/// not RPM expressions, cross-field policy, source contents or build success.
+/// Run `ruyipack gen NAME --offline --check` before generating a SPEC.
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
+#[schemars(title = "RuyiPack authoring manifest")]
 struct ManifestInput {
     spec: SpecMetadata,
     package: PackageInput,
     #[serde(deserialize_with = "deserialize_materials")]
+    #[schemars(schema_with = "schema::materials::<Source>")]
     sources: Vec<(u32, Source)>,
     #[serde(default, deserialize_with = "deserialize_materials")]
+    #[schemars(
+        schema_with = "schema::materials::<Patch>",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     patches: Vec<(u32, Patch)>,
     #[serde(default)]
     build: Build,
     build_requires: BuildRequires,
-    // Explicit subpackage declarations, keyed by suffix or complete name.
+    /// Subpackages keyed by suffix, or by full package name when full-name is true.
     #[serde(default)]
     subpackages: BTreeMap<String, SubpackageInput>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct SubpackageInput {
     summary: String,
@@ -39,30 +48,35 @@ struct SubpackageInput {
     requires: Vec<String>,
     #[serde(default)]
     provides: Vec<String>,
-    // false: the map key is a suffix appended to the main name (%package <suffix>).
-    // true: the key is the complete package name (%package -n <key>).
+    /// Treat the table key as a complete package name, rather than a suffix.
     #[serde(default)]
     full_name: bool,
     #[serde(default)]
     files: Files,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct PackageInput {
+    /// RPM package name, not a path.
     name: String,
+    /// Upstream version as a string, including numeric-looking versions.
     version: String,
+    /// Concise English summary without a trailing period.
     summary: String,
+    /// SPDX license expression for upstream software, not the SPEC license.
     license: String,
+    /// HTTPS project homepage, not an archive download URL.
     url: String,
+    /// Plain description text without SPEC section headers.
     description: String,
     #[serde(default)]
     vcs: VcsInput,
-    // Runtime dependency and capability expressions for the main package.
+    /// Runtime RPM dependency expressions, not build tools.
     #[serde(default)]
     requires: Vec<String>,
     #[serde(default)]
     provides: Vec<String>,
-    // The manifest supports BuildArch: noarch, not arbitrary architecture lists.
+    /// Architecture-independent package; arbitrary BuildArch lists are not supported.
     #[serde(default)]
     noarch: bool,
     files: Files,
@@ -113,7 +127,7 @@ pub(crate) struct PackageBody {
     pub(crate) provides: Vec<String>,
     pub(crate) files: Files,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub(crate) struct SpecMetadata {
     pub(crate) copyright_years: String,
@@ -127,13 +141,16 @@ pub(crate) enum Vcs {
     NoPublicRepository,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct VcsInput {
+    /// Confirmed HTTPS clone URL. Omit the entire vcs table while unknown.
     git: Option<String>,
     #[serde(default)]
+    /// The project URL already identifies the repository; mutually exclusive with other choices.
     same_as_url: bool,
     #[serde(default)]
+    /// Confirmed absence of a public repository, not a failed lookup.
     no_public_repository: bool,
 }
 
@@ -155,16 +172,19 @@ fn resolve_vcs(input: &VcsInput) -> Result<Vcs, String> {
 }
 /// An RPM Source declaration. Local material is not
 /// downloaded or assigned a RemoteAsset marker; generation never opens it.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(untagged, deny_unknown_fields)]
 pub(crate) enum Source {
     Remote {
+        /// HTTPS archive URL; %{name}, %{version} and %{url} refer to package fields.
         url: String,
-        // Missing hashes warn; an explicitly empty hash is invalid.
+        /// Optional SHA-256 of the archive bytes; gen attempts missing hashes, or warns offline.
         #[serde(default)]
+        #[schemars(length(equal = 64), regex(pattern = r"^[0-9A-Fa-f]+$"))]
         sha256: Option<String>,
     },
     Local {
+        /// Relative local material path. Never downloaded or opened by gen.
         path: String,
     },
 }
@@ -178,21 +198,23 @@ impl Source {
     }
 }
 /// Local patch declaration. Keep declaration order for RPM's %autopatch.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Patch {
+    /// Relative local patch path. Declaration order is application order.
     pub(crate) path: String,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Build {
+    #[schemars(extend("enum" = crate::profile::buildsystems::systems().collect::<Vec<_>>()))]
     pub(crate) system: Option<String>,
     #[serde(default)]
     pub(crate) stages: BTreeMap<Stage, StageConfig>,
 }
 
-#[derive(Deserialize, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Deserialize, JsonSchema, Eq, Ord, PartialEq, PartialOrd)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Stage {
     Prep,
@@ -214,7 +236,7 @@ impl Stage {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StageConfig {
     #[serde(default)]
@@ -226,12 +248,12 @@ pub(crate) struct StageConfig {
     #[serde(default)]
     pub(crate) append: String,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BuildRequires {
     pub(crate) rpm: Vec<String>,
 }
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Files {
     #[serde(default)]
@@ -241,6 +263,7 @@ pub(crate) struct Files {
     // Serde-optional so a subpackage may declare no files; the main package's
     // "at least one entry" requirement is enforced in validate_body instead.
     #[serde(default)]
+    /// Installed paths and native RPM file directives, without %{buildroot}.
     pub(crate) entries: Vec<String>,
     /// Files generated during the build, passed to RPM as repeated `%files -f`.
     #[serde(default)]

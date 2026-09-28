@@ -39,6 +39,14 @@ use cli::{Cli, Command};
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
+        Command::Schema => exit_for(
+            writeln!(
+                io::stdout().lock(),
+                "{:#}",
+                render::manifest::schema::generate().as_value()
+            )
+            .map(|()| true),
+        ),
         Command::Init(options) => exit_for(init::run(&options).map(|()| true)),
         Command::Edit(options) => exit_for(edit::run(options)),
         Command::SourceHash(options) => exit_for(source_hash::run(&options)),

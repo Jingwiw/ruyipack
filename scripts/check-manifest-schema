@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+"""Compare the authoring schema with real, offline gen inputs (Python 3.11+)."""
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import tomllib
+
+from jsonschema import Draft7Validator
+
+binary = str(Path(sys.argv[1]).resolve())
+root = Path(__file__).resolve().parent.parent
+base = (root / "examples/ed/ed.toml").read_text()
+result = subprocess.run([binary, "schema"], capture_output=True, check=True, timeout=30)
+assert not result.stderr and result.stdout.endswith(b"\n"), result
+schema = json.loads(result.stdout)
+Draft7Validator.check_schema(schema)
+validator = Draft7Validator(schema)
+systems = schema["definitions"]["Build"]["properties"]["system"]["enum"]
+
+
+def changed(old, new):
+    assert base.count(old) == 1, old
+    return base.replace(old, new)
+
+
+source = base.split("[sources.0]\n", 1)[1].split("\n[build]", 1)[0]
+hash_line = next(line for line in source.splitlines() if line.startswith("sha256 ="))
+# A schema pass never substitutes for gen's semantic checks. Keep the expected
+# differences explicit so future tightening cannot silently reject legal input.
+cases = [
+    ("missing-hash", changed(hash_line, ""), True, True),
+    ("uppercase-hash", changed(hash_line, hash_line.replace(hash_line[10:-1], hash_line[10:-1].upper())), True, True),
+    ("local-source", changed(source, 'path = "ed.tar.gz"\n'), True, True),
+    ("zero-alias", changed("[sources.0]", '[sources."00"]'), True, True),
+    ("signed-zero", changed("[sources.0]", '[sources."+0"]'), True, True),
+    ("unknown-vcs", changed("no-public-repository = true", ""), True, True),
+    ("external-files", base + '\nlists = ["%{name}.lang"]\n', True, True),
+    ("empty-subpackage", base + '\n[subpackages.devel]\nsummary = "Development files"\ndescription = "Development package."\n', True, True),
+    ("patch-order", base + '\n[patches.10]\npath = "first.patch"\n[patches.2]\npath = "second.patch"\n', True, True),
+    ("root-typo", 'unknown = true\n' + base, False, False),
+    ("package-typo", changed('summary = "A line-oriented text editor"', 'summery = "A line-oriented text editor"'), False, False),
+    ("missing-version", changed('version = "1.22.5"', ''), False, False),
+    ("numeric-version", changed('version = "1.22.5"', 'version = 1'), False, False),
+    ("unknown-system", changed('system = "autotools"', 'system = "unknown"'), False, False),
+    ("unknown-stage", base + '\n[build.stages.compile]\nappend = "make"\n', False, False),
+    ("mixed-source", changed(source, source + 'path = "local.tar"\n'), False, False),
+    ("local-hash", changed(source, 'path = "local.tar"\n' + hash_line + '\n'), False, False),
+    ("patch-url", base + '\n[patches.0]\nurl = "https://example.org/fix.patch"\n', False, False),
+    ("material-array", changed('[sources.0]', '[[sources]]'), False, False),
+    ("material-key", changed('[sources.0]', '[sources.archive]'), False, False),
+    ("empty-hash", changed(hash_line, 'sha256 = ""'), False, False),
+    ("invalid-hash", changed(hash_line, 'sha256 = "' + 'g' * 64 + '"'), False, False),
+    ("newline-hash", changed(hash_line, 'sha256 = "' + 'a' * 64 + '\\n"'), False, False),
+    ("short-hash", changed(hash_line, 'sha256 = "' + 'a' * 63 + '"'), False, False),
+    ("list-type", changed('license = ["COPYING"]', 'license = "COPYING"'), False, False),
+    ("subpackage-type", base + '\n[subpackages.devel]\nsummary = "Development files"\ndescription = "Development package."\nfull-name = "true"\n', False, False),
+    ("vcs-conflict", changed('no-public-repository = true', 'no-public-repository = true\nsame-as-url = true'), True, False),
+    ("empty-version", changed('version = "1.22.5"', 'version = ""'), True, False),
+    ("unresolved-macro", changed('ed-%{version}.tar.lz', 'ed-%{unknown}.tar.lz'), True, False),
+    ("number-overflow", changed('[sources.0]', '[sources.4294967296]'), True, False),
+    ("duplicate-number", base + '\n[sources."00"]\npath = "other.tar"\n', True, False),
+    ("missing-source-zero", changed('[sources.0]', '[sources.1]'), True, False),
+    ("stage-conflict", base + '\n[build.stages.build]\nreplace = "make"\noptions = ["-j2"]\n', True, False),
+    ("empty-files", base.split('[package.files]', 1)[0] + '[package.files]\nentries = []\n', True, False),
+]
+for system in systems:
+    cases.append((system, changed('system = "autotools"', f'system = "{system}"'), True, True))
+for stage in ["prep", "conf", "build", "install", "check"]:
+    cases.append((stage, base + f'\n[build.stages.{stage}]\nreplace = ""\n', True, True))
+
+with tempfile.TemporaryDirectory(prefix="ruyipack-schema-") as directory:
+    path = Path(directory) / "ed.toml"
+    for name, text, schema_ok, gen_ok in cases:
+        errors = list(validator.iter_errors(tomllib.loads(text)))
+        assert (not errors) == schema_ok, (name, [str(error) for error in errors])
+        path.write_text(text)
+        result = subprocess.run([binary, "gen", "ed", "--manifest", str(path), "--offline", "--check", "--format", "json"], capture_output=True, timeout=30)
+        assert result.returncode == (0 if gen_ok else 1), (name, result)
+        assert json.loads(result.stdout)["valid"] == gen_ok, (name, result)
+        assert path.read_text() == text and list(Path(directory).iterdir()) == [path]
+    for system in [None, *systems]:
+        args = [] if system is None else ["--build-system", system]
+        result = subprocess.run([binary, "init", "ed", "--dir", directory, "--stdout", *args], capture_output=True, check=True, timeout=30)
+        validator.validate(tomllib.loads(result.stdout.decode()))
+print(f"{len(cases)} schema/gen cases and {1 + len(systems)} unfilled scaffolds passed; {sum(s and not g for _, _, s, g in cases)} semantic gaps remain gen checks")
