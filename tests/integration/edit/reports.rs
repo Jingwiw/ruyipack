@@ -33,6 +33,17 @@ fn invalid_toml_reports_its_file_line_and_column_in_check_json() {
     let error = report["files"][0]["error"]["message"].as_str().unwrap();
     assert!(error.contains("ed.toml:2:"), "{error}");
     assert_file(path, "[package]\nversion = \"unterminated\n");
+    let preview = command(directory.path())
+        .arg("--from")
+        .arg(&drafts)
+        .arg("--diff")
+        .output()
+        .unwrap();
+    assert_eq!(preview.status.code(), Some(1));
+    assert!(
+        preview.stdout.is_empty(),
+        "an unconstructable candidate must not produce a diff"
+    );
     unchanged(directory.path());
 }
 
@@ -48,25 +59,37 @@ fn incomplete_batch_diagnostics_identify_each_candidate_without_publishing() {
     for name in names {
         fs::write(directory.path().join(name), &source).unwrap();
     }
-    let output = command(directory.path())
-        .args(names)
-        .args(["--set", "package.summary=Updated summary"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(output.stdout.is_empty());
-    let diagnostics = String::from_utf8(output.stderr).unwrap();
-    for name in names {
-        let path = fs::canonicalize(directory.path().join(name)).unwrap();
-        let expected = format!(
-            "{} (candidate): error: check incomplete because license expressions require RPM evaluation",
-            path.display()
-        );
-        assert!(
-            diagnostics.lines().any(|line| line == expected),
-            "{diagnostics}"
-        );
-        assert_file(path, &source);
+    for diff in [false, true] {
+        let output = command(directory.path())
+            .args(names)
+            .args(diff.then_some("--diff"))
+            .args(["--set", "package.summary=Updated summary"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        if diff {
+            let text = String::from_utf8_lossy(&output.stdout);
+            assert_eq!(
+                text.matches("+Summary:        Updated summary").count(),
+                2,
+                "{text}"
+            );
+        } else {
+            assert!(output.stdout.is_empty());
+        }
+        let diagnostics = String::from_utf8(output.stderr).unwrap();
+        for name in names {
+            let path = fs::canonicalize(directory.path().join(name)).unwrap();
+            let expected = format!(
+                "{} (candidate): error: check incomplete because license expressions require RPM evaluation",
+                path.display()
+            );
+            assert!(
+                diagnostics.lines().any(|line| line == expected),
+                "{diagnostics}"
+            );
+            assert_file(path, &source);
+        }
     }
 }
 
@@ -110,9 +133,22 @@ fn static_check_failure_blocks_even_forced_publication() {
     );
     assert_file(&path, &source);
 
+    let preview = command(directory.path())
+        .args(["ed.spec", "--set", "package.version=1.22.6", "--diff"])
+        .output()
+        .unwrap();
+    assert_eq!(preview.status.code(), Some(1), "{preview:?}");
+    assert!(String::from_utf8_lossy(&preview.stdout).contains("+Version:        1.22.6"));
+    assert!(String::from_utf8_lossy(&preview.stderr).contains("RPM015"));
+    assert_file(&path, &source);
+
     let target = directory.path().join("other.spec");
     fs::write(&target, "Keep this output\n").unwrap();
-    for extra in [&[][..], &["--output", "other.spec", "--force"][..]] {
+    for extra in [
+        &[][..],
+        &["--stdout"][..],
+        &["--output", "other.spec", "--force"][..],
+    ] {
         let output = command(directory.path())
             .args(["ed.spec", "--set", "package.version=1.22.6"])
             .args(extra)

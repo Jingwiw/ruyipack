@@ -463,3 +463,9 @@ drafts and manifests have no cross-version compatibility guarantee in this previ
 
 The native RPM development gate limits each command to 120 seconds and kills its
 process group on timeout. It is not a runtime fallback for Source operations.
+
+### Machine reports
+
+A safely constructed `edit --diff` remains inspectable when static checks fail;
+its exit status is still 1. `--stdout` and publication still require those checks
+to pass. A construction or source-freshness failure produces no diff.

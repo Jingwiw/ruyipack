@@ -540,7 +540,13 @@ fn apply(options: &Options, inputs: Vec<Input>) -> EditResult {
         }
         let errors = errors.map(ToString::to_string).collect::<Vec<_>>();
         if !errors.is_empty() {
-            return Err(errors.join("\n").into());
+            // Diff needs a safely constructed candidate, not a publishable one.
+            if !options.diff || checks.iter().any(|check| check.candidate.is_none()) {
+                return Err(errors.join("\n").into());
+            }
+            for error in errors {
+                writeln!(io::stderr().lock(), "error: {error}").map_err(|e| e.to_string())?;
+            }
         }
         let files = inputs
             .iter()
@@ -551,7 +557,7 @@ fn apply(options: &Options, inputs: Vec<Input>) -> EditResult {
                 contents: &check
                     .candidate
                     .as_ref()
-                    .expect("all candidates passed")
+                    .expect("all candidates constructed")
                     .contents,
             })
             .collect::<Vec<_>>();

@@ -66,7 +66,7 @@ pub(crate) struct Options {
     /// Selects the check, draft preparation, or publication report format.
     #[arg(long, value_enum, conflicts_with_all = ["view", "schema", "diff", "stdout", "editor"])]
     pub format: Option<ReportFormat>,
-    /// Prints source-to-candidate diffs without writing SPEC files.
+    /// Prints safely constructed diffs without writing; failed static checks still exit 1.
     #[arg(long)]
     pub diff: bool,
     /// Prints one checked SPEC without writing a file.
