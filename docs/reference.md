@@ -342,6 +342,28 @@ produce reasons, not guessed URLs. Unknown environment macros are **not** assume
 undefined, including in `%{?name}`. No Shell, Lua, parameterized macro or include
 is executed. Generated declarations, `%sourcelist`, and Sources inside subpackages are unsupported.
 
+## Verifying declared Source digests
+
+```sh
+ruyipack verify-sources --manifest package.toml --format json
+ruyipack verify-sources package.spec -D 'archive_version 2.0'
+```
+
+Verification downloads every resolvable remote Source, including those with a
+SHA-256. It never fills or replaces a checksum, creates a SPEC, or saves archives
+in the workspace. Results are `match`, `mismatch`, `missing`, `unresolved`, or
+`error`; local materials are `not-applicable`. Patch contents are outside this check.
+Missing declarations stay `missing` even when downloaded hashes are available;
+hexadecimal case does not affect comparison. Failed downloads do not suppress
+later Sources. Uncertain Source identities prevent enumerating the input rather
+than silently dropping a declaration.
+
+Exit 0 means every applicable Source matched; missing, mismatch, uncertainty or
+failure exits 1. JSON includes input identity, definitions, original expressions,
+separate `declared_sha256` and successful `download` evidence (SHA-256, URLs, byte
+count). A changed input fails verification; retained results describe the recorded
+input hash, not the new file. CLI errors exit 2 and may precede JSON.
+
 ## Computing or completing a Source digest
 
 ```sh
@@ -409,7 +431,7 @@ bare markers and literal HTTP(S) Source prefixes, not arbitrary macro expansion.
 Reporting commands use an `error` object with `code` and `message`.
 Unreadable/invalid-UTF-8 inputs report `valid: false`, `code: "input-read"`, and
 no fabricated input hash. Generation uses report version 3; `source-hash` uses
-version 2. Codes describe the failing boundary, not text matched from a message.
+version 2; `verify-sources` uses version 1. Codes describe the failing boundary, not text matched from a message.
 Edit JSON is compact; use `jq` to select fields or format it. Check reports already
 include the baseline, so a separate original `check` is unnecessary for comparison.
 Preparation (`scope: "edit-draft"`) returns absolute draft paths, not a validated

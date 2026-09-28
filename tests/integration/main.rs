@@ -18,3 +18,4 @@ mod output;
 mod source_hash;
 mod source_validation;
 mod support;
+mod verify_sources;

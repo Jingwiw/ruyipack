@@ -16,6 +16,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) struct Source {
     pub(crate) offset: usize,
+    pub(crate) expression: String,
+    pub(crate) digest: Result<Option<String>, String>,
     pub(crate) url: Result<String, String>,
 }
 
@@ -96,6 +98,8 @@ impl Sources<'_> {
                             .map_or(value, |reason| Err(reason.clone()));
                         let source = Source {
                             offset: item.data.start_byte,
+                            expression: expression.to_owned(),
+                            digest: self.digest(item.data.start_byte),
                             url,
                         };
                         let unresolved = source.url.as_ref().err().cloned();
@@ -248,6 +252,27 @@ impl Sources<'_> {
             }
         }
         Ok(())
+    }
+
+    fn digest(&self, offset: usize) -> Result<Option<String>, String> {
+        let before = &self.spec.source[..offset];
+        let previous = before
+            .strip_suffix('\n')
+            .unwrap_or(before)
+            .rsplit('\n')
+            .next()
+            .unwrap_or("")
+            .trim_end_matches('\r');
+        let profile = crate::profile::load();
+        if let Some(hash) = previous.strip_prefix(&profile.remote_asset_prefix) {
+            Ok(Some(hash.trim().to_owned()))
+        } else if previous.starts_with(&profile.remote_asset_bare)
+            && previous != profile.remote_asset_bare
+        {
+            Err("unsupported RemoteAsset digest declaration".into())
+        } else {
+            Ok(None)
+        }
     }
 }
 

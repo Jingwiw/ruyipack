@@ -40,7 +40,7 @@ regenerating. No filename heuristic chooses an authority or synchronizes files.
 | `check` | Findings and explicit incomplete reasons | `check`, `gen`, and `edit` reports |
 | `profile::buildsystems` | Embedded system names, requirements, stage guidance and identity | `init`, manifest validation, generation reports and RPK004 |
 | `spec::sources` | Ordered Source identities, original expressions, declared digests and static values | Hash calculation and read-only verification; selected URL validation |
-| `source` | Resolved URLs and digests of actual downloads | `gen` fills missing manifest digests in memory; `edit` fills selected candidate digests; `source-hash` calculates without writing |
+| `source` | Resolved URLs and digests of actual downloads | `gen` fills missing manifest digests in memory; `edit` fills selected candidate digests; `source-hash` calculates and `verify-sources` compares without writing |
 | `edit::drafts` | Draft storage layout and output protection | Saved and interactive editing |
 
 Read `generate.rs` and `edit.rs` for orchestration, then `render.rs` and

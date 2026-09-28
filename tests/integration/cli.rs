@@ -534,6 +534,7 @@ fn input_failures_share_machine_error_shape_across_commands() {
             vec!["inspect"],
             vec!["edit", "--set", "package.version=2", "--check"],
             vec!["source-hash"],
+            vec!["verify-sources"],
             vec!["gen", "demo", "--check", "--manifest"],
         ] {
             let output = command()

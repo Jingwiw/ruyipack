@@ -50,6 +50,19 @@ ruyipack gen example
 预览和 `--check` 也默认补全；每次运行都会重新下载作者 TOML 中仍缺摘要的 Source。
 若要固定后续生成结果，将审阅后的摘要填回 TOML；已有摘要不会被自动刷新。
 
+## 只读复验源码
+
+```sh
+ruyipack verify-sources --manifest example.toml --format json
+# 已有 SPEC：无需安装 RPM 或 curl
+ruyipack verify-sources example.spec
+```
+
+它重新下载全部远程 Source，包括已有摘要的项，分别报告匹配、不匹配、缺失或失败，
+绝不补写或替换声明；本地材料不参与。全部适用项匹配才退出 0，否则退出 1。
+发现不匹配先调查来源，不要直接重算覆盖。无法静态确定的宏会报告具体原因，
+不会执行 Shell、Lua 或退回外部 RPM；必要时用 `-D 'archive_version 2.0'` 提供明确事实。
+
 ## 修改已有包
 
 ```sh
@@ -70,7 +83,7 @@ ruyipack edit example.spec --set package.version=2.0 --format json
 
 ## check 通过后还要做什么？
 
-- 复核源码摘要和来源；摘要匹配不代表来源可信。
+- 用 `verify-sources` 复验已有摘要，并核对来源；摘要匹配不代表来源可信。
 - 核对补丁是否适用，以及声明许可证是否符合上游实际内容。
 - 在目标 openRuyi 环境验证 RPM 宏、依赖、构建、测试和产物文件归属。
 - 最后审阅差异并提交；静态 pass 不是无人值守发布许可。

@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 use crate::{
     edit, init,
     output_cli::{self, ReportFormat},
-    source_hash,
+    source_hash, verify_sources,
 };
 
 #[derive(Parser)]
@@ -32,6 +32,8 @@ pub(crate) enum Command {
     Edit(edit::Options),
     /// Resolves a Source statically and reports the SHA-256 of its downloaded bytes.
     SourceHash(source_hash::Options),
+    /// Downloads remote Sources and compares declared digests without changing input files.
+    VerifySources(verify_sources::Options),
     /// Checks selected static package metadata and build requirements.
     Check {
         /// RPM SPEC file to check.
