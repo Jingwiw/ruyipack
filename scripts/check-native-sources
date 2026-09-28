@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import pathlib
+import signal
 import subprocess
 import sys
 import tarfile
@@ -25,16 +26,24 @@ os.environ["LC_ALL"] = "C"
 
 def run_checked(command, stage="Native result not accepted", allow_stderr=False):
     try:
-        result = subprocess.run(command, capture_output=True, text=True)
+        # RPM macros may spawn children; close the whole process group on timeout.
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, start_new_session=True) as process:
+            try:
+                stdout, stderr = process.communicate(timeout=120)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                stdout, stderr = process.communicate()
+                raise SystemExit(f"{stage}: timed out after 120 seconds: {command!r}\n{stdout}{stderr}")
     except OSError as error:
         raise SystemExit(f"{stage}: {error}") from error
     # RPM can report errors on stderr with exit 0; an exit status alone is not evidence.
-    if result.returncode or (result.stderr.strip() and not allow_stderr):
-        raise SystemExit(f"{stage}: {command!r}\nexit={result.returncode}\n{result.stdout}{result.stderr}")
+    if process.returncode or (stderr.strip() and not allow_stderr):
+        raise SystemExit(f"{stage}: {command!r}\nexit={process.returncode}\n{stdout}{stderr}")
     if allow_stderr:
-        print(result.stdout, end="")
-        print(result.stderr, end="", file=sys.stderr)
-    return result.stdout
+        print(stdout, end="")
+        print(stderr, end="", file=sys.stderr)
+    return stdout
 
 root = pathlib.Path(__file__).resolve().parent.parent
 packages = run_checked(["rpm", "-q", "rpm", "rpm-build", "rpm-config-openruyi", *args.require_package], "Environment not ready")
