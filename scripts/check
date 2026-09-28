@@ -21,7 +21,7 @@ command -v cargo-deny >/dev/null 2>&1 || {
 }
 
 cargo fmt --all -- --check
-cargo test --locked
+cargo test --locked -- --format terse
 cargo clippy --locked --all-targets -- -D warnings
 reuse lint
 cargo deny --locked check

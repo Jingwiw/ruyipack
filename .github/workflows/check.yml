@@ -48,7 +48,7 @@ jobs:
       - name: Test on latest stable
         run: |
           rustc --version --verbose
-          cargo test --locked
+          cargo test --locked -- --format terse
 
   native:
     runs-on: ubuntu-24.04
