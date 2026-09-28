@@ -32,7 +32,7 @@ pub(crate) struct EditError {
     path: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     selected_fields: Vec<String>,
-    #[serde(skip)]
+    #[serde(flatten, serialize_with = "publication_details")]
     #[source]
     publication: Option<Box<crate::file_output::OutputError>>,
 }
@@ -95,4 +95,50 @@ impl From<&str> for EditError {
     fn from(message: &str) -> Self {
         Self::from(message.to_owned())
     }
+}
+
+// Derive machine details from the same error retained for recovery decisions.
+fn publication_details<S: serde::Serializer>(
+    error: &Option<Box<crate::file_output::OutputError>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use crate::file_output::OutputError as E;
+    use serde_json::json;
+    let Some(mut error) = error.as_deref() else {
+        return json!({}).serialize(serializer);
+    };
+    while let E::Partial { source, .. } = error {
+        error = source;
+    }
+    let (reason, path, io) = match error {
+        E::Read { path, source } => ("read-failed", Some(path), Some(source)),
+        E::Write { path, source } => ("write-failed", Some(path), Some(source)),
+        E::Stdout(source) => ("stdout-failed", None, Some(source)),
+        E::Stderr(source) => ("stderr-failed", None, Some(source)),
+        E::Selection(_) => ("selection-failed", None, None),
+        E::Changed(path) => ("target-changed", Some(path), None),
+        E::SourceChanged(path) => ("source-changed", Some(path), None),
+        E::EditLayout(_) => ("invalid-layout", None, None),
+        E::DiffPath(path) => ("invalid-diff-path", Some(path), None),
+        E::DiffEncoding { path, .. } => ("invalid-diff-encoding", Some(path), None),
+        E::Partial { .. } => unreachable!("unwrapped above"),
+    };
+    let mut details = json!({"stage": "publication", "reason": reason});
+    if let Some(path) = path {
+        details["path"] = json!(path);
+    }
+    if let Some(io) = io {
+        use std::io::ErrorKind;
+        details["io_kind"] = json!(match io.kind() {
+            ErrorKind::PermissionDenied => "permission-denied",
+            ErrorKind::NotFound => "not-found",
+            ErrorKind::AlreadyExists => "already-exists",
+            ErrorKind::IsADirectory => "is-a-directory",
+            ErrorKind::NotADirectory => "not-a-directory",
+            ErrorKind::ReadOnlyFilesystem => "read-only-filesystem",
+            ErrorKind::StorageFull => "storage-full",
+            _ => "other",
+        });
+    }
+    details.serialize(serializer)
 }

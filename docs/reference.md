@@ -469,3 +469,7 @@ process group on timeout. It is not a runtime fallback for Source operations.
 A safely constructed `edit --diff` remains inspectable when static checks fail;
 its exit status is still 1. `--stdout` and publication still require those checks
 to pass. A construction or source-freshness failure produces no diff.
+
+Publication errors retain their code/message and add `stage`, `reason`, and a
+path when known; I/O failures also carry `io_kind`. On partial publication,
+`written` is authoritative: a failure is not a rollback.

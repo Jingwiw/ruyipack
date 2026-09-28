@@ -195,6 +195,27 @@ fn json_reports_cover_check_prepare_apply_retry_and_partial_failure() {
         }
     }
     unchanged(directory.path());
+    fs::create_dir(directory.path().join("directory-target")).unwrap();
+    let output = command(directory.path())
+        .args([
+            "ed.spec",
+            "--set",
+            "package.version=2",
+            "--output",
+            "directory-target",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(receipt["error"]["code"], "operation-failed");
+    assert_eq!(receipt["error"]["stage"], "publication");
+    assert_eq!(receipt["error"]["reason"], "read-failed");
+    assert_eq!(receipt["error"]["io_kind"], "is-a-directory");
+    assert!(receipt["error"]["path"].is_string());
+    unchanged(directory.path());
     let prepared = command(directory.path())
         .args([
             "ed.spec",
@@ -259,6 +280,17 @@ fn json_reports_cover_check_prepare_apply_retry_and_partial_failure() {
         let written = fs::canonicalize(directory.path().join("ed.spec")).unwrap();
         assert_eq!(receipt["written"], serde_json::json!([written]));
         assert_eq!(receipt["valid"], false);
+        assert_eq!(receipt["error"]["code"], "operation-failed");
+        assert_eq!(receipt["error"]["stage"], "publication");
+        assert_eq!(receipt["error"]["reason"], "write-failed");
+        assert_eq!(receipt["error"]["io_kind"], "permission-denied");
+        assert_eq!(
+            receipt["error"]["path"],
+            fs::canonicalize(locked.join("second.spec"))
+                .unwrap()
+                .to_str()
+                .unwrap()
+        );
         assert_file(written, &version_source("3"));
         assert_file(locked.join("second.spec"), SPEC);
     }
