@@ -35,6 +35,8 @@ pub(crate) struct EditError {
     #[serde(flatten, serialize_with = "publication_details")]
     #[source]
     publication: Option<Box<crate::file_output::OutputError>>,
+    #[serde(flatten, serialize_with = "source_details")]
+    source_hash: Option<Box<crate::source::Error>>,
 }
 
 impl EditError {
@@ -45,7 +47,14 @@ impl EditError {
             path: Some(path.display().to_string()),
             selected_fields: fields.to_vec(),
             publication: None,
+            source_hash: None,
         }
+    }
+
+    pub(super) fn source_hash(error: crate::source::Error, path: &Path, fields: &[String]) -> Self {
+        let mut result = Self::at(Kind::SourceHashFailed, path, fields, error.to_string());
+        result.source_hash = Some(Box::new(error));
+        result
     }
 
     pub(super) fn publication(error: crate::file_output::OutputError) -> Self {
@@ -88,6 +97,7 @@ impl From<String> for EditError {
             path: None,
             selected_fields: Vec::new(),
             publication: None,
+            source_hash: None,
         }
     }
 }
@@ -141,4 +151,19 @@ fn publication_details<S: serde::Serializer>(
         });
     }
     details.serialize(serializer)
+}
+
+fn source_details<S: serde::Serializer>(
+    error: &Option<Box<crate::source::Error>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let mut value = error.as_ref().map_or_else(
+        || serde_json::json!({}),
+        |error| serde_json::to_value(error).expect("serializable source error"),
+    );
+    value
+        .as_object_mut()
+        .expect("error object")
+        .remove("message");
+    value.serialize(serializer)
 }

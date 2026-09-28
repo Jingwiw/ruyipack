@@ -115,11 +115,11 @@ pub(crate) fn calculate(
     contents: &str,
     numbers: &[u32],
     defines: &[String],
-) -> Result<SourceHashes, String> {
+) -> Result<SourceHashes, Error> {
     let parsed = spec::ParsedSpec::parse(contents);
-    let resolved = spec::sources::resolve(&parsed, defines)?;
+    let resolved = spec::sources::resolve(&parsed, defines).map_err(Error::resolution)?;
     if let Some(reason) = resolved.incomplete {
-        return Err(reason);
+        return Err(Error::resolution(reason));
     }
     let sources = resolved.sources;
     let urls = numbers
@@ -127,20 +127,22 @@ pub(crate) fn calculate(
         .map(|number| {
             let source = sources
                 .get(number)
-                .ok_or_else(|| format!("Source{number}: declaration unavailable"))?;
+                .ok_or_else(|| Error::resolution("declaration unavailable").at(*number))?;
             let url = source
                 .url
                 .as_ref()
-                .map_err(|e| format!("Source{number}: {e}"))?;
-            RemoteSource::parse(url).map(|url| (*number, url))
+                .map_err(|e| Error::resolution(e).at(*number))?;
+            RemoteSource::parse(url)
+                .map(|url| (*number, url))
+                .map_err(|error| error.at(*number))
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Result<Vec<_>, Error>>()?;
     let sources = urls
         .into_iter()
         .map(|(number, url)| {
             url.download()
                 .map(|download| (number, download))
-                .map_err(|e| format!("Source{number}: {e}"))
+                .map_err(|error| error.at(number))
         })
         .collect::<Result<_, _>>()?;
     Ok(SourceHashes {
@@ -158,15 +160,15 @@ pub(crate) struct RemoteSource<'url> {
 }
 
 impl<'url> RemoteSource<'url> {
-    pub(crate) fn parse(original: &'url str) -> Result<Self, String> {
+    pub(crate) fn parse(original: &'url str) -> Result<Self, Error> {
         Ok(Self {
             original,
-            url: validate_authoring_url(original)?,
+            url: validate_authoring_url(original).map_err(|e| Error::new(Reason::UrlPolicy, e))?,
         })
     }
 
     /// Hash archive bytes directly. No HTTP content decoding or temporary archive.
-    pub(crate) fn download(self) -> Result<Download, String> {
+    pub(crate) fn download(self) -> Result<Download, Error> {
         static CLIENT: LazyLock<Result<ureq::Agent, String>> = LazyLock::new(|| {
             let mut tls = ureq::tls::TlsConfig::builder();
             // Respect an explicit CA bundle without silently disabling TLS validation.
@@ -192,15 +194,15 @@ impl<'url> RemoteSource<'url> {
                 .build()
                 .into())
         });
-        let agent = CLIENT.as_ref().map_err(Clone::clone)?;
+        let agent = CLIENT.as_ref().map_err(|e| Error::new(Reason::Tls, e))?;
         self.download_with(agent, Duration::from_secs(300))
     }
 
-    fn download_with(self, agent: &ureq::Agent, budget: Duration) -> Result<Download, String> {
+    fn download_with(self, agent: &ureq::Agent, budget: Duration) -> Result<Download, Error> {
         // Retries, redirects and body reads spend the same per-source budget.
         let deadline = Instant::now() + budget;
-        let result = match self.attempt(agent, deadline) {
-            Err(error) if error.retryable && Instant::now() < deadline => {
+        match self.attempt(agent, deadline) {
+            Err(error) if error.reason.retryable() && Instant::now() < deadline => {
                 std::thread::sleep(
                     Duration::from_millis(100)
                         .min(deadline.saturating_duration_since(Instant::now())),
@@ -208,18 +210,17 @@ impl<'url> RemoteSource<'url> {
                 self.attempt(agent, deadline)
             }
             result => result,
-        };
-        result.map_err(|error| error.message)
+        }
     }
 
-    fn attempt(&self, agent: &ureq::Agent, deadline: Instant) -> Result<Download, DownloadError> {
+    fn attempt(&self, agent: &ureq::Agent, deadline: Instant) -> Result<Download, Error> {
         let mut url = self.url.clone();
         url.set_fragment(None);
         let mut redirects = 0;
         let mut response = loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err("download: total timeout".into());
+                return Err(Error::new(Reason::Timeout, "download: total timeout"));
             }
             let response = agent
                 .get(url.as_str())
@@ -227,23 +228,35 @@ impl<'url> RemoteSource<'url> {
                 .timeout_global(Some(remaining))
                 .build()
                 .call()
-                .map_err(DownloadError::request)?;
+                .map_err(Error::request)?;
             match response.status().as_u16() {
                 301 | 302 | 303 | 307 | 308 => {
                     if redirects == 10 {
-                        return Err("download: more than 10 redirects".into());
+                        return Err(Error::new(
+                            Reason::RedirectLimit,
+                            "download: more than 10 redirects",
+                        ));
                     }
                     let location = response
                         .headers()
                         .get("location")
                         .and_then(|value| value.to_str().ok())
-                        .ok_or("download: redirect has no valid Location")?;
-                    let next = url
-                        .join(location)
-                        .map_err(|_| "download: invalid redirect URL")?;
-                    let mut next = validate_authoring_url(next.as_str())?;
+                        .ok_or_else(|| {
+                            Error::new(
+                                Reason::InvalidRedirect,
+                                "download: redirect has no valid Location",
+                            )
+                        })?;
+                    let next = url.join(location).map_err(|_| {
+                        Error::new(Reason::InvalidRedirect, "download: invalid redirect URL")
+                    })?;
+                    let mut next = validate_authoring_url(next.as_str())
+                        .map_err(|e| Error::new(Reason::UrlPolicy, e))?;
                     if url.scheme() == "https" && next.scheme() != "https" {
-                        return Err("download: HTTPS redirect would downgrade to HTTP".into());
+                        return Err(Error::new(
+                            Reason::UrlPolicy,
+                            "download: HTTPS redirect would downgrade to HTTP",
+                        ));
                     }
                     next.set_fragment(None);
                     url = next;
@@ -251,11 +264,13 @@ impl<'url> RemoteSource<'url> {
                 }
                 200 => break response,
                 _ => {
-                    return Err(format!(
-                        "download: expected HTTP 200, received {}",
-                        response.status()
-                    )
-                    .into());
+                    return Err(Error::new(
+                        Reason::HttpStatus(response.status().as_u16()),
+                        format!(
+                            "download: expected HTTP 200, received {}",
+                            response.status()
+                        ),
+                    ));
                 }
             }
         };
@@ -266,11 +281,13 @@ impl<'url> RemoteSource<'url> {
         let mut buffer = [0_u8; 64 * 1024];
         loop {
             if Instant::now() >= deadline {
-                return Err("download body: total timeout".into());
+                return Err(Error::new(Reason::Timeout, "download body: total timeout"));
             }
-            let length = reader.read(&mut buffer).map_err(|e| DownloadError {
-                message: format!("download body: {e}"),
-                retryable: true,
+            let length = reader.read(&mut buffer).map_err(|e| {
+                Error::new(
+                    Reason::io(&e, Reason::BodyRead),
+                    format!("download body: {e}"),
+                )
             })?;
             if length == 0 {
                 break;
@@ -287,42 +304,118 @@ impl<'url> RemoteSource<'url> {
     }
 }
 
-/// Only transient transport/status failures may retry; policy and TLS failures may not.
-struct DownloadError {
+/// A download retry is not permission to repeat an entire editing or publication operation.
+#[derive(Debug, Serialize)]
+#[serde(tag = "reason", content = "http_status", rename_all = "kebab-case")]
+enum Reason {
+    Resolution,
+    InvalidDigest,
+    UrlPolicy,
+    Tls,
+    Timeout,
+    HttpStatus(u16),
+    BodyRead,
+    RedirectLimit,
+    InvalidRedirect,
+    Transport,
+    Request,
+}
+
+impl Reason {
+    // ureq can wrap both body timeouts and Rustls handshake failures in io::Error.
+    fn io(error: &std::io::Error, fallback: Self) -> Self {
+        let inner = error.get_ref();
+        if error.kind() == std::io::ErrorKind::TimedOut
+            || matches!(
+                inner.and_then(|e| e.downcast_ref::<ureq::Error>()),
+                Some(ureq::Error::Timeout(_))
+            )
+        {
+            Self::Timeout
+        } else if inner.is_some_and(|e| e.is::<rustls::Error>()) {
+            Self::Tls
+        } else {
+            fallback
+        }
+    }
+
+    fn retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::Transport
+                | Self::Timeout
+                | Self::BodyRead
+                | Self::HttpStatus(408 | 429 | 502 | 503 | 504)
+        )
+    }
+}
+
+#[derive(Debug, thiserror::Error, Serialize)]
+#[error("{message}")]
+pub(crate) struct Error {
     message: String,
-    retryable: bool,
+    #[serde(flatten, serialize_with = "reason_details")]
+    reason: Reason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_number: Option<u32>,
 }
 
-impl DownloadError {
+fn reason_details<S: serde::Serializer>(reason: &Reason, serializer: S) -> Result<S::Ok, S::Error> {
+    let mut value = serde_json::to_value(reason).expect("serializable failure reason");
+    value["stage"] = match reason {
+        Reason::Resolution => "source-resolution",
+        Reason::InvalidDigest | Reason::UrlPolicy => "source-validation",
+        _ => "download",
+    }
+    .into();
+    value["retryable"] = reason.retryable().into();
+    value.serialize(serializer)
+}
+
+impl Error {
+    fn new(reason: Reason, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            reason,
+            source_number: None,
+        }
+    }
+
+    pub(crate) fn resolution(message: impl Into<String>) -> Self {
+        Self::new(Reason::Resolution, message)
+    }
+
+    pub(crate) fn invalid_digest(message: impl Into<String>) -> Self {
+        Self::new(Reason::InvalidDigest, message)
+    }
+
+    fn at(mut self, number: u32) -> Self {
+        self.message = format!("Source{number}: {}", self.message);
+        self.source_number = Some(number);
+        self
+    }
+
+    pub(crate) fn report(&self, code: &str) -> serde_json::Value {
+        let mut value = serde_json::to_value(self).expect("serializable source error");
+        value["code"] = code.into();
+        value
+    }
+
     fn request(error: ureq::Error) -> Self {
-        let retryable = matches!(
-            error,
-            ureq::Error::Io(_)
-                | ureq::Error::Timeout(_)
-                | ureq::Error::HostNotFound
-                | ureq::Error::ConnectionFailed
-                | ureq::Error::BodyStalled
-                | ureq::Error::StatusCode(408 | 429 | 502 | 503 | 504)
-        );
-        Self {
-            message: format!("download: {error}"),
-            retryable,
-        }
-    }
-}
-
-impl From<String> for DownloadError {
-    fn from(message: String) -> Self {
-        Self {
-            message,
-            retryable: false,
-        }
-    }
-}
-
-impl From<&str> for DownloadError {
-    fn from(message: &str) -> Self {
-        message.to_owned().into()
+        let reason = match &error {
+            ureq::Error::StatusCode(status) => Reason::HttpStatus(*status),
+            ureq::Error::Timeout(_) => Reason::Timeout,
+            ureq::Error::Io(e) => Reason::io(e, Reason::Transport),
+            ureq::Error::HostNotFound
+            | ureq::Error::ConnectionFailed
+            | ureq::Error::BodyStalled => Reason::Transport,
+            ureq::Error::Tls(_)
+            | ureq::Error::Rustls(_)
+            | ureq::Error::Pem(_)
+            | ureq::Error::TlsRequired => Reason::Tls,
+            _ => Reason::Request,
+        };
+        Self::new(reason, format!("download: {error}"))
     }
 }
 
@@ -341,6 +434,7 @@ mod tests {
         for headers in [false, true] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let url = format!("http://{}/archive", listener.local_addr().unwrap());
+            let (release, hold) = std::sync::mpsc::channel();
             let server = thread::spawn(move || {
                 let (mut socket, _) = listener.accept().unwrap();
                 socket
@@ -360,25 +454,24 @@ mod tests {
                         .unwrap();
                     socket.flush().unwrap();
                 }
-                thread::sleep(Duration::from_millis(700));
+                // Hold the socket until the client times out, not for a timing-sensitive sleep.
+                // The fallback makes a broken timeout fail rather than hang the test suite.
+                hold.recv_timeout(Duration::from_secs(10)).unwrap();
             });
-            let start = Instant::now();
             let result = RemoteSource::parse(&url)
                 .unwrap()
                 .download_with(&agent, Duration::from_millis(100));
-            let elapsed = start.elapsed();
+            release
+                .send(())
+                .expect("client must finish before the peer closes");
+            server.join().unwrap();
             assert!(
                 result
                     .as_ref()
                     .err()
-                    .is_some_and(|error| error.to_lowercase().contains("timeout")),
+                    .is_some_and(|error| matches!(error.reason, Reason::Timeout)),
                 "{result:?}"
             );
-            assert!(
-                elapsed < Duration::from_millis(600),
-                "request did not stop before the peer: {elapsed:?}"
-            );
-            server.join().unwrap();
         }
     }
 }

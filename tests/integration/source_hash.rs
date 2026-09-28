@@ -78,14 +78,14 @@ fn streaming_hashes_validate_tls_redirects_and_complete_response_bodies() {
     assert_eq!(report["effective_url"], format!("{}/asset", server.url));
     assert_eq!(*server.calls.lock().unwrap(), ["/redirect", "/asset"]);
     assert_file(&input, &source);
-    for (path, reason) in [
-        ("fail", "404"),
-        ("busy", "503"),
-        ("truncated", "download body"),
-        ("partial", "206"),
-        ("loop", "redirects"),
-        ("bad-redirect", "credentials"),
-        ("downgrade", "downgrade"),
+    for (path, message, reason, retryable, status) in [
+        ("fail", "404", "http-status", false, Some(404)),
+        ("busy", "503", "http-status", true, Some(503)),
+        ("truncated", "download body", "body-read", true, None),
+        ("partial", "206", "http-status", false, Some(206)),
+        ("loop", "redirects", "redirect-limit", false, None),
+        ("bad-redirect", "credentials", "url-policy", false, None),
+        ("downgrade", "downgrade", "url-policy", false, None),
     ] {
         fs::write(
             &input,
@@ -100,9 +100,13 @@ fn streaming_hashes_validate_tls_redirects_and_complete_response_bodies() {
             report["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains(reason),
+                .contains(message),
             "{report}"
         );
+        assert_eq!(report["error"]["reason"], reason);
+        assert_eq!(report["error"]["retryable"], retryable);
+        assert_eq!(report["error"]["http_status"], serde_json::json!(status));
+        assert_eq!(report["error"]["source_number"], 4);
         assert!(!report.to_string().contains("secret"));
     }
     let calls = server.calls.lock().unwrap();
@@ -145,6 +149,10 @@ fn streaming_hashes_validate_tls_redirects_and_complete_response_bodies() {
         .output()
         .unwrap();
     assert_eq!(rejected.status.code(), Some(1)); // Never silently accept an untrusted TLS peer.
+    let error = &json_line(&rejected)["error"];
+    assert_eq!(error["stage"], "download");
+    assert_eq!(error["reason"], "tls");
+    assert_eq!(error["retryable"], false);
 }
 
 #[test]
@@ -215,13 +223,9 @@ fn generation_completes_only_missing_hashes_and_never_publishes_stale_input() {
     let failed = run(&["--check", "--format", "json"]);
     success(&failed);
     let report = json_line(&failed);
-    assert!(
-        report["authoring_warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|w| w.as_str().unwrap().contains("404"))
-    );
+    assert_eq!(report["source_hash_failures"]["0"]["reason"], "http-status");
+    assert_eq!(report["source_hash_failures"]["0"]["http_status"], 404);
+    assert_eq!(report["valid"], true); // A failed best-effort hash remains a warning.
     assert!(report["source_hashes"]["0"].is_null());
     assert_file(&input, &original);
     for mode_name in ["drift", "drift-fail"] {
@@ -296,7 +300,14 @@ fn edit_hashes_the_pending_candidate_and_keeps_drafts_and_stale_guards() {
     success(&run(&[&args[..], &["--diff"]].concat()));
     assert_file(&input, &source);
     *mode.lock().unwrap() = "fail";
-    assert_eq!(run(&args).status.code(), Some(1));
+    let output = run(&[&args[..], &["--check", "--format", "json"]].concat());
+    assert_eq!(output.status.code(), Some(1));
+    let error = &json_line(&output)["files"][0]["error"];
+    assert_eq!(error["code"], "source-hash-failed");
+    assert_eq!(error["stage"], "download");
+    assert_eq!(error["reason"], "http-status");
+    assert_eq!(error["http_status"], 404);
+    assert_eq!(error["retryable"], false);
     assert_file(&input, &source);
     *mode.lock().unwrap() = "ok";
     success(&run(&args));

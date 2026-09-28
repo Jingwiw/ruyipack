@@ -89,6 +89,10 @@ fn verification_distinguishes_missing_mismatch_and_uncertainty_without_writing()
     assert_eq!(report["sources"]["1"]["download"]["sha256"], hash);
     assert_eq!(report["sources"]["2"]["download"]["sha256"], hash);
     assert!(report["sources"]["4"]["download"].is_null());
+    assert_eq!(report["sources"]["4"]["reason"], "http-status");
+    assert_eq!(report["sources"]["4"]["http_status"], 404);
+    assert_eq!(report["sources"]["6"]["reason"], "resolution");
+    assert_eq!(report["sources"]["6"]["retryable"], false);
     assert_file(&input, &source);
     assert_eq!(
         *server.calls.lock().unwrap(),

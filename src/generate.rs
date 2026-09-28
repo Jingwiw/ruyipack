@@ -39,6 +39,7 @@ pub(crate) fn run(
 
     let mut manifest_digest = None;
     let mut authoring_warnings = Vec::new();
+    let mut source_hash_failures = BTreeMap::new();
     let mut downloads = (!offline).then(BTreeMap::new);
     let rendered = (|| {
         // NAME selects a package; it never acts as an implicit manifest path.
@@ -93,7 +94,8 @@ pub(crate) fn run(
                             ("version", &package.version),
                             ("url", &package.url),
                         ],
-                    )?;
+                    )
+                    .map_err(source::Error::resolution)?;
                     source::RemoteSource::parse(&url)?.download()
                 })();
                 match downloaded {
@@ -101,9 +103,9 @@ pub(crate) fn run(
                         *sha256 = Some(downloaded.sha256.clone());
                         downloads.insert(*number, downloaded);
                     }
-                    Err(reason) => authoring_warnings.push(format!(
-                        "sources.{number}.sha256: not calculated: {reason}; left missing"
-                    )),
+                    Err(error) => {
+                        source_hash_failures.insert(*number, error);
+                    }
                 }
             }
             // Failed downloads can race with edits too; never publish stale input.
@@ -134,6 +136,7 @@ pub(crate) fn run(
             "report_subject": candidate.map(|_| "candidate"),
             "report": candidate.map(|r| r.report.structured(&target)),
             "source_hashes": downloads,
+            "source_hash_failures": source_hash_failures,
             "authoring_warnings": authoring_warnings,
             "error": rendered.as_ref().err().map(|error| output_cli::failure(error.code(), error)),
         });
@@ -142,6 +145,13 @@ pub(crate) fn run(
         return Ok(valid);
     }
     let rendered = rendered?;
+    for (number, error) in &source_hash_failures {
+        writeln!(
+            io::stderr().lock(),
+            "warning: sources.{number}.sha256: not calculated: {error}; left missing"
+        )
+        .map_err(GenerateError::Stderr)?;
+    }
     for warning in &authoring_warnings {
         writeln!(io::stderr().lock(), "warning: {warning}").map_err(GenerateError::Stderr)?;
     }

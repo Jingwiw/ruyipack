@@ -35,19 +35,16 @@ pub(crate) struct Options {
 pub(crate) fn run(options: &Options) -> Result<bool, String> {
     let result = (|| {
         let path = fs::canonicalize(&options.spec)
-            .map_err(|e| ("input-read", format!("{}: {e}", options.spec.display())))?;
-        let original = utf8_file::read(&path).map_err(|e| ("input-read", e.to_string()))?;
+            .map_err(|e| HashError::Input(format!("{}: {e}", options.spec.display())))?;
+        let original = utf8_file::read(&path).map_err(|e| HashError::Input(e.to_string()))?;
         let result = source::calculate(&original, &[options.source_number], &options.defines)
-            .map_err(|e| ("source-hash-failed", e))?;
+            .map_err(HashError::Source)?;
         if !utf8_file::is_unchanged(&path, &original)
-            .map_err(|e| ("input-read", format!("{}: {e}", path.display())))?
+            .map_err(|e| HashError::Input(format!("{}: {e}", path.display())))?
         {
-            return Err((
-                "source-changed",
-                "SPEC changed during source hashing; rerun against the new input".into(),
-            ));
+            return Err(HashError::Changed);
         }
-        Ok::<_, (&str, String)>((result, path))
+        Ok::<_, HashError>((result, path))
     })();
     let valid = result.is_ok();
     let mut stdout = io::stdout().lock();
@@ -62,8 +59,13 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
                 report["defines"] = serde_json::json!(value.defines);
                 report
             }
-            Err((code, message)) => {
-                serde_json::json!({"input": {"display_path": display_path}, "error": output_cli::failure(code, message)})
+            Err(error) => {
+                let error = match &error {
+                    HashError::Source(error) => error.report("source-hash-failed"),
+                    HashError::Input(_) => output_cli::failure("input-read", error),
+                    HashError::Changed => output_cli::failure("source-changed", error),
+                };
+                serde_json::json!({"input": {"display_path": display_path}, "error": error})
             }
         };
         report["format_version"] = 2.into();
@@ -72,7 +74,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         serde_json::to_writer(&mut stdout, &report).map_err(|e| e.to_string())?;
         writeln!(stdout).map_err(|e| e.to_string())?;
     } else {
-        let (value, path) = result.map_err(|(_, message)| message)?;
+        let (value, path) = result.map_err(|error| error.to_string())?;
         let digest = &value.sources[&options.source_number].sha256;
         writeln!(stdout, "{digest}").map_err(|e| e.to_string())?;
         let display = path.to_string_lossy();
@@ -83,4 +85,14 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
             .map_err(|e| e.to_string())?;
     }
     Ok(valid)
+}
+
+#[derive(Debug, thiserror::Error)]
+enum HashError {
+    #[error("{0}")]
+    Input(String),
+    #[error(transparent)]
+    Source(source::Error),
+    #[error("SPEC changed during source hashing; rerun against the new input")]
+    Changed,
 }

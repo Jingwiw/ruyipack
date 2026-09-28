@@ -636,7 +636,7 @@ fn complete_hashes(
     document: &mut Table,
     options: &Options,
 ) -> Result<crate::source::SourceHashes, EditError> {
-    let complete = || -> Result<crate::source::SourceHashes, String> {
+    let prepare = || -> Result<String, String> {
         // A saved draft never silently acquires permission to edit another field.
         for number in &options.hash_sources {
             let field = format!("sources.{number}.sha256");
@@ -651,12 +651,10 @@ fn complete_hashes(
                 ));
             }
         }
-        let contents = item
-            .snapshot
-            .render_before_hashing(document, &options.defines)?;
-        crate::source::calculate(&contents, &options.hash_sources, &options.defines)
+        item.snapshot
+            .render_before_hashing(document, &options.defines)
     };
-    let hashes = complete().map_err(|e| {
+    let contents = prepare().map_err(|e| {
         EditError::at(
             Kind::SourceHashFailed,
             &item.path,
@@ -664,6 +662,8 @@ fn complete_hashes(
             e,
         )
     })?;
+    let hashes = crate::source::calculate(&contents, &options.hash_sources, &options.defines)
+        .map_err(|error| EditError::source_hash(error, &item.path, item.snapshot.selection()))?;
     item.ensure_unchanged()?;
     for (number, source) in &hashes.sources {
         *crate::spec::document::table::lookup_mut(document, &format!("sources.{number}.sha256"))

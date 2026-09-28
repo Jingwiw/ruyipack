@@ -473,3 +473,8 @@ to pass. A construction or source-freshness failure produces no diff.
 Publication errors retain their code/message and add `stage`, `reason`, and a
 path when known; I/O failures also carry `io_kind`. On partial publication,
 `written` is authoritative: a failure is not a rollback.
+
+Source failures carry `stage`, `reason`, `retryable`, and `http_status` when
+applicable. `retryable` concerns the download only, never the whole edit/apply.
+Generation exposes best-effort failures in `source_hash_failures`; missing
+SHA-256 remains a warning, not a publication policy.

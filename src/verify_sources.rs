@@ -56,12 +56,26 @@ struct Comparison {
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 enum Outcome {
-    Match { download: source::Download },
-    Mismatch { download: source::Download },
-    Missing { download: source::Download },
-    Error { message: String },
-    Unresolved { message: String },
-    NotApplicable { reason: &'static str },
+    Match {
+        download: source::Download,
+    },
+    Mismatch {
+        download: source::Download,
+    },
+    Missing {
+        download: source::Download,
+    },
+    Error {
+        #[serde(flatten)]
+        error: source::Error,
+    },
+    Unresolved {
+        #[serde(flatten)]
+        error: source::Error,
+    },
+    NotApplicable {
+        reason: &'static str,
+    },
 }
 
 impl Comparison {
@@ -72,15 +86,17 @@ impl Comparison {
     ) -> Self {
         let declared_sha256 = digest.as_ref().ok().cloned().flatten();
         let outcome = match url {
-            Err(message) => Outcome::Unresolved { message },
+            Err(message) => Outcome::Unresolved {
+                error: source::Error::resolution(message),
+            },
             Ok(url) if !url.contains(':') => Outcome::NotApplicable {
                 reason: "local material; remote verification only",
             },
             Ok(url) => {
                 let download = (|| {
-                    let digest = digest?;
+                    let digest = digest.map_err(source::Error::invalid_digest)?;
                     if let Some(hash) = &digest {
-                        source::validate_sha256(hash).map_err(str::to_owned)?;
+                        source::validate_sha256(hash).map_err(source::Error::invalid_digest)?;
                     }
                     source::RemoteSource::parse(&url)?.download()
                 })();
@@ -92,7 +108,7 @@ impl Comparison {
                         }
                         Some(_) => Outcome::Mismatch { download },
                     },
-                    Err(message) => Outcome::Error { message },
+                    Err(error) => Outcome::Error { error },
                 }
             }
         };
@@ -174,7 +190,9 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
             "format_version": 1, "scope": "remote-source-content", "valid": valid,
             "input": {"display_path": input.to_string_lossy(), "sha256": input_sha256},
             "defines": options.defines, "sources": sources,
-            "error": result.as_ref().err().map(|(code, message)| output_cli::failure(code, message)),
+            "error": result.as_ref().err().map(|(code, message)| if *code == "source-resolution" {
+                source::Error::resolution(message).report(code)
+            } else { output_cli::failure(code, message) }),
         });
         serde_json::to_writer(&mut stdout, &report).map_err(|e| e.to_string())?;
         writeln!(stdout).map_err(|e| e.to_string())?;
@@ -190,8 +208,8 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
                 Outcome::Missing { download } => {
                     format!("missing declared SHA-256; downloaded={}", download.sha256)
                 }
-                Outcome::Unresolved { message } => format!("unresolved: {message}"),
-                Outcome::Error { message } => format!("error: {message}"),
+                Outcome::Unresolved { error } => format!("unresolved: {error}"),
+                Outcome::Error { error } => format!("error: {error}"),
                 Outcome::NotApplicable { reason } => format!("not-applicable: {reason}"),
             };
             writeln!(stdout, "Source{number}: {detail}").map_err(|e| e.to_string())?;
