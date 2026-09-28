@@ -128,6 +128,7 @@ pub(crate) fn run(
         let valid = candidate.is_some_and(|r| r.report.is_success());
         let report = serde_json::json!({
             "format_version": 3,
+            "tool": crate::tool::identity(),
             "scope": "manifest-generation-static",
             "valid": valid,
             "manifest": {"display_path": manifest_path.to_string_lossy(), "sha256": manifest_digest},

@@ -85,6 +85,7 @@ pub(crate) fn run(mut options: Options) -> Result<bool, EditError> {
         Err(error) => json!({"files": [], "error": error}),
     };
     report["format_version"] = 2.into();
+    report["tool"] = serde_json::json!(crate::tool::identity());
     report["scope"] = if options.prepare.is_some() {
         "edit-draft"
     } else {

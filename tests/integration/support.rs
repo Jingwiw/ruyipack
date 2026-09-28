@@ -22,7 +22,7 @@ pub fn output_text(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).expect("command output is UTF-8")
 }
 
-/// Checks framing only; each caller owns status and stderr expectations.
+/// Checks report framing and producer identity; callers own status and stderr expectations.
 pub fn json_line(output: &Output) -> Value {
     let stdout = output_text(&output.stdout);
     assert!(stdout.ends_with('\n'), "stdout has no trailing newline");
@@ -31,7 +31,16 @@ pub fn json_line(output: &Output) -> Value {
         1,
         "stdout is not one JSON line: {stdout}"
     );
-    serde_json::from_slice(&output.stdout).expect("machine report is valid JSON")
+    let report: Value =
+        serde_json::from_slice(&output.stdout).expect("machine report is valid JSON");
+    let tool = report.get("tool").unwrap_or(&report["evidence"]["tool"]);
+    assert_eq!(tool["name"], "ruyipack", "{report}");
+    assert_eq!(tool["version"], env!("CARGO_PKG_VERSION"));
+    assert!(
+        tool.get("revision").is_some() && tool.get("dirty").is_some(),
+        "{tool}"
+    );
+    report
 }
 
 pub fn run(directory: &Path, args: &[&str]) -> Output {

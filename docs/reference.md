@@ -478,3 +478,13 @@ Source failures carry `stage`, `reason`, `retryable`, and `http_status` when
 applicable. `retryable` concerns the download only, never the whole edit/apply.
 Generation exposes best-effort failures in `source_hash_failures`; missing
 SHA-256 remains a warning, not a publication policy.
+
+JSON reports include the producer's name, version, full Git `revision`, and
+`dirty` (tracked changes only, including staged changes). Static check reports
+keep this under `evidence.tool`; other command envelopes use `tool`, including
+input failures. Unknown revision/dirty values are `null`, not a clean-tree claim.
+Git is consulted only at build time and is optional; an archive never borrows an
+ancestor repository's revision. Archive packagers can set
+`RUYIPACK_SOURCE_REVISION` to a full object ID and optionally
+`RUYIPACK_SOURCE_DIRTY=true|false` during the build. These are supplied provenance,
+not independently verified claims or proof of a reproducible build.

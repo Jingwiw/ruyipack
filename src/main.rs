@@ -23,6 +23,7 @@ mod source_hash;
 mod source_location;
 mod spec;
 mod spec_metadata;
+mod tool;
 mod utf8_file;
 mod verify_sources;
 

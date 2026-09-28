@@ -4,9 +4,12 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Exposes locked dependency identities to runtime reports.
+//! Exposes build and locked dependency identities to runtime reports.
 
 use std::{env, fs, path::PathBuf};
+
+#[path = "build/identity.rs"]
+mod identity;
 
 use toml::Value;
 
@@ -15,6 +18,7 @@ fn main() {
 
     let manifest_dir =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"));
+    identity::export(&manifest_dir);
     let lock_path = manifest_dir.join("Cargo.lock");
     let lock_source = fs::read_to_string(&lock_path).expect("read Cargo.lock");
     let lock: Value = toml::from_str(&lock_source).expect("parse Cargo.lock");

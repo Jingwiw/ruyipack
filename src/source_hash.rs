@@ -69,6 +69,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
             }
         };
         report["format_version"] = 2.into();
+        report["tool"] = serde_json::json!(crate::tool::identity());
         report["valid"] = valid.into();
         report["source"] = options.source_number.into();
         serde_json::to_writer(&mut stdout, &report).map_err(|e| e.to_string())?;

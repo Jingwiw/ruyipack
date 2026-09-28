@@ -187,6 +187,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
     let mut stdout = io::stdout().lock();
     if matches!(options.format, ReportFormat::Json) {
         let report = serde_json::json!({
+            "tool": crate::tool::identity(),
             "format_version": 1, "scope": "remote-source-content", "valid": valid,
             "input": {"display_path": input.to_string_lossy(), "sha256": input_sha256},
             "defines": options.defines, "sources": sources,

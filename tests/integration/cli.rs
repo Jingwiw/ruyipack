@@ -154,12 +154,23 @@ fn assert_machine_envelope(
         serde_json::json!(incomplete_reasons)
     );
 
+    assert_eq!(evidence["tool"]["name"], "ruyipack");
+    assert_eq!(evidence["tool"]["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(
-        evidence["tool"],
-        serde_json::json!({
-            "name": "ruyipack",
-            "version": env!("CARGO_PKG_VERSION"),
-        })
+        evidence["tool"]["revision"],
+        if env!("RUYIPACK_BUILD_REVISION").is_empty() {
+            serde_json::Value::Null
+        } else {
+            env!("RUYIPACK_BUILD_REVISION").into()
+        }
+    );
+    assert_eq!(
+        evidence["tool"]["dirty"],
+        match env!("RUYIPACK_BUILD_DIRTY") {
+            "true" => serde_json::json!(true),
+            "false" => serde_json::json!(false),
+            _ => serde_json::Value::Null,
+        }
     );
     assert_eq!(
         evidence["components"],

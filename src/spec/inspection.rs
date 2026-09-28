@@ -53,6 +53,7 @@ impl<'src> Inspection<'src> {
         let path = path.to_string_lossy();
         let report = InspectionReport {
             format_version: 1,
+            tool: crate::tool::identity(),
             input: InputIdentity {
                 display_path: &path,
                 sha256: crate::utf8_file::sha256(self.source),
@@ -94,6 +95,7 @@ fn retain_tag_items(items: &mut Vec<SpecItem<Span>>) {
 #[derive(Serialize)]
 struct InspectionReport<'a> {
     format_version: u32,
+    tool: crate::tool::Identity,
     input: InputIdentity<'a>,
     parser: ParserIdentity,
     preamble: &'a [SpecItem<Span>],

@@ -206,10 +206,7 @@ impl CheckReport {
                 stage: "spec-static",
                 status: self.status.name(),
                 incomplete_reasons: &self.incomplete_reasons,
-                tool: ToolIdentity {
-                    name: "ruyipack",
-                    version: env!("CARGO_PKG_VERSION"),
-                },
+                tool: crate::tool::identity(),
                 components: [
                     ComponentIdentity {
                         name: "rpm-spec",
@@ -268,15 +265,9 @@ struct Evidence<'a> {
     stage: &'static str,
     status: &'static str,
     incomplete_reasons: &'a [IncompleteReason],
-    tool: ToolIdentity,
+    tool: crate::tool::Identity,
     components: [ComponentIdentity; 2],
     selected_rules: &'a [SelectedRule],
-}
-
-#[derive(Serialize)]
-struct ToolIdentity {
-    name: &'static str,
-    version: &'static str,
 }
 
 #[derive(Serialize)]

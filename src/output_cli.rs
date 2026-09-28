@@ -47,6 +47,7 @@ pub(crate) fn read_source(
         Ok(source) => Ok(Some(source)),
         Err(error) if matches!(format, ReportFormat::Json) => {
             let report = serde_json::json!({"format_version": 2, "valid": false,
+                "tool": crate::tool::identity(),
                 "input": {"display_path": path.to_string_lossy()},
                 "error": failure("input-read", error)});
             let mut output = io::stdout().lock();
