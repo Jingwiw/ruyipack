@@ -15,18 +15,36 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      DENY_VERSION: 0.20.2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup toolchain install
-      - name: Install gate tools
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-bin: false
+      # Cache the tool, not advisory data or successful audit results.
+      - name: Cache cargo-deny
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cargo-deny
+          key: cargo-deny-${{ runner.os }}-${{ runner.arch }}-ubuntu-24.04-${{ env.DENY_VERSION }}-${{ hashFiles('rust-toolchain.toml') }}
+      - name: Install cargo-deny
+        run: |
+          tool="$RUNNER_TEMP/cargo-deny/bin/cargo-deny"
+          if [ "$("$tool" --version 2>/dev/null || true)" != "cargo-deny $DENY_VERSION" ]; then
+            cargo install cargo-deny --version "=$DENY_VERSION" --locked --force --root "$RUNNER_TEMP/cargo-deny"
+          fi
+          test "$("$tool" --version)" = "cargo-deny $DENY_VERSION"
+          echo "$RUNNER_TEMP/cargo-deny/bin" >> "$GITHUB_PATH"
+      - name: Install Python gate tools
         run: |
           python3 -m venv "$RUNNER_TEMP/reuse"
           "$RUNNER_TEMP/reuse/bin/python" -m pip install reuse==6.2.0 jsonschema==4.26.0
           echo "$RUNNER_TEMP/reuse/bin" >> "$GITHUB_PATH"
-          cargo install cargo-deny --version 0.20.2 --locked
       - name: Check source
         run: ./scripts/check
       - name: Test source installation
@@ -45,6 +63,9 @@ jobs:
           persist-credentials: false
       - name: Install latest stable Rust
         run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-bin: false
       - name: Test on latest stable
         run: |
           rustc --version --verbose
@@ -57,10 +78,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-bin: false
       - name: Build RuyiPack
-        run: |
-          rustup toolchain install
-          cargo build --locked
+        run: cargo build --locked
       - name: Prepare pinned openRuyi environment
         run: docker build --platform linux/amd64 -f tests/native/Dockerfile -t ruyipack-native .
       - name: Compare native RPM facts
