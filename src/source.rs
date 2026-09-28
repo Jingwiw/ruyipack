@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Source URL policy and explicit downloads, shared by generation and editing.
+//! Source URL policy and downloads, shared by generation and editing.
 //! Native resolution is opt-in; static expression checks never execute RPM macros.
 
 use crate::{spec, utf8_file};
@@ -149,7 +149,10 @@ pub(crate) fn calculate(
     } else {
         path.clone()
     };
-    let rpm_version = run_checked(Command::new("rpmspec").arg("--version"), "rpmspec")?;
+    let rpm_version = run_checked(
+        Command::new("rpmspec").arg("--version"),
+        "rpmspec (SPEC hashing requires RPM tools and target distribution macro packages; for a manifest, use gen without RPM)",
+    )?;
     let mut rpm = Command::new("rpmspec");
     rpm.current_dir(directory).env("LC_ALL", "C").arg("--parse");
     for define in defines {
@@ -207,7 +210,8 @@ impl<'url> RemoteSource<'url> {
         self.url.set_fragment(None);
         let asset = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
         // Like openRuyi's remoteassetify.py, reuse curl rather than another HTTP/TLS stack.
-        // Disable curlrc and constrain redirects too; never trust a partially downloaded file.
+        // Bound connection and total transfer time, including automatic generation.
+        // Disable curlrc and constrain redirects too; never trust a partial download.
         let effective_url = run_checked(
             Command::new("curl")
                 .args([
@@ -216,6 +220,10 @@ impl<'url> RemoteSource<'url> {
                     "--location",
                     "--silent",
                     "--show-error",
+                    "--connect-timeout",
+                    "10",
+                    "--max-time",
+                    "300",
                     "--proto",
                     "=http,https",
                     "--proto-redir",

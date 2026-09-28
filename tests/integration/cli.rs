@@ -739,7 +739,7 @@ fn cli_prints_standard_help_and_version() {
     for (name, options) in [
         ("inspect", &["--format"] as &[_]),
         ("check", &["--format"]),
-        ("gen", &["--format", "--check", "--hash-sources"]),
+        ("gen", &["--format", "--check", "--offline"]),
         ("edit", &["--set", "--field", "--check", "--hash-source"]),
     ] {
         let help = run([name, "--help"]);

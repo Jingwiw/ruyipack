@@ -81,23 +81,28 @@ path = "2000-fix-build.patch"
 Autotools default unpacking step. A missing digest produces a bare `#!RemoteAsset`
 and warning, not an error. This output does not meet openRuyi's SHA-256 requirement
 for HTTP(S) sources. An empty digest fails. Digests must be 64 hexadecimal digits;
-case is preserved. By default, archives are not downloaded or verified.
+case is preserved.
 
-After filling the scaffold, use `gen NAME --hash-sources` to download remote Sources
-whose `sha256` is absent and fill their digests in the generated SPEC. Existing
-digests are retained, not downloaded or verified; remove a digest from the TOML
-when you intend to recalculate it. This explicit option requires curl, not RPM.
-It uses the package fields below, without executing macros. Invalid manifests
-fail before downloading; download failures or changes to the input TOML during
-hashing prevent publication. The final SPEC is reparsed and checked as usual.
+After filling the scaffold, `gen NAME` automatically attempts to download remote
+Sources whose `sha256` is absent and fill the generated SPEC. Use `--offline` to
+skip downloads entirely. Existing digests are retained, not downloaded or
+verified; remove a digest from the TOML when you intend to recalculate it.
+Completion requires curl, not RPM, and uses the package fields below without
+executing macros. Missing tools, download failures and timeouts warn per Source
+with a reason; other Sources can still succeed and generation continues without
+inventing a digest. curl has a 10-second connection timeout and a 300-second total
+limit per Source. Invalid manifests and input changes during hashing remain hard
+errors that prevent publication. The final SPEC is reparsed and checked as usual.
 
 Completion changes the same in-memory manifest used by the renderer: it never
-writes the author TOML or an intermediate TOML. `--stdout` / `--diff` preview
-the completed SPEC; `--check --format json` writes no files and includes actual
-downloads in `source_hashes` (null when not requested, empty when none performed).
-These options still download when combined with `--hash-sources`. Repeating the
-command downloads again while hashes remain absent in the author TOML; no hidden
-cache or writeback pins them. A calculated digest is not source authentication.
+writes the author TOML or an intermediate TOML. `--stdout` / `--diff` preview the
+completed SPEC; `--check --format json` writes no files and includes successful
+downloads in `source_hashes` (null with `--offline`, otherwise possibly empty).
+Failure reasons are in `authoring_warnings`; a static pass does not mean every
+digest was calculated. Preview and check modes also download unless `--offline`
+is set. Repeating the command downloads again while hashes remain absent in the
+author TOML; no hidden cache or writeback pins them. A calculated digest is not
+source authentication.
 
 Source expressions may use `%{name}`, `%{version}`, and `%{url}` only when the
 referenced package values are unambiguous static literals. Expressions and

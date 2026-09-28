@@ -116,7 +116,7 @@ impl<'ast> Visit<'ast> for CheckVisitor<'_> {
                     })
                 } else if remote {
                     Some(
-                        "Source: no sha256; openRuyi requires SHA-256 for HTTP(S) sources. Calculate it with source-hash in the target RPM environment, then set sources.N.sha256 with edit; a passing static check is not source verification",
+                        "Source: no sha256; openRuyi requires SHA-256 for HTTP(S) sources. gen attempts missing digests automatically unless --offline; for an existing SPEC, use edit --hash-source N --trusted-spec in the target RPM environment. A passing static check is not source verification",
                     )
                 } else {
                     None

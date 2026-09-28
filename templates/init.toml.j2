@@ -63,11 +63,11 @@ description = '''
 [sources.0]
 # HTTPS archive URL; %{name}, %{version}, and %{url} refer to the package fields above.
 url = ""
-# Fill a known SHA-256 (64 hexadecimal digits), or let gen --hash-sources calculate it.
+# Fill a known SHA-256 (64 hexadecimal digits), or let gen calculate it automatically.
 # sha256 = ""
 # Add sources.1, sources.2, ... for additional remote archives.
 {% if full %}
-# gen is offline by default and warns without a digest; --hash-sources explicitly downloads missing ones.
+# gen tries missing digests automatically; failures warn with a reason. Use --offline to skip downloads.
 # A supplied empty/invalid digest fails. openRuyi requires SHA-256 for HTTP(S) sources.
 # https://openruyi.cn/docs/guide/packaging-guidelines/SourceURL/
 # Local materials use path instead of url; gen does not read or download them.

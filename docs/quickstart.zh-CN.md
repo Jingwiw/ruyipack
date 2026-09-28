@@ -9,7 +9,27 @@ SPDX-License-Identifier: MulanPSL-2.0
 # RuyiPack 快速入门
 
 这是需要维护者审阅的源码预览版。它帮助减少 SPEC 的填写和修改工作，
-不会自动推断全部依赖或构建软件；下载源码需显式请求。
+不会自动推断全部依赖或构建软件；生成时默认尝试补全缺失的源码摘要。
+
+## 安装
+
+Ubuntu 先安装证书、下载工具和 C 链接器，再按 [Rust 官方说明](https://rust-lang.org/tools/install/)
+安装 rustup：
+
+```sh
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl git build-essential
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o rustup-init.sh
+sh rustup-init.sh -y --profile minimal
+. "$HOME/.cargo/env"
+git clone https://github.com/Jingwiw/ruyipack.git
+cd ruyipack
+cargo install --path . --locked
+ruyipack --version
+```
+
+仓库固定所需工具链；首次编译需要联网取得它和锁定依赖。
+`$HOME/.cargo/bin` 必须在 PATH 中。普通使用者不需要安装开发门禁的 REUSE / cargo-deny。
 
 ## 从新包开始
 
@@ -18,15 +38,16 @@ SPDX-License-Identifier: MulanPSL-2.0
 ```sh
 ruyipack init example --build-system cmake
 # 编辑 example.toml：确认上游信息、源码、依赖、构建选项和文件列表。
-# 显式下载没有摘要的 Source，补入 SHA-256；已有摘要保持原值。
-ruyipack gen example --hash-sources --stdout
-ruyipack gen example --hash-sources
+# 自动尝试下载没有摘要的 Source；已有摘要保持原值。
+ruyipack gen example --stdout
+ruyipack gen example
 ```
 
 脚手架故意保留未知必填项，未填写时生成失败且不写 SPEC。
 本地包名检查没有发现冲突，不代表上游不存在同名包。
-`gen` 只输出 SPEC，不改作者 TOML，也不落盘中间 TOML。不加 `--hash-sources`
-时保持离线，缺摘要仅警告；每次显式补全都会重新下载仍缺摘要的 Source。
+`gen` 只输出 SPEC，不改作者 TOML，也不落盘中间 TOML。缺工具、下载失败或超时
+会逐项警告原因，仍生成缺摘要的 SPEC；使用 `--offline` 完全禁止下载。
+预览和 `--check` 也默认补全；每次运行都会重新下载作者 TOML 中仍缺摘要的 Source。
 若要固定后续生成结果，将审阅后的摘要填回 TOML；已有摘要不会被自动刷新。
 
 ## 修改已有包
@@ -49,7 +70,7 @@ ruyipack edit example.spec --set package.version=2.0 --format json
 
 ## check 通过后还要做什么？
 
-- 核对源代码来源、实际下载内容和摘要；只在显式请求时计算摘要，计算不代表来源可信。
+- 核对源代码来源、实际下载内容和摘要；已有摘要不自动复验，计算不代表来源可信。
 - 核对补丁是否适用，以及声明许可证是否符合上游实际内容。
 - 在目标 openRuyi 环境验证 RPM 宏、依赖、构建、测试和产物文件归属。
 - 最后审阅差异并提交；静态 pass 不是无人值守发布许可。

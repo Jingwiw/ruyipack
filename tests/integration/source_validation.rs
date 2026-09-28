@@ -36,7 +36,7 @@ fn generated_sources_are_viewable_and_round_trip_without_changing_a_byte() {
     ] {
         let directory = tempfile::tempdir().unwrap();
         fs::write(directory.path().join("ed.toml"), MANIFEST.replace(URL, url)).unwrap();
-        let generated = run(directory.path(), &["gen", "ed", "--stdout"]);
+        let generated = run(directory.path(), &["gen", "ed", "--offline", "--stdout"]);
         quiet_success(&generated);
         assert_eq!(generated.stdout, SPEC.replace(URL, url).as_bytes());
         fs::write(directory.path().join("ed.spec"), &generated.stdout).unwrap();
@@ -165,7 +165,7 @@ fn generated_bare_sources_remain_editable_without_inventing_a_digest() {
     let directory = tempfile::tempdir().unwrap();
     let manifest = MANIFEST.replace(&format!("sha256 = \"{HASH}\"\n"), "");
     fs::write(directory.path().join("ed.toml"), manifest).unwrap();
-    let generated = run(directory.path(), &["gen", "ed", "--stdout"]);
+    let generated = run(directory.path(), &["gen", "ed", "--offline", "--stdout"]);
     assert!(generated.status.success(), "{generated:?}");
     assert!(String::from_utf8_lossy(&generated.stderr).contains("no sha256"));
     assert!(String::from_utf8_lossy(&generated.stderr).contains("openRuyi requires SHA-256"));
@@ -312,7 +312,7 @@ fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
             MANIFEST.replace(HASH, &digest),
         )
         .unwrap();
-        let generated = run(directory.path(), &["gen", "ed", "--stdout"]);
+        let generated = run(directory.path(), &["gen", "ed", "--offline", "--stdout"]);
         quiet_success(&generated);
         assert_eq!(generated.stdout, SPEC.replace(HASH, &digest).as_bytes());
         fs::write(directory.path().join("ed.spec"), &generated.stdout).unwrap();
@@ -484,7 +484,7 @@ fn remote_asset_digests_stay_bound_to_the_adjacent_source_identity() {
         "{MANIFEST}\n[sources.2]\nurl = \"https://example.org/second.tar.lz\"\nsha256 = \"{digest}\"\n"
     );
     fs::write(directory.path().join("ed.toml"), manifest).unwrap();
-    let generated = run(directory.path(), &["gen", "ed", "--stdout"]);
+    let generated = run(directory.path(), &["gen", "ed", "--offline", "--stdout"]);
     quiet_success(&generated);
     fs::write(directory.path().join("ed.spec"), &generated.stdout).unwrap();
     let view = run(directory.path(), &["edit", "ed.spec", "--all", "--view"]);

@@ -12,7 +12,8 @@ Write, check, and edit openRuyi SPEC files without rewriting unrelated content.
 
 This is an early **source preview** for maintainer-reviewed work. It generates
 SPECs from TOML and edits supported fields in existing SPECs; it does not discover
-complete dependencies or build packages. Source downloads are explicit. CLI, manifest, and
+complete dependencies or build packages. Generation downloads Sources with missing digests
+unless `--offline` is set. CLI, manifest, and
 report formats may change; platform support is experimental.
 
 ## Install
@@ -26,7 +27,8 @@ ruyipack --version
 ```
 
 Put `$CARGO_HOME/bin` (normally `$HOME/.cargo/bin`) on `PATH`. Keep `Cargo.lock`
-with source distributions.
+with source distributions. For Ubuntu prerequisites and Rust setup, see the
+[installation walkthrough](docs/quickstart.zh-CN.md#安装).
 
 ## Try it
 
@@ -60,8 +62,9 @@ openRuyi environment. A static `pass` is not a successful package build.
 | `edit FILE.spec --field package.version` | Edit selected fields through TOML | SPEC is authoritative; ambiguous fields are refused, unselected bytes preserved |
 
 Use `ruyipack COMMAND --help` for flags. Start a new package with `init`, complete
-its manifest, then run `gen --hash-sources` to fill missing digests in the SPEC
-(explicit downloads; the TOML is unchanged). Plain `gen` stays offline.
+its manifest, then run `gen` to fill missing digests in the SPEC automatically.
+Download failures warn with a reason and leave the digest missing; `--offline`
+skips downloads. Existing digests and the TOML are unchanged.
 Existing complex SPECs are best edited with `--field`
 or `--set`; full-view editing only supports a limited subset.
 

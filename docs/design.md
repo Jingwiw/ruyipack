@@ -16,7 +16,7 @@ workspace database, execution framework, or a persistent package-wide mode to do
 - `gen` reads the selected manifest and embedded profile/build defaults. The SPEC
   is derived output. Existing output is only consulted for publication conflicts
   or a requested diff, never merged back into the manifest.
-  Explicit `--hash-sources` fills missing digests in that same in-memory manifest
+  Automatic Source downloads fill missing digests in that same in-memory manifest
   before final rendering, without rewriting the input TOML.
   `init` creates an offline authoring scaffold.
 - `edit` reads the selected SPEC and replaces supported field ranges. It does not

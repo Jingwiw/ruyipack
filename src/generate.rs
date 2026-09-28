@@ -23,7 +23,7 @@ use crate::{
 pub(crate) fn run(
     requested_name: &str,
     manifest_path: Option<&Path>,
-    hash_sources: bool,
+    offline: bool,
     output: &output_cli::OutputOptions,
     check_only: bool,
     format: Option<ReportFormat>,
@@ -39,7 +39,7 @@ pub(crate) fn run(
 
     let mut manifest_digest = None;
     let mut authoring_warnings = Vec::new();
-    let mut downloads = hash_sources.then(BTreeMap::new);
+    let mut downloads = (!offline).then(BTreeMap::new);
     let rendered = (|| {
         // NAME selects a package; it never acts as an implicit manifest path.
         let mut name_components = Path::new(requested_name).components();
@@ -67,7 +67,7 @@ pub(crate) fn run(
             });
         }
         if matches!(manifest.package.vcs, render::manifest::Vcs::Unknown) {
-            authoring_warnings.push("package.vcs: repository status is unconfirmed; no repository or absence is inferred. Confirm it before publishing.");
+            authoring_warnings.push("package.vcs: repository status is unconfirmed; no repository or absence is inferred. Confirm it before publishing.".to_owned());
         }
         let mut rendered = render::run(&manifest).map_err(render_error)?;
         // Validate the whole recipe before network I/O. Both renders consume the
@@ -76,6 +76,7 @@ pub(crate) fn run(
             && rendered.report.is_success()
         {
             let package = &manifest.package;
+            let mut attempted = false;
             for (number, source) in &mut manifest.sources {
                 let render::manifest::Source::Remote { url, sha256 } = source else {
                     continue;
@@ -83,6 +84,7 @@ pub(crate) fn run(
                 if sha256.is_some() {
                     continue;
                 }
+                attempted = true;
                 let downloaded = (|| {
                     let url = crate::spec::expression::substitute_fields(
                         url,
@@ -93,19 +95,26 @@ pub(crate) fn run(
                         ],
                     )?;
                     source::RemoteSource::parse(&url)?.download()
-                })()
-                .map_err(|e| GenerateError::SourceHash(format!("sources.{number}: {e}")))?;
-                *sha256 = Some(downloaded.sha256.clone());
-                downloads.insert(*number, downloaded);
+                })();
+                match downloaded {
+                    Ok(downloaded) => {
+                        *sha256 = Some(downloaded.sha256.clone());
+                        downloads.insert(*number, downloaded);
+                    }
+                    Err(reason) => authoring_warnings.push(format!(
+                        "sources.{number}.sha256: not calculated: {reason}; left missing"
+                    )),
+                }
+            }
+            // Failed downloads can race with edits too; never publish stale input.
+            if attempted
+                && utf8_file::read(manifest_path).map_err(GenerateError::Input)? != manifest_source
+            {
+                return Err(GenerateError::SourceHash(
+                    "manifest changed during source hashing; rerun against the new input".into(),
+                ));
             }
             if !downloads.is_empty() {
-                if utf8_file::read(manifest_path).map_err(GenerateError::Input)? != manifest_source
-                {
-                    return Err(GenerateError::SourceHash(
-                        "manifest changed during source hashing; rerun against the new input"
-                            .into(),
-                    ));
-                }
                 rendered = render::run(&manifest).map_err(render_error)?;
             }
         }

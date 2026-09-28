@@ -45,14 +45,14 @@ fn main() -> ExitCode {
         Command::Gen {
             name,
             manifest,
-            hash_sources,
+            offline,
             check,
             format,
             output,
         } => exit_for(generate::run(
             &name,
             manifest.as_deref(),
-            hash_sources,
+            offline,
             &output,
             check,
             format,

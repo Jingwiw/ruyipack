@@ -54,7 +54,9 @@ pub(crate) enum Command {
     #[command(
         after_help = "The default output is NAME.spec beside the manifest. Its parent directory must exist.\n\
 For different existing content, select an output option or use the terminal menu.\n\
-Without a usable terminal or an explicit action, conflicting output is an error."
+Without a usable terminal or an explicit action, conflicting output is an error.\n\
+Sources with missing digests are downloaded automatically using curl, not RPM.\n\
+Failures warn and leave that digest missing; use --offline to disable downloads."
     )]
     Gen {
         /// Package to generate.
@@ -63,10 +65,10 @@ Without a usable terminal or an explicit action, conflicting output is an error.
         /// Manifest to read; defaults to NAME.toml in the current directory.
         #[arg(long, value_name = "PATH")]
         manifest: Option<PathBuf>,
-        /// Download Sources with no SHA-256 and fill the generated SPEC; never changes the TOML.
-        /// Existing digests are retained, not downloaded or verified. Requires curl, not RPM.
+        /// Skip automatic downloads for missing Source SHA-256 digests.
+        /// Missing digests remain warnings; existing digests and the TOML are never changed.
         #[arg(long)]
-        hash_sources: bool,
+        offline: bool,
         /// Checks generation without writing SPEC files or consulting output conflicts.
         #[arg(long, conflicts_with_all = ["path", "stdout", "diff", "force", "skip_existing"])]
         check: bool,

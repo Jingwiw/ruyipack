@@ -20,6 +20,7 @@ fn source_hash_records_downloaded_bytes_and_refuses_unproven_results() {
         (
             "rpmspec",
             r#"#!/bin/sh
+if [ "$MODE" = unavailable ]; then exit 127; fi
 if [ "$1" = --version ]; then echo 'RPM version test'; exit; fi
 printf '%s\n' "$@" > "$LOG/rpm-args"
 if [ "$MODE" = diagnostic ]; then echo 'error: native failure' >&2; fi
@@ -94,6 +95,7 @@ printf 'https://cdn.example.org/archive'
     let curl = fs::read_to_string(root.join("curl-args")).unwrap();
     assert!(curl.ends_with("--\nhttps://example.org/archive\n"));
     assert!(curl.contains("--proto-redir\n=http,https\n"));
+    assert!(curl.contains("--connect-timeout\n10\n--max-time\n300\n"));
     fs::remove_file(root.join("curl-args")).unwrap();
     let failed = |mode: &str, code: &str, message: &str| {
         let output = run(mode, true);
@@ -109,6 +111,7 @@ printf 'https://cdn.example.org/archive'
                 .contains(message)
         );
     };
+    failed("unavailable", "source-hash-failed", "RPM tools");
     failed("diagnostic", "source-hash-failed", "native failure");
     assert!(!root.join("curl-args").exists());
     failed("download-failure", "source-hash-failed", "curl download");
@@ -156,10 +159,14 @@ echo download >> "$LOG/calls"
 for last do :; done
 while [ "$1" != --output ]; do shift; done
 printf '%s' "$last" > "$2"
-if [ "$MODE" = fail ]; then exit 22; fi
+if [ "$MODE" = fail ]; then echo 'curl: HTTP 404' >&2; exit 22; fi
+if [ "$MODE" = partial ] && [ "$last" = https://example.org/ed-1.22.5.tar.gz ]; then exit 22; fi
 if [ "$MODE" = drift ]; then echo '# concurrent edit' >> "$LOG/input.spec"; fi
 if [ "$MODE" = unreadable ]; then mv "$LOG/input.spec" "$LOG/original.spec"; mkdir "$LOG/input.spec"; fi
-if [ "$MODE" = manifest-drift ]; then echo '# concurrent edit' >> "$LOG/ed.toml"; fi
+case "$MODE" in
+    manifest-drift*) echo '# concurrent edit' >> "$LOG/ed.toml" ;;
+esac
+if [ "$MODE" = manifest-drift-fail ]; then exit 22; fi
 printf '%s' "$last"
 "#,
         ),
@@ -210,7 +217,7 @@ printf '%s' "$last"
     );
     let original = toml::to_string(&manifest).unwrap();
     fs::write(root.join("ed.toml"), &original).unwrap();
-    let offline = run(&["gen", "ed", "--stdout"], "fail");
+    let offline = run(&["gen", "ed", "--offline", "--stdout"], "fail");
     assert!(offline.status.success(), "{offline:?}");
     assert!(String::from_utf8_lossy(&offline.stderr).contains("no sha256"));
     assert!(!root.join("calls").exists());
@@ -224,39 +231,81 @@ printf '%s' "$last"
     ] {
         assert_ne!(invalid, original);
         fs::write(root.join("ed.toml"), invalid).unwrap();
-        let rejected = run(&["gen", "ed", "--hash-sources"], "");
+        let rejected = run(&["gen", "ed"], "");
         assert_eq!(rejected.status.code(), Some(1), "{rejected:?}");
         assert!(!root.join("calls").exists());
         assert!(!root.join("ed.spec").exists());
     }
     fs::write(root.join("ed.toml"), &original).unwrap();
-    let mismatch = run(
-        &["gen", "other", "--manifest", "ed.toml", "--hash-sources"],
-        "",
-    );
+    let mismatch = run(&["gen", "other", "--manifest", "ed.toml"], "");
     assert_eq!(mismatch.status.code(), Some(1));
     assert!(!root.join("calls").exists());
-    let failed = run(&["gen", "ed", "--hash-sources"], "fail");
-    assert_eq!(failed.status.code(), Some(1));
-    assert!(!root.join("ed.spec").exists());
-    assert_file(root.join("ed.toml"), &original);
-    let drifted = run(&["gen", "ed", "--hash-sources"], "manifest-drift");
-    assert_eq!(drifted.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&drifted.stderr).contains("manifest changed"));
-    assert!(!root.join("ed.spec").exists());
+    let failed = run(&["gen", "ed", "--output", "unavailable.spec"], "fail");
+    assert!(failed.status.success(), "{failed:?}");
     assert_file(
+        root.join("unavailable.spec"),
+        std::str::from_utf8(&offline.stdout).unwrap(),
+    );
+    let warning = String::from_utf8_lossy(&failed.stderr);
+    assert!(warning.contains("sources.0.sha256") && warning.contains("HTTP 404"));
+    assert_file(root.join("ed.toml"), &original);
+    for mode in ["manifest-drift", "manifest-drift-fail"] {
+        let drifted = run(&["gen", "ed"], mode);
+        assert_eq!(drifted.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&drifted.stderr).contains("manifest changed"));
+        assert!(!root.join("ed.spec").exists());
+        assert_file(
+            root.join("ed.toml"),
+            &(original.clone() + "# concurrent edit\n"),
+        );
+        fs::write(root.join("ed.toml"), &original).unwrap();
+    }
+    // A failed Source must not suppress later downloads or invent its digest.
+    fs::write(
         root.join("ed.toml"),
-        &(original.clone() + "# concurrent edit\n"),
+        format!("{original}\n[sources.3]\nurl = \"https://example.org/extra\"\n"),
+    )
+    .unwrap();
+    let partial = run(&["gen", "ed", "--check", "--format", "json"], "partial");
+    assert!(partial.status.success(), "{partial:?}");
+    let report = json_line(&partial);
+    assert_eq!(report["valid"], true);
+    assert!(report["source_hashes"]["0"].is_null());
+    assert_eq!(
+        report["source_hashes"]["3"]["sha256"],
+        format!("{:x}", Sha256::digest(b"https://example.org/extra"))
+    );
+    assert!(
+        report["authoring_warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w
+                .as_str()
+                .is_some_and(|w| w.contains("sources.0.sha256") && w.contains("22")))
     );
     fs::write(root.join("ed.toml"), &original).unwrap();
+    let unavailable = command()
+        .current_dir(root)
+        .env("PATH", root.join("no-tools"))
+        .args(["gen", "ed", "--check", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(unavailable.status.success(), "{unavailable:?}");
+    let report = json_line(&unavailable);
+    assert!(report["source_hashes"].as_object().unwrap().is_empty());
+    assert!(
+        report["authoring_warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().is_some_and(|w| w.contains("curl download")))
+    );
     let digest = format!(
         "{:x}",
         Sha256::digest(b"https://example.org/ed-1.22.5.tar.gz")
     );
-    let checked = run(
-        &["gen", "ed", "--hash-sources", "--check", "--format", "json"],
-        "",
-    );
+    let checked = run(&["gen", "ed", "--check", "--format", "json"], "");
     assert!(checked.status.success(), "{checked:?}");
     let report = json_line(&checked);
     assert_eq!(report["valid"], true);
@@ -271,7 +320,7 @@ printf '%s' "$last"
     );
     assert!(!root.join("ed.spec").exists());
     fs::remove_file(root.join("calls")).unwrap();
-    let generated = run(&["gen", "ed", "--hash-sources"], "");
+    let generated = run(&["gen", "ed"], "");
     assert!(generated.status.success(), "{generated:?}");
     let expected = String::from_utf8(offline.stdout).unwrap().replace(
         "#!RemoteAsset\n",
@@ -298,7 +347,7 @@ printf '%s' "$last"
         .unwrap()
         .insert("sha256".into(), digest.into());
     fs::write(root.join("ed.toml"), toml::to_string(&manifest).unwrap()).unwrap();
-    let known = run(&["gen", "ed", "--hash-sources", "--stdout"], "fail");
+    let known = run(&["gen", "ed", "--stdout"], "fail");
     assert!(known.status.success(), "{known:?}");
     assert_eq!(known.stdout, expected.as_bytes());
     assert!(!root.join("calls").exists());
