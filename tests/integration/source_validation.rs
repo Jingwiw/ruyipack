@@ -179,12 +179,25 @@ fn generated_bare_sources_remain_editable_without_inventing_a_digest() {
     assert!(check.status.success());
     let report = super::support::json_line(&check);
     assert_eq!(report["evidence"]["status"], "pass");
+    let finding = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["code"] == "RPK005")
+        .unwrap();
+    assert_eq!(finding["severity"], "warn");
+    let start = spec.find("Source0:").unwrap();
+    assert_eq!(finding["span"]["start_byte"], start);
+    assert_eq!(
+        finding["span"]["start_line"],
+        spec[..start].bytes().filter(|&b| b == b'\n').count() + 1
+    );
     assert!(
-        report["findings"]
-            .as_array()
+        finding["message"]
+            .as_str()
             .unwrap()
-            .iter()
-            .any(|f| f["code"] == "RPK005" && f["severity"] == "warn")
+            .split_whitespace()
+            .any(|word| word == "--hash-source")
     );
     for fields in [vec!["--all"], vec!["--field", "sources.0.url"]] {
         let full = fields == ["--all"];
