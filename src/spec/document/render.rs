@@ -6,20 +6,23 @@
 
 //! Validate edited values and assemble nonoverlapping source replacements.
 
-use std::{collections::BTreeMap, ops::Range};
-use toml::{Table, Value};
+use std::ops::Range;
+use toml::Table;
 
-use super::table::{lookup, string, strings, validate_shape};
+use super::table::{string, strings, validate_shape};
 use super::{List, Snapshot, validate_comments, validate_file_path, validate_text};
 
 impl Snapshot<'_> {
-    pub(crate) fn render(&self, edited: &Table) -> Result<String, String> {
-        self.render_changes(edited, true)
+    pub(crate) fn render(&self, edited: &Table, defines: &[String]) -> Result<String, String> {
+        self.render_changes(edited, true, defines)
     }
 
-    /// Keep digest markers until downloads finish. RPM expands macros even in
-    /// comments: removing such a marker afterwards could change Source resolution.
-    pub(crate) fn render_before_hashing(&self, edited: &Table) -> Result<String, String> {
+    /// Keep original digest markers until their replacement bytes are known.
+    pub(crate) fn render_before_hashing(
+        &self,
+        edited: &Table,
+        defines: &[String],
+    ) -> Result<String, String> {
         for (field, range) in &self.digest_markers {
             if self.source[range.clone()].contains('%') {
                 return Err(format!(
@@ -27,21 +30,16 @@ impl Snapshot<'_> {
                 ));
             }
         }
-        self.render_changes(edited, false)
+        self.render_changes(edited, false, defines)
     }
 
-    fn render_changes(&self, edited: &Table, with_digests: bool) -> Result<String, String> {
+    fn render_changes(
+        &self,
+        edited: &Table,
+        with_digests: bool,
+        defines: &[String],
+    ) -> Result<String, String> {
         validate_shape(&self.document, edited)?;
-        let mut fields = self.package_context.clone();
-        for name in ["name", "version", "url"] {
-            // An assignment cannot resolve context hidden by includes or ambiguity.
-            if fields.contains_key(name)
-                && let Some(value) =
-                    lookup(edited, &format!("package.{name}")).and_then(Value::as_str)
-            {
-                fields.insert(name.to_owned(), value.to_owned());
-            }
-        }
         let mut changes = Vec::new();
         for scalar in &self.scalars {
             let value = string(edited, &scalar.field)?;
@@ -49,9 +47,6 @@ impl Snapshot<'_> {
             if scalar.field == "package.url" {
                 crate::source::reject_credentials(value)
                     .map_err(|reason| format!("package.url: {reason}"))?;
-            }
-            if scalar.field.starts_with("sources.") && scalar.field.ends_with(".url") {
-                validate_source_url(value, &scalar.field, &fields)?;
             }
             if value != &self.source[scalar.range.clone()] {
                 changes.push((scalar.range.clone(), value.to_owned()));
@@ -145,6 +140,33 @@ impl Snapshot<'_> {
             cursor = range.end;
         }
         output.push_str(&self.source[cursor..]);
+        // Resolve selected URL expressions against the actual candidate, not a second
+        // cached projection of package fields. Literal repairs need no macro context.
+        let mut sources = None;
+        for scalar in &self.scalars {
+            if let Some(number) = scalar.field.strip_circumfix("sources.", ".url") {
+                let value = string(edited, &scalar.field)?;
+                let resolved = crate::spec::expression::substitute_fields(value, &[])
+                    .or_else(|_| {
+                        let sources = sources.get_or_insert_with(|| {
+                            crate::spec::sources::resolve(
+                                &crate::spec::ParsedSpec::parse(&output),
+                                defines,
+                            )
+                        });
+                        let source = sources
+                            .as_ref()
+                            .map_err(Clone::clone)?
+                            .sources
+                            .get(&number.parse::<u32>().expect("captured Source number"))
+                            .ok_or("selected Source is absent from the candidate")?;
+                        source.url.clone()
+                    })
+                    .map_err(|reason| format!("{}: {reason}", scalar.field))?;
+                crate::source::validate_authoring_url(&resolved)
+                    .map_err(|reason| format!("{}: {reason}", scalar.field))?;
+            }
+        }
         Ok(output)
     }
 
@@ -217,20 +239,6 @@ impl Snapshot<'_> {
         }
         Ok(())
     }
-}
-
-fn validate_source_url(
-    value: &str,
-    field: &str,
-    context: &BTreeMap<String, String>,
-) -> Result<(), String> {
-    let fields = context
-        .iter()
-        .map(|(name, value)| (name.as_str(), value.as_str()))
-        .collect::<Vec<_>>();
-    crate::source::validate_expression(value, &fields)
-        .map(|_| ())
-        .map_err(|reason| format!("{field}: {reason}"))
 }
 
 fn validate_sha256(value: &str, field: &str) -> Result<(), String> {

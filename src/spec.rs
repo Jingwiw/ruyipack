@@ -13,7 +13,7 @@ pub(crate) mod document;
 pub(crate) mod expression;
 pub(crate) mod files;
 pub(crate) mod inspection;
-pub(crate) mod native;
+pub(crate) mod sources;
 pub(crate) mod verify;
 
 use crate::{

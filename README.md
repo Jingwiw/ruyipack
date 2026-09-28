@@ -46,7 +46,7 @@ printf 'Example files: %s\n' "$work"
 
 The last command previews a change; omit `--diff` to write it back. Version or
 Source changes **do not automatically refresh digests or verify patches**.
-Use `edit --hash-source N --trusted-spec` to calculate a selected digest. Before submitting a
+Use `edit --hash-source N` to deliberately calculate a selected digest. Before submitting a
 package, review its sources and changes, then build and test in the target
 openRuyi environment. A static `pass` is not a successful package build.
 
@@ -58,8 +58,11 @@ openRuyi environment. A static `pass` is not a successful package build.
 | `gen NAME` | Generate from `NAME.toml` | Supports manual subpackages and explicit stages; manifest is authoritative |
 | `inspect FILE.spec` | Read tags and parser diagnostics | Syntax, not macro-expanded RPM values |
 | `check FILE.spec` | Run selected static rules | Does not validate Source downloads or the complete package |
-| `source-hash FILE.spec --trusted-spec` | Download and hash one native-resolved Source | Requires a prepared RPM environment and curl; read-only, may execute native macros |
+| `source-hash FILE.spec` | Download and hash one statically resolved Source | Built-in HTTP/TLS; read-only, never executes macros |
 | `edit FILE.spec --field package.version` | Edit selected fields through TOML | SPEC is authoritative; ambiguous fields are refused, unselected bytes preserved |
+
+Source downloads use Rust HTTP/TLS, without curl, RPM, or a container.
+Native RPM is used only by the separate developer cross-check below.
 
 Use `ruyipack COMMAND --help` for flags. Start a new package with `init`, complete
 its manifest, then run `gen` to fill missing digests in the SPEC automatically.

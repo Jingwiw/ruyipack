@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! CLI presentation for explicitly requested native Source hashing.
+//! CLI presentation for explicitly requested Source hashing.
 
 use crate::{
     output_cli::{self, ReportFormat},
@@ -19,15 +19,12 @@ use std::{
 
 #[derive(Args)]
 pub(crate) struct Options {
-    /// SPEC in a prepared RPM environment; native macros may execute code.
+    /// SPEC whose Source expressions can be resolved statically.
     spec: PathBuf,
-    /// Acknowledge native macro execution. Isolate untrusted input.
-    #[arg(long, required = true)]
-    trusted_spec: bool,
     /// Effective RPM Source number, not its position in the file.
     #[arg(long = "source", default_value_t = 0, value_name = "SOURCE")]
     source_number: u32,
-    /// Pass an RPM macro definition verbatim, in order.
+    /// Define a static macro before reading the SPEC, in order.
     #[arg(short = 'D', long = "define", value_name = "MACRO EXPR")]
     defines: Vec<String>,
     /// Print a digest and next steps, or a JSON success/failure report.
@@ -40,9 +37,8 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         let path = fs::canonicalize(&options.spec)
             .map_err(|e| ("input-read", format!("{}: {e}", options.spec.display())))?;
         let original = utf8_file::read(&path).map_err(|e| ("input-read", e.to_string()))?;
-        let result =
-            source::calculate(&path, &original, &[options.source_number], &options.defines)
-                .map_err(|e| ("source-hash-failed", e))?;
+        let result = source::calculate(&original, &[options.source_number], &options.defines)
+            .map_err(|e| ("source-hash-failed", e))?;
         if !utf8_file::is_unchanged(&path, &original)
             .map_err(|e| ("input-read", format!("{}: {e}", path.display())))?
         {
@@ -63,8 +59,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
                     .expect("serializable download");
                 report["input"] =
                     serde_json::json!({"display_path": display_path, "sha256": value.input_sha256});
-                report["native"] =
-                    serde_json::to_value(value.native).expect("serializable evidence");
+                report["defines"] = serde_json::json!(value.defines);
                 report
             }
             Err((code, message)) => {

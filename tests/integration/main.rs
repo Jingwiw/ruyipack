@@ -11,10 +11,10 @@ mod cli;
 mod diagnostic_locations;
 mod edit;
 mod generation;
+mod http;
 mod init;
 mod inspect;
 mod output;
-#[cfg(unix)]
 mod source_hash;
 mod source_validation;
 mod support;

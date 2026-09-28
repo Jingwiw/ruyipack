@@ -4,357 +4,281 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Subprocess failures must never become a digest; native RPM is checked separately.
+//! Actual loopback downloads exercise completion, failure and stale-input guards.
 
-use super::support::{assert_file, command, json_line};
+use super::{
+    http::{Server, response},
+    support::{assert_file, json_line, success},
+};
 use sha2::{Digest, Sha256};
-use std::{fs, os::unix::fs::PermissionsExt};
+use std::{
+    cell::Cell,
+    fs,
+    sync::{Arc, Mutex},
+};
+
+fn sha(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
 
 #[test]
-fn source_hash_records_downloaded_bytes_and_refuses_unproven_results() {
-    let directory = tempfile::tempdir().unwrap();
-    let root = directory.path();
-    let spec = "Name: hash-probe\nVersion: 1\nRelease: 1\nSummary: hash\nLicense: MIT\nSource3: https://example.org/old\nSource: https://example.org/archive#/local.tar\n%description\nSource4: not a declaration\n%files\n";
-    fs::write(root.join("input.spec"), spec).unwrap();
-    for (name, body) in [
-        (
-            "rpmspec",
-            r#"#!/bin/sh
-if [ "$MODE" = unavailable ]; then exit 127; fi
-if [ "$1" = --version ]; then echo 'RPM version test'; exit; fi
-printf '%s\n' "$@" > "$LOG/rpm-args"
-if [ "$MODE" = diagnostic ]; then echo 'error: native failure' >&2; fi
-for last do :; done
-cat "$last"
-"#,
-        ),
-        (
-            "curl",
-            r#"#!/bin/sh
-printf '%s\n' "$@" > "$LOG/curl-args"
-if [ "$MODE" = download-failure ]; then exit 22; fi
-while [ "$1" != --output ]; do shift; done
-printf '\000\377asset\n' > "$2"
-if [ "$MODE" = source-changed ]; then echo changed >> "$LOG/input.spec"; fi
-if [ "$MODE" = unreadable ]; then mv "$LOG/input.spec" "$LOG/original.spec"; mkdir "$LOG/input.spec"; fi
-printf 'https://cdn.example.org/archive'
-"#,
-        ),
-    ] {
-        let path = root.join(name);
-        fs::write(&path, body).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let path = format!("{}:{}", root.display(), std::env::var("PATH").unwrap());
-    let run = |mode: &str, trusted: bool| {
-        let mut command = command();
-        command
-            .current_dir(root)
-            .env("PATH", &path)
-            .env("LOG", root)
-            .env("MODE", mode)
-            .args([
-                "source-hash",
-                "input.spec",
-                "--source",
-                "4",
-                "--format",
-                "json",
-                "--define",
-                "release 2; literal",
-            ]);
-        if trusted {
-            command.arg("--trusted-spec");
+fn streaming_hashes_validate_tls_redirects_and_complete_response_bodies() {
+    let attempts = Cell::new(0);
+    let redirects = Cell::new(0);
+    let server = Server::new(true, move |path| {
+        if path == "/retry" || path == "/busy" {
+            if path == "/retry" {
+                attempts.set(attempts.get() + 1);
+            }
+            if path == "/busy" || attempts.get() == 1 {
+                return b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n".to_vec();
+            }
         }
-        command.output().unwrap()
-    };
-    let refused = run("", false);
-    assert_eq!(refused.status.code(), Some(2));
-    assert!(!root.join("rpm-args").exists());
-    let output = run("", true);
-    assert!(output.status.success(), "{output:?}");
-    assert_file(root.join("input.spec"), spec);
-    let report = json_line(&output);
-    assert_eq!(
-        report["sha256"],
-        format!("{:x}", Sha256::digest(b"\0\xffasset\n"))
+        // Terminate a broken redirect loop in the fixture too, so a regression fails promptly.
+        if path == "/loop" {
+            redirects.set(redirects.get() + 1);
+            if redirects.get() > 11 {
+                return response(b"redirect limit was not enforced");
+            }
+        }
+        match path {
+        "/redirect" => b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /asset\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        "/loop" => b"HTTP/1.1 302 Found\r\nLocation: /loop\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        "/bad-redirect" => b"HTTP/1.1 302 Found\r\nLocation: https://user:secret@localhost/archive\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        "/downgrade" => b"HTTP/1.1 302 Found\r\nLocation: http://localhost/archive\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        "/truncated" => b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort".to_vec(),
+        "/partial" => b"HTTP/1.1 206 Partial Content\r\nContent-Length: 4\r\n\r\npart".to_vec(),
+        "/fail" => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        // Deliberately not a valid gzip stream: content decoding must be disabled.
+        "/encoding" => b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 4\r\n\r\nraw!".to_vec(),
+        _ => response(b"\0\xffasset\n"),
+    }
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("input.spec");
+    let source = format!(
+        "Name: probe\nVersion: 1\n%global route redirect\nSource3: local.tar\nSource: {}/%{{route}}#/renamed.tar\n%description\nProbe\n",
+        server.url
     );
-    assert_eq!(report["bytes"], 8);
-    assert_eq!(report["source"], 4);
-    assert_eq!(
-        report["resolved_url"],
-        "https://example.org/archive#/local.tar"
-    );
-    assert_eq!(report["effective_url"], "https://cdn.example.org/archive");
-    assert_eq!(report["native"]["defines"][0], "release 2; literal");
-    assert!(
-        fs::read_to_string(root.join("rpm-args"))
+    let run = || {
+        server
+            .command()
+            .args(["source-hash"])
+            .arg(&input)
+            .args(["--source", "4", "--format", "json"])
+            .output()
             .unwrap()
-            .contains("--define\nrelease 2; literal\n")
-    );
-    let curl = fs::read_to_string(root.join("curl-args")).unwrap();
-    assert!(curl.ends_with("--\nhttps://example.org/archive\n"));
-    assert!(curl.contains("--proto-redir\n=http,https\n"));
-    assert!(curl.contains("--connect-timeout\n10\n--max-time\n300\n"));
-    fs::remove_file(root.join("curl-args")).unwrap();
-    let failed = |mode: &str, code: &str, message: &str| {
-        let output = run(mode, true);
-        assert_eq!(output.status.code(), Some(1));
+    };
+    fs::write(&input, &source).unwrap();
+    let output = run();
+    success(&output);
+    let report = json_line(&output);
+    assert_eq!(report["sha256"], sha(b"\0\xffasset\n"));
+    assert_eq!(report["bytes"], 8);
+    assert_eq!(report["effective_url"], format!("{}/asset", server.url));
+    assert_eq!(*server.calls.lock().unwrap(), ["/redirect", "/asset"]);
+    assert_file(&input, &source);
+    for (path, reason) in [
+        ("fail", "404"),
+        ("busy", "503"),
+        ("truncated", "download body"),
+        ("partial", "206"),
+        ("loop", "redirects"),
+        ("bad-redirect", "credentials"),
+        ("downgrade", "downgrade"),
+    ] {
+        fs::write(
+            &input,
+            source.replace("route redirect", &format!("route {path}")),
+        )
+        .unwrap();
+        let output = run();
+        assert_eq!(output.status.code(), Some(1), "{path}: {output:?}");
         let report = json_line(&output);
-        assert_eq!(report["valid"], false);
         assert!(report["sha256"].is_null());
-        assert_eq!(report["error"]["code"], code);
         assert!(
             report["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains(message)
+                .contains(reason),
+            "{report}"
         );
-    };
-    failed("unavailable", "source-hash-failed", "RPM tools");
-    failed("diagnostic", "source-hash-failed", "native failure");
-    assert!(!root.join("curl-args").exists());
-    failed("download-failure", "source-hash-failed", "curl download");
-    failed("source-changed", "source-changed", "SPEC changed");
-    fs::write(root.join("input.spec"), spec).unwrap();
-    failed("unreadable", "input-read", "input.spec");
-    assert_file(root.join("original.spec"), spec);
-    fs::remove_dir(root.join("input.spec")).unwrap();
-    fs::rename(root.join("original.spec"), root.join("input.spec")).unwrap();
-    for invalid in [
-        "file:///etc/passwd",
-        "https://user:secret@example.org/archive",
-        "https://example.org/%{unknown}",
-    ] {
-        fs::write(
-            root.join("input.spec"),
-            spec.replace("https://example.org/archive#/local.tar", invalid),
-        )
-        .unwrap();
-        fs::remove_file(root.join("curl-args")).ok();
-        assert_eq!(run("", true).status.code(), Some(1));
-        assert!(!root.join("curl-args").exists());
+        assert!(!report.to_string().contains("secret"));
     }
+    let calls = server.calls.lock().unwrap();
+    for (path, count) in [
+        ("/busy", 2),
+        ("/fail", 1),
+        ("/truncated", 2),
+        ("/loop", 11),
+        ("/bad-redirect", 1),
+        ("/downgrade", 1),
+    ] {
+        assert_eq!(calls.iter().filter(|p| *p == path).count(), count, "{path}");
+    }
+    drop(calls);
+    // A retry starts a fresh digest; a failed attempt never returns partial bytes.
+    fs::write(&input, source.replace("route redirect", "route retry")).unwrap();
+    let output = run();
+    success(&output);
+    assert_eq!(json_line(&output)["sha256"], sha(b"\0\xffasset\n"));
+    assert_eq!(
+        server
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|p| *p == "/retry")
+            .count(),
+        2
+    );
+    fs::write(&input, source.replace("route redirect", "route encoding")).unwrap();
+    let output = run();
+    success(&output);
+    assert_eq!(json_line(&output)["sha256"], sha(b"raw!"));
+    let rejected = server
+        .command()
+        .env_remove("SSL_CERT_FILE")
+        .arg("source-hash")
+        .arg(&input)
+        .args(["--source", "4", "--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(rejected.status.code(), Some(1)); // Never silently accept an untrusted TLS peer.
 }
 
 #[test]
-fn generation_and_edit_complete_digests_without_publishing_unchecked_bytes() {
+fn generation_completes_only_missing_hashes_and_never_publishes_stale_input() {
     let directory = tempfile::tempdir().unwrap();
-    let root = directory.path();
-    for (name, body) in [
-        (
-            "rpmspec",
-            r#"#!/bin/sh
-if [ "$1" = --version ]; then echo 'RPM version fixture'; exit; fi
-echo native >> "$LOG/calls"
-for last do :; done
-version=$(sed -n 's/^Version: *//p' "$last")
-sed "s/%{version}/$version/g" "$last"
-"#,
-        ),
-        (
-            "curl",
-            r#"#!/bin/sh
-echo download >> "$LOG/calls"
-for last do :; done
-while [ "$1" != --output ]; do shift; done
-printf '%s' "$last" > "$2"
-if [ "$MODE" = fail ]; then echo 'curl: HTTP 404' >&2; exit 22; fi
-if [ "$MODE" = partial ] && [ "$last" = https://example.org/ed-1.22.5.tar.gz ]; then exit 22; fi
-if [ "$MODE" = drift ]; then echo '# concurrent edit' >> "$LOG/input.spec"; fi
-if [ "$MODE" = unreadable ]; then mv "$LOG/input.spec" "$LOG/original.spec"; mkdir "$LOG/input.spec"; fi
-case "$MODE" in
-    manifest-drift*) echo '# concurrent edit' >> "$LOG/ed.toml" ;;
-esac
-if [ "$MODE" = manifest-drift-fail ]; then exit 22; fi
-printf '%s' "$last"
-"#,
-        ),
-    ] {
-        let path = root.join(name);
-        fs::write(&path, body).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    let root = directory.path().to_owned();
+    let input = root.join("ed.toml");
+    let mode = Arc::new(Mutex::new("ok"));
+    let current = mode.clone();
+    let changed = input.clone();
+    let server = Server::new(true, move |path| {
+        let mode = *current.lock().unwrap();
+        if mode.starts_with("drift") {
+            fs::write(&changed, "# concurrent change\n").unwrap();
+        }
+        if mode.ends_with("fail") || path == "/fail" {
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec()
+        } else {
+            response(path.as_bytes())
+        }
+    });
+    let mut manifest: toml::Value =
+        toml::from_str(include_str!("../../examples/ed/ed.toml")).unwrap();
+    manifest["sources"]["0"]["url"] =
+        format!("{}/ed-%{{version}}.tar.lz#/renamed.tar", server.url).into();
+    manifest["sources"]["0"]
+        .as_table_mut()
+        .unwrap()
+        .remove("sha256");
+    let original = toml::to_string(&manifest).unwrap();
+    fs::write(&input, &original).unwrap();
+    let run = |extra: &[&str]| {
+        server
+            .command()
+            .current_dir(&root)
+            .args(["gen", "ed"])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    success(&run(&["--offline", "--stdout"]));
+    assert!(server.calls.lock().unwrap().is_empty());
+    let output = run(&["--check", "--format", "json"]);
+    success(&output);
+    assert_eq!(
+        json_line(&output)["source_hashes"]["0"]["sha256"],
+        sha(b"/ed-1.22.5.tar.lz")
+    );
+    assert_file(&input, &original);
+    assert!(!root.join("ed.spec").exists());
+    success(&run(&[]));
+    assert!(
+        fs::read_to_string(root.join("ed.spec"))
+            .unwrap()
+            .contains(&sha(b"/ed-1.22.5.tar.lz"))
+    );
+    fs::remove_file(root.join("ed.spec")).unwrap();
+    manifest["sources"]["0"]
+        .as_table_mut()
+        .unwrap()
+        .insert("sha256".into(), "a".repeat(64).into());
+    fs::write(&input, toml::to_string(&manifest).unwrap()).unwrap();
+    server.calls.lock().unwrap().clear();
+    success(&run(&["--check", "--format", "json"]));
+    assert!(server.calls.lock().unwrap().is_empty()); // Declared hashes are never overwritten or verified by gen.
+    fs::write(&input, &original).unwrap();
+    *mode.lock().unwrap() = "fail";
+    let failed = run(&["--check", "--format", "json"]);
+    success(&failed);
+    let report = json_line(&failed);
+    assert!(
+        report["authoring_warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("404"))
+    );
+    assert!(report["source_hashes"]["0"].is_null());
+    assert_file(&input, &original);
+    for mode_name in ["drift", "drift-fail"] {
+        fs::write(&input, &original).unwrap();
+        *mode.lock().unwrap() = mode_name;
+        let failed = run(&["--check", "--format", "json"]);
+        assert_eq!(failed.status.code(), Some(1));
+        assert!(
+            json_line(&failed)["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("changed")
+        );
+        assert_file(&input, "# concurrent change\n");
+        assert!(!root.join("ed.spec").exists());
     }
-    let run = |args: &[&str], mode: &str| {
-        command()
-            .current_dir(root)
-            .env(
-                "PATH",
-                format!("{}:{}", root.display(), std::env::var("PATH").unwrap()),
-            )
-            .env("LOG", root)
-            .env("MODE", mode)
+    fs::write(
+        &input,
+        original.replace("name = \"ed\"", "name = \"wrong\""),
+    )
+    .unwrap();
+    server.calls.lock().unwrap().clear();
+    assert_eq!(run(&["--check"]).status.code(), Some(1));
+    assert!(server.calls.lock().unwrap().is_empty()); // Invalid input is rejected before I/O.
+}
+
+#[test]
+fn edit_hashes_the_pending_candidate_and_keeps_drafts_and_stale_guards() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().to_owned();
+    let input = root.join("input.spec");
+    let changed = input.clone();
+    let mode = Arc::new(Mutex::new("ok"));
+    let current = mode.clone();
+    let server = Server::new(false, move |path| {
+        let mode = *current.lock().unwrap();
+        if mode == "drift" {
+            fs::write(&changed, "# concurrent change\n").unwrap();
+        }
+        if mode == "fail" {
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec()
+        } else {
+            response(path.as_bytes())
+        }
+    });
+    let source = include_str!("../fixtures/ed.spec")
+        .replace("#!RemoteAsset:  sha256:56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc", "#!RemoteAsset")
+        .replace("https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz", &format!("{}/%{{version}}.tar", server.url));
+    fs::write(&input, &source).unwrap();
+    let run = |args: &[&str]| {
+        server
+            .command()
+            .current_dir(&root)
             .args(args)
             .output()
             .unwrap()
     };
-    let source_url = "https://example.org/%{name}-%{version}.tar.gz#/renamed.tar.gz";
-    let init = run(&["init", "ed"], "");
-    assert!(init.status.success(), "{init:?}");
-    assert!(!root.join("calls").exists());
-    let mut manifest: toml::Value =
-        toml::from_str(&fs::read_to_string(root.join("ed.toml")).unwrap()).unwrap();
-    assert_eq!(manifest["package"]["version"].as_str(), Some(""));
-    assert!(manifest["sources"]["0"].get("sha256").is_none());
-    let example: toml::Value = toml::from_str(include_str!("../../examples/ed/ed.toml")).unwrap();
-    // Fill the handwritten scaffold; neither init flags nor a second TOML are needed.
-    for section in ["spec", "package", "build", "build-requires"] {
-        manifest
-            .as_table_mut()
-            .unwrap()
-            .insert(section.into(), example[section].clone());
-    }
-    manifest["sources"]["0"]["url"] = source_url.into();
-    let mut known = example["sources"]["0"].clone();
-    known["url"] = "https://example.org/known".into();
-    manifest["sources"]
-        .as_table_mut()
-        .unwrap()
-        .insert("1".into(), known);
-    manifest["sources"].as_table_mut().unwrap().insert(
-        "2".into(),
-        toml::Value::Table([("path".into(), "ed.conf".into())].into_iter().collect()),
-    );
-    let original = toml::to_string(&manifest).unwrap();
-    fs::write(root.join("ed.toml"), &original).unwrap();
-    let offline = run(&["gen", "ed", "--offline", "--stdout"], "fail");
-    assert!(offline.status.success(), "{offline:?}");
-    assert!(String::from_utf8_lossy(&offline.stderr).contains("no sha256"));
-    assert!(!root.join("calls").exists());
-    for invalid in [
-        original.replace(r#"version = "1.22.5""#, r#"version = """#),
-        original.replace("GPL-3.0-or-later AND LGPL-2.1-or-later", "INVALID"),
-        original.replace(
-            "https://example.org/known",
-            "https://example.org/%{unknown}",
-        ),
-    ] {
-        assert_ne!(invalid, original);
-        fs::write(root.join("ed.toml"), invalid).unwrap();
-        let rejected = run(&["gen", "ed"], "");
-        assert_eq!(rejected.status.code(), Some(1), "{rejected:?}");
-        assert!(!root.join("calls").exists());
-        assert!(!root.join("ed.spec").exists());
-    }
-    fs::write(root.join("ed.toml"), &original).unwrap();
-    let mismatch = run(&["gen", "other", "--manifest", "ed.toml"], "");
-    assert_eq!(mismatch.status.code(), Some(1));
-    assert!(!root.join("calls").exists());
-    let failed = run(&["gen", "ed", "--output", "unavailable.spec"], "fail");
-    assert!(failed.status.success(), "{failed:?}");
-    assert_file(
-        root.join("unavailable.spec"),
-        std::str::from_utf8(&offline.stdout).unwrap(),
-    );
-    let warning = String::from_utf8_lossy(&failed.stderr);
-    assert!(warning.contains("sources.0.sha256") && warning.contains("HTTP 404"));
-    assert_file(root.join("ed.toml"), &original);
-    for mode in ["manifest-drift", "manifest-drift-fail"] {
-        let drifted = run(&["gen", "ed"], mode);
-        assert_eq!(drifted.status.code(), Some(1));
-        assert!(String::from_utf8_lossy(&drifted.stderr).contains("manifest changed"));
-        assert!(!root.join("ed.spec").exists());
-        assert_file(
-            root.join("ed.toml"),
-            &(original.clone() + "# concurrent edit\n"),
-        );
-        fs::write(root.join("ed.toml"), &original).unwrap();
-    }
-    // A failed Source must not suppress later downloads or invent its digest.
-    fs::write(
-        root.join("ed.toml"),
-        format!("{original}\n[sources.3]\nurl = \"https://example.org/extra\"\n"),
-    )
-    .unwrap();
-    let partial = run(&["gen", "ed", "--check", "--format", "json"], "partial");
-    assert!(partial.status.success(), "{partial:?}");
-    let report = json_line(&partial);
-    assert_eq!(report["valid"], true);
-    assert!(report["source_hashes"]["0"].is_null());
-    assert_eq!(
-        report["source_hashes"]["3"]["sha256"],
-        format!("{:x}", Sha256::digest(b"https://example.org/extra"))
-    );
-    assert!(
-        report["authoring_warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|w| w
-                .as_str()
-                .is_some_and(|w| w.contains("sources.0.sha256") && w.contains("22")))
-    );
-    fs::write(root.join("ed.toml"), &original).unwrap();
-    let unavailable = command()
-        .current_dir(root)
-        .env("PATH", root.join("no-tools"))
-        .args(["gen", "ed", "--check", "--format", "json"])
-        .output()
-        .unwrap();
-    assert!(unavailable.status.success(), "{unavailable:?}");
-    let report = json_line(&unavailable);
-    assert!(report["source_hashes"].as_object().unwrap().is_empty());
-    assert!(
-        report["authoring_warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|w| w.as_str().is_some_and(|w| w.contains("curl download")))
-    );
-    let digest = format!(
-        "{:x}",
-        Sha256::digest(b"https://example.org/ed-1.22.5.tar.gz")
-    );
-    let checked = run(&["gen", "ed", "--check", "--format", "json"], "");
-    assert!(checked.status.success(), "{checked:?}");
-    let report = json_line(&checked);
-    assert_eq!(report["valid"], true);
-    assert_eq!(report["source_hashes"]["0"]["sha256"], digest);
-    assert_eq!(
-        report["source_hashes"]["0"]["resolved_url"],
-        "https://example.org/ed-1.22.5.tar.gz#/renamed.tar.gz"
-    );
-    assert_eq!(
-        report["manifest"]["sha256"],
-        format!("{:x}", Sha256::digest(original.as_bytes()))
-    );
-    assert!(!root.join("ed.spec").exists());
-    fs::remove_file(root.join("calls")).unwrap();
-    let generated = run(&["gen", "ed"], "");
-    assert!(generated.status.success(), "{generated:?}");
-    let expected = String::from_utf8(offline.stdout).unwrap().replace(
-        "#!RemoteAsset\n",
-        &format!("#!RemoteAsset:  sha256:{digest}\n"),
-    );
-    assert_file(root.join("ed.spec"), &expected);
-    assert_file(root.join("ed.toml"), &original);
-    assert_file(root.join("calls"), "download\n");
-    assert_eq!(
-        fs::read_dir(root)
-            .unwrap()
-            .filter(|entry| entry
-                .as_ref()
-                .unwrap()
-                .path()
-                .extension()
-                .is_some_and(|ext| ext == "toml"))
-            .count(),
-        1
-    );
-    fs::remove_file(root.join("calls")).unwrap();
-    manifest["sources"]["0"]
-        .as_table_mut()
-        .unwrap()
-        .insert("sha256".into(), digest.into());
-    fs::write(root.join("ed.toml"), toml::to_string(&manifest).unwrap()).unwrap();
-    let known = run(&["gen", "ed", "--stdout"], "fail");
-    assert!(known.status.success(), "{known:?}");
-    assert_eq!(known.stdout, expected.as_bytes());
-    assert!(!root.join("calls").exists());
-
-    let spec = "Name: hash-probe\nVersion: 1\nRelease: 1\nSummary: Hash probe\nLicense: MIT\nURL: https://example.org\n#!RemoteAsset\nSource0: https://example.org/%{version}.tar.gz\n%description\nKeep this text.\n%files\n";
-    let input = root.join("input.spec");
-    fs::write(&input, spec).unwrap();
     let args = [
         "edit",
         "input.spec",
@@ -362,187 +286,87 @@ printf '%s' "$last"
         "package.version=2",
         "--hash-source",
         "0",
-        "--trusted-spec",
     ];
-    let checked = run(
-        &[args.as_slice(), &["--check", "--format", "json"]].concat(),
-        "",
-    );
-    assert!(checked.status.success(), "{checked:?}");
-    let report: serde_json::Value = serde_json::from_slice(&checked.stdout).unwrap();
-    let hashes = &report["files"][0]["source_hashes"];
-    let digest = format!("{:x}", Sha256::digest(b"https://example.org/2.tar.gz"));
-    assert_eq!(hashes["sources"]["0"]["sha256"], digest);
-    assert_eq!(hashes["native"]["temporary_candidate"], true);
-    assert_file(&input, spec);
-    let preview = run(&[args.as_slice(), &["--diff"]].concat(), "");
-    assert!(preview.status.success(), "{preview:?}");
-    assert_file(&input, spec);
-    let failed = run(&args, "fail");
-    assert_eq!(failed.status.code(), Some(1));
-    assert_file(&input, spec);
-    let old_hash = format!("{:x}", Sha256::digest(spec.as_bytes()));
-    let applied = run(
-        &[
-            args.as_slice(),
-            &["--expect-sha256", &old_hash, "--format", "json"],
-        ]
-        .concat(),
-        "",
-    );
-    assert!(applied.status.success(), "{applied:?}");
-    let expected = spec.replace("Version: 1", "Version: 2").replace(
-        "#!RemoteAsset\n",
-        &format!("#!RemoteAsset:  sha256:{digest}\n"),
-    );
-    assert_file(&input, &expected);
-    let receipt: serde_json::Value = serde_json::from_slice(&applied.stdout).unwrap();
-    assert_eq!(receipt["outcomes"][0]["status"], "written");
+    let output = run(&[&args[..], &["--check", "--format", "json"]].concat());
+    success(&output);
     assert_eq!(
-        receipt["outcomes"][0]["sha256"],
-        format!("{:x}", Sha256::digest(expected.as_bytes()))
+        json_line(&output)["files"][0]["source_hashes"]["sources"]["0"]["sha256"],
+        sha(b"/2.tar")
     );
-    fs::remove_file(root.join("calls")).unwrap();
-    let stale = run(
-        &[
-            "edit",
-            "input.spec",
-            "--expect-sha256",
-            &old_hash,
-            "--hash-source",
-            "0",
-            "--trusted-spec",
-            "--check",
-            "--format",
-            "json",
-        ],
-        "",
-    );
-    assert_eq!(stale.status.code(), Some(1));
-    assert!(!root.join("calls").exists());
-    assert_file(&input, &expected);
-    fs::write(
-        &input,
-        spec.replace("#!RemoteAsset\n", "#!RemoteAsset:  sha256:INVALID\n"),
-    )
-    .unwrap();
-    let repaired = run(
-        &["edit", "input.spec", "--hash-source", "0", "--trusted-spec"],
-        "",
-    );
-    assert!(repaired.status.success(), "{repaired:?}");
-    assert!(!fs::read_to_string(&input).unwrap().contains("INVALID"));
-    fs::write(
-        &input,
-        spec.replace(
+    success(&run(&[&args[..], &["--diff"]].concat()));
+    assert_file(&input, &source);
+    *mode.lock().unwrap() = "fail";
+    assert_eq!(run(&args).status.code(), Some(1));
+    assert_file(&input, &source);
+    *mode.lock().unwrap() = "ok";
+    success(&run(&args));
+    let expected = source
+        .replace("Version:        1.22.5", "Version:        2")
+        .replace(
             "#!RemoteAsset\n",
-            "#!RemoteAsset:  sha256:%{lua:rpm.define('archive_version 9')}\n",
-        ),
+            &format!("#!RemoteAsset:  sha256:{}\n", sha(b"/2.tar")),
+        );
+    assert_file(&input, &expected);
+    server.calls.lock().unwrap().clear();
+    let stale = run(&[
+        "edit",
+        "input.spec",
+        "--hash-source",
+        "0",
+        "--expect-sha256",
+        &sha(source.as_bytes()),
+        "--check",
+    ]);
+    assert_eq!(stale.status.code(), Some(1));
+    assert!(server.calls.lock().unwrap().is_empty());
+    fs::write(
+        &input,
+        source.replace("#!RemoteAsset", "#!RemoteAsset:  sha256:INVALID"),
     )
     .unwrap();
-    fs::remove_file(root.join("calls")).unwrap();
-    let rejected = run(&args, "");
-    assert_eq!(rejected.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("macro-bearing RemoteAsset"));
-    assert!(!root.join("calls").exists());
-    fs::write(&input, spec).unwrap();
-    let prepared = run(
-        &[
-            "edit",
-            "input.spec",
-            "--hash-source",
-            "0",
-            "--trusted-spec",
-            "--prepare",
-            "drafts",
-            "--format",
-            "json",
-        ],
-        "",
-    );
-    assert!(prepared.status.success(), "{prepared:?}");
-    let receipt: serde_json::Value = serde_json::from_slice(&prepared.stdout).unwrap();
-    let draft = receipt["files"][0]["draft"].as_str().unwrap();
-    let document: toml::Value = toml::from_str(&fs::read_to_string(draft).unwrap()).unwrap();
-    assert_eq!(
-        document["sources"]["0"]["sha256"].as_str(),
-        Some(format!("{:x}", Sha256::digest(b"https://example.org/1.tar.gz")).as_str())
-    );
-    assert_file(&input, spec);
-    let from = run(
-        &[
-            "edit",
-            "--from",
-            "drafts",
-            "--hash-source",
-            "0",
-            "--trusted-spec",
-            "--check",
-            "--format",
-            "json",
-        ],
-        "",
-    );
-    assert!(from.status.success(), "{from:?}");
-    assert_file(&input, spec);
-    for (mode, code) in [("drift", "source-changed"), ("unreadable", "input-read")] {
-        for prepare in [false, true] {
-            fs::write(&input, spec).unwrap();
-            let request = if prepare {
-                vec![
-                    "edit",
-                    "input.spec",
-                    "--hash-source",
-                    "0",
-                    "--trusted-spec",
-                    "--prepare",
-                    "rejected-drafts",
-                    "--format",
-                    "json",
-                ]
-            } else {
-                [args.as_slice(), &["--format", "json"]].concat()
-            };
-            let rejected = run(&request, mode);
-            assert_eq!(rejected.status.code(), Some(1));
-            let report = json_line(&rejected);
-            let error = if prepare {
-                &report["error"]
-            } else {
-                &report["files"][0]["error"]
-            };
-            assert_eq!(error["code"], code);
-            assert!(!root.join("rejected-drafts").exists());
-            if mode == "unreadable" {
-                assert_file(root.join("original.spec"), spec);
-                fs::remove_dir(&input).unwrap();
-                fs::rename(root.join("original.spec"), &input).unwrap();
-            } else {
-                assert_file(&input, &(spec.to_owned() + "# concurrent edit\n"));
-            }
-        }
-    }
-
-    let batch = spec.replace(
+    success(&run(&["edit", "input.spec", "--hash-source", "0"])); // Damaged old hashes remain repairable.
+    fs::write(&input, &source).unwrap();
+    success(&run(&[
+        "edit",
+        "input.spec",
+        "--hash-source",
+        "0",
+        "--prepare",
+        "drafts",
+    ]));
+    success(&run(&[
+        "edit",
+        "--from",
+        "drafts",
+        "--hash-source",
+        "0",
+        "--check",
+    ]));
+    assert_file(&input, &source);
+    *mode.lock().unwrap() = "drift";
+    assert_eq!(run(&args).status.code(), Some(1));
+    assert_file(&input, "# concurrent change\n");
+    *mode.lock().unwrap() = "ok";
+    let batch = source.replace(
         "%description",
-        "#!RemoteAsset\nSource1: local.tar.gz\n%description",
+        "#!RemoteAsset\nSource1: local.tar\n%description",
     );
     fs::write(&input, &batch).unwrap();
-    fs::remove_file(root.join("calls")).unwrap();
-    let rejected = run(
-        &[
+    server.calls.lock().unwrap().clear();
+    assert_eq!(
+        run(&[
             "edit",
             "input.spec",
             "--hash-source",
             "0",
             "--hash-source",
             "1",
-            "--trusted-spec",
-            "--check",
-        ],
-        "",
+            "--check"
+        ])
+        .status
+        .code(),
+        Some(1)
     );
-    assert_eq!(rejected.status.code(), Some(1), "{rejected:?}");
-    assert_file(root.join("calls"), "native\n"); // No first download before the whole batch is resolved.
+    assert!(server.calls.lock().unwrap().is_empty());
     assert_file(&input, &batch);
 }

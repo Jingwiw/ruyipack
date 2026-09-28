@@ -45,7 +45,7 @@ ruyipack gen example
 
 脚手架故意保留未知必填项，未填写时生成失败且不写 SPEC。
 本地包名检查没有发现冲突，不代表上游不存在同名包。
-`gen` 只输出 SPEC，不改作者 TOML，也不落盘中间 TOML。缺工具、下载失败或超时
+`gen` 只输出 SPEC，不改作者 TOML，也不落盘中间 TOML。下载失败或超时
 会逐项警告原因，仍生成缺摘要的 SPEC；使用 `--offline` 完全禁止下载。
 预览和 `--check` 也默认补全；每次运行都会重新下载作者 TOML 中仍缺摘要的 Source。
 若要固定后续生成结果，将审阅后的摘要填回 TOML；已有摘要不会被自动刷新。
@@ -62,7 +62,7 @@ ruyipack edit example.spec --set package.version=2.0 --format json
 
 完整视图不支持复杂构造时，选择需要的字段；未选内容保留原始字节。
 条件歧义或 Source 隐式编号无法确定时，不要用猜测的编号绕过错误。
-在已准备宏环境的目标 openRuyi 中，给编辑命令加 `--hash-source 0 --trusted-spec`，
+给编辑命令加 `--hash-source 0`，
 会按候选版本/Source 下载并补入摘要；相邻 bare `#!RemoteAsset` 也支持。
 普通编辑仍离线；缺摘要在生成和检查中均为警告，不是假装已验证。
 终端直接运行 `edit example.spec` 会先选择字段；脚本使用 `--field` / `--set`，
@@ -70,7 +70,7 @@ ruyipack edit example.spec --set package.version=2.0 --format json
 
 ## check 通过后还要做什么？
 
-- 核对源代码来源、实际下载内容和摘要；已有摘要不自动复验，计算不代表来源可信。
+- 复核源码摘要和来源；摘要匹配不代表来源可信。
 - 核对补丁是否适用，以及声明许可证是否符合上游实际内容。
 - 在目标 openRuyi 环境验证 RPM 宏、依赖、构建、测试和产物文件归属。
 - 最后审阅差异并提交；静态 pass 不是无人值守发布许可。

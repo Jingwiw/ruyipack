@@ -5,17 +5,16 @@
 // SPDX-License-Identifier: MulanPSL-2.0
 
 //! Source URL policy and downloads, shared by generation and editing.
-//! Native resolution is opt-in; static expression checks never execute RPM macros.
+//! Static resolution never executes macros; downloads hash the response stream.
 
 use crate::{spec, utf8_file};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     cell::Cell,
-    fs,
-    io::{self, BufRead},
-    path::Path,
-    process::Command,
+    io::Read,
+    sync::LazyLock,
+    time::{Duration, Instant},
 };
 use url::{SyntaxViolation, Url};
 
@@ -96,7 +95,7 @@ pub(crate) fn require_https(field: &str, url: Url) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub(crate) struct Download {
     resolved_url: String,
     effective_url: String,
@@ -105,92 +104,54 @@ pub(crate) struct Download {
 }
 
 #[derive(Serialize)]
-pub(crate) struct NativeEvidence {
-    rpm: String,
-    defines: Vec<String>,
-    working_directory: String,
-    expanded_spec_sha256: String,
-    temporary_candidate: bool,
-}
-
-#[derive(Serialize)]
 pub(crate) struct SourceHashes {
     pub(crate) input_sha256: String,
-    pub(crate) native: NativeEvidence,
+    pub(crate) defines: Vec<String>,
     pub(crate) sources: std::collections::BTreeMap<u32, Download>,
 }
 
-/// Resolve all requested Sources once, then hash their actual downloaded bytes.
-/// Pending edits are parsed from a private, same-named file with the original cwd.
+/// Resolve the complete selection before starting any downloads.
 pub(crate) fn calculate(
-    path: &Path,
     contents: &str,
     numbers: &[u32],
     defines: &[String],
 ) -> Result<SourceHashes, String> {
-    let path = fs::canonicalize(path).map_err(|e| e.to_string())?;
-    let directory = path.parent().ok_or("SPEC has no parent directory")?;
-    let temporary = (utf8_file::read(&path).map_err(|e| e.to_string())? != contents)
-        .then(tempfile::tempdir)
-        .transpose()
-        .map_err(|e| e.to_string())?;
-    let native_path = if let Some(temp) = &temporary {
-        // A pathname-dependent Source cannot be resolved faithfully on a private copy.
-        if contents.contains("__file_name") || defines.iter().any(|d| d.contains("__file_name")) {
-            return Err(
-                "native candidate uses __file_name; save a reviewed copy before hashing it".into(),
-            );
-        }
-        let candidate = temp
-            .path()
-            .join(path.file_name().ok_or("SPEC has no filename")?);
-        fs::write(&candidate, contents).map_err(|e| e.to_string())?;
-        candidate
-    } else {
-        path.clone()
-    };
-    let rpm_version = run_checked(
-        Command::new("rpmspec").arg("--version"),
-        "rpmspec (SPEC hashing requires RPM tools and target distribution macro packages; for a manifest, use gen without RPM)",
-    )?;
-    let mut rpm = Command::new("rpmspec");
-    rpm.current_dir(directory).env("LC_ALL", "C").arg("--parse");
-    for define in defines {
-        rpm.arg("--define").arg(define);
+    let parsed = spec::ParsedSpec::parse(contents);
+    let resolved = spec::sources::resolve(&parsed, defines)?;
+    if let Some(reason) = resolved.incomplete {
+        return Err(reason);
     }
-    rpm.arg(native_path);
-    let expanded = run_checked(
-        &mut rpm,
-        "native RPM resolution (use target distribution macro packages and repository configuration; pass project-specific macros with --define)",
-    )?;
-    let mut urls = std::collections::BTreeMap::new();
-    // Resolve every URL before downloading, so an unsupported selection has no network side effects.
-    for number in numbers {
-        let url = spec::native::source_url(&expanded, *number)?;
-        let remote = RemoteSource::parse(url).map_err(|e| {
-            format!("Source{number}: {e}; unresolved macros or local Sources cannot be downloaded")
-        })?;
-        urls.insert(*number, remote);
-    }
+    let sources = resolved.sources;
+    let urls = numbers
+        .iter()
+        .map(|number| {
+            let source = sources
+                .get(number)
+                .ok_or_else(|| format!("Source{number}: declaration unavailable"))?;
+            let url = source
+                .url
+                .as_ref()
+                .map_err(|e| format!("Source{number}: {e}"))?;
+            RemoteSource::parse(url).map(|url| (*number, url))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     let sources = urls
         .into_iter()
-        .map(|(number, url)| Ok((number, url.download()?)))
-        .collect::<Result<_, String>>()?;
+        .map(|(number, url)| {
+            url.download()
+                .map(|download| (number, download))
+                .map_err(|e| format!("Source{number}: {e}"))
+        })
+        .collect::<Result<_, _>>()?;
     Ok(SourceHashes {
         input_sha256: utf8_file::sha256(contents),
-        native: NativeEvidence {
-            rpm: rpm_version.trim().to_owned(),
-            defines: defines.to_vec(),
-            working_directory: directory.to_string_lossy().into_owned(),
-            expanded_spec_sha256: utf8_file::sha256(&expanded),
-            temporary_candidate: temporary.is_some(),
-        },
+        defines: defines.to_vec(),
         sources,
     })
 }
 
 /// A checked remote URL retains its original spelling for evidence.
-/// Native batches prepare every Source before any download is allowed to start.
+/// The URL fragment is RPM archive naming metadata, not an HTTP request component.
 pub(crate) struct RemoteSource<'url> {
     original: &'url str,
     url: Url,
@@ -204,49 +165,118 @@ impl<'url> RemoteSource<'url> {
         })
     }
 
-    /// Hash the response bytes without RPM execution.
-    pub(crate) fn download(mut self) -> Result<Download, String> {
-        // RPM's #/filename suffix names a local archive; it is not part of the HTTP request.
-        self.url.set_fragment(None);
-        let asset = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
-        // Like openRuyi's remoteassetify.py, reuse curl rather than another HTTP/TLS stack.
-        // Bound connection and total transfer time, including automatic generation.
-        // Disable curlrc and constrain redirects too; never trust a partial download.
-        let effective_url = run_checked(
-            Command::new("curl")
-                .args([
-                    "--disable",
-                    "--fail",
-                    "--location",
-                    "--silent",
-                    "--show-error",
-                    "--connect-timeout",
-                    "10",
-                    "--max-time",
-                    "300",
-                    "--proto",
-                    "=http,https",
-                    "--proto-redir",
-                    "=http,https",
-                    "--output",
-                ])
-                .arg(asset.path())
-                .args(["--write-out", "%{url_effective}", "--", self.url.as_str()]),
-            "curl download",
-        )?;
-        validate_authoring_url(&effective_url)?;
-        let mut reader = io::BufReader::new(asset.as_file());
+    /// Hash archive bytes directly. No HTTP content decoding or temporary archive.
+    pub(crate) fn download(self) -> Result<Download, String> {
+        static CLIENT: LazyLock<Result<ureq::Agent, String>> = LazyLock::new(|| {
+            let mut tls = ureq::tls::TlsConfig::builder();
+            // Respect an explicit CA bundle without silently disabling TLS validation.
+            if let Some(path) = std::env::var_os("SSL_CERT_FILE") {
+                let pem = std::fs::read(&path).map_err(|e| format!("SSL_CERT_FILE: {e}"))?;
+                let certs = ureq::tls::parse_pem(&pem)
+                    .filter_map(|item| match item {
+                        Ok(ureq::tls::PemItem::Certificate(cert)) => Some(Ok(cert)),
+                        Ok(_) => None,
+                        Err(e) => Some(Err(e.to_string())),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if certs.is_empty() {
+                    return Err("SSL_CERT_FILE: no certificates".into());
+                }
+                tls = tls.root_certs(certs.into());
+            }
+            Ok(ureq::Agent::config_builder()
+                .tls_config(tls.build())
+                .timeout_connect(Some(Duration::from_secs(10)))
+                .max_redirects(0)
+                .accept_encoding("identity")
+                .build()
+                .into())
+        });
+        let agent = CLIENT.as_ref().map_err(Clone::clone)?;
+        self.download_with(agent, Duration::from_secs(300))
+    }
+
+    fn download_with(self, agent: &ureq::Agent, budget: Duration) -> Result<Download, String> {
+        // Retries, redirects and body reads spend the same per-source budget.
+        let deadline = Instant::now() + budget;
+        let result = match self.attempt(agent, deadline) {
+            Err(error) if error.retryable && Instant::now() < deadline => {
+                std::thread::sleep(
+                    Duration::from_millis(100)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+                self.attempt(agent, deadline)
+            }
+            result => result,
+        };
+        result.map_err(|error| error.message)
+    }
+
+    fn attempt(&self, agent: &ureq::Agent, deadline: Instant) -> Result<Download, DownloadError> {
+        let mut url = self.url.clone();
+        url.set_fragment(None);
+        let mut redirects = 0;
+        let mut response = loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("download: total timeout".into());
+            }
+            let response = agent
+                .get(url.as_str())
+                .config()
+                .timeout_global(Some(remaining))
+                .build()
+                .call()
+                .map_err(DownloadError::request)?;
+            match response.status().as_u16() {
+                301 | 302 | 303 | 307 | 308 => {
+                    if redirects == 10 {
+                        return Err("download: more than 10 redirects".into());
+                    }
+                    let location = response
+                        .headers()
+                        .get("location")
+                        .and_then(|value| value.to_str().ok())
+                        .ok_or("download: redirect has no valid Location")?;
+                    let next = url
+                        .join(location)
+                        .map_err(|_| "download: invalid redirect URL")?;
+                    let mut next = validate_authoring_url(next.as_str())?;
+                    if url.scheme() == "https" && next.scheme() != "https" {
+                        return Err("download: HTTPS redirect would downgrade to HTTP".into());
+                    }
+                    next.set_fragment(None);
+                    url = next;
+                    redirects += 1;
+                }
+                200 => break response,
+                _ => {
+                    return Err(format!(
+                        "download: expected HTTP 200, received {}",
+                        response.status()
+                    )
+                    .into());
+                }
+            }
+        };
+        let effective_url = url.to_string();
+        let mut reader = response.body_mut().as_reader();
         let mut digest = Sha256::new();
         let mut bytes = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
         loop {
-            let buffer = reader.fill_buf().map_err(|e| e.to_string())?;
-            if buffer.is_empty() {
+            if Instant::now() >= deadline {
+                return Err("download body: total timeout".into());
+            }
+            let length = reader.read(&mut buffer).map_err(|e| DownloadError {
+                message: format!("download body: {e}"),
+                retryable: true,
+            })?;
+            if length == 0 {
                 break;
             }
-            digest.update(buffer);
-            let length = buffer.len();
+            digest.update(&buffer[..length]);
             bytes += length as u64;
-            reader.consume(length);
         }
         Ok(Download {
             resolved_url: self.original.to_owned(),
@@ -257,16 +287,98 @@ impl<'url> RemoteSource<'url> {
     }
 }
 
-fn run_checked(command: &mut Command, stage: &str) -> Result<String, String> {
-    let output = command.output().map_err(|e| format!("{stage}: {e}"))?;
-    // RPM can exit zero while printing an error. Warnings also leave native
-    // completeness unproven; do not quietly turn them into an accepted digest.
-    if !output.status.success() || !output.stderr.is_empty() {
-        return Err(format!(
-            "{stage}: {}\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+/// Only transient transport/status failures may retry; policy and TLS failures may not.
+struct DownloadError {
+    message: String,
+    retryable: bool,
+}
+
+impl DownloadError {
+    fn request(error: ureq::Error) -> Self {
+        let retryable = matches!(
+            error,
+            ureq::Error::Io(_)
+                | ureq::Error::Timeout(_)
+                | ureq::Error::HostNotFound
+                | ureq::Error::ConnectionFailed
+                | ureq::Error::BodyStalled
+                | ureq::Error::StatusCode(408 | 429 | 502 | 503 | 504)
+        );
+        Self {
+            message: format!("download: {error}"),
+            retryable,
+        }
     }
-    String::from_utf8(output.stdout).map_err(|e| format!("{stage}: {e}"))
+}
+
+impl From<String> for DownloadError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            retryable: false,
+        }
+    }
+}
+
+impl From<&str> for DownloadError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        thread,
+    };
+
+    #[test]
+    fn slow_headers_and_bodies_share_a_deadline_without_partial_hashes() {
+        let agent: ureq::Agent = ureq::Agent::config_builder().proxy(None).build().into();
+        for headers in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/archive", listener.local_addr().unwrap());
+            let server = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(&mut socket);
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                }
+                if headers {
+                    socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial")
+                        .unwrap();
+                    socket.flush().unwrap();
+                }
+                thread::sleep(Duration::from_millis(700));
+            });
+            let start = Instant::now();
+            let result = RemoteSource::parse(&url)
+                .unwrap()
+                .download_with(&agent, Duration::from_millis(100));
+            let elapsed = start.elapsed();
+            assert!(
+                result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|error| error.to_lowercase().contains("timeout")),
+                "{result:?}"
+            );
+            assert!(
+                elapsed < Duration::from_millis(600),
+                "request did not stop before the peer: {elapsed:?}"
+            );
+            server.join().unwrap();
+        }
+    }
 }

@@ -18,7 +18,8 @@ unmaintained = "workspace"
 unsound = "all"
 
 [licenses]
-allow = ["Apache-2.0", "MIT", "MPL-2.0", "MulanPSL-2.0", "Unicode-3.0"]
+# TLS crypto and Mozilla certificate data use ISC/BSD/CDLA respectively.
+allow = ["Apache-2.0", "BSD-3-Clause", "CDLA-Permissive-2.0", "ISC", "MIT", "MPL-2.0", "MulanPSL-2.0", "Unicode-3.0"]
 confidence-threshold = 0.8
 unused-allowed-license = "deny"
 

@@ -34,30 +34,34 @@ fn only_source_url(output: &Output, expected: &str) {
 }
 
 #[test]
-fn unavailable_context_blocks_only_sources_that_reference_it() {
-    for version in [
-        "Version: 1\n%if 0\nVersion: 2\n%endif",
-        "Version: 1\n%if 0\n%if 1\nVersion: 2\n%endif\n%endif",
-        "%if 0\nVersion: 2\n%endif\nVersion: 1",
-        "Version: 1\nVersion: 2\nVersion: 3",
-        "%global version 9\nVersion: 1",
-        "Version: 1\n%global version 9",
+fn source_context_accepts_known_ordered_values_and_rejects_ambiguity() {
+    for (version, known) in [
+        ("Version: 1\n%if 0\nVersion: 2\n%endif", true),
+        ("Version: 1\n%if 0\n%if 1\nVersion: 2\n%endif\n%endif", true),
+        ("%if 0\nVersion: 2\n%endif\nVersion: 1", true),
+        ("Version: 1\nVersion: 2\nVersion: 3", false),
+        ("%global version 9\nVersion: 1", true),
+        ("Version: 1\n%global version 9", true),
+        ("Version: 1\n%if %{unknown}\nVersion: 2\n%endif", false),
     ] {
         let source = SPEC.replace("Version:        1.22.5", version);
         let directory = fixture(&source);
         only_source_url(&selected_view(directory.path(), "sources.0.url"), URL);
-        rejected(
-            &run(
-                directory.path(),
-                &[
-                    "ed.spec",
-                    "--set",
-                    &format!("sources.0.url={URL}"),
-                    "--stdout",
-                ],
-            ),
-            "unsupported source macro",
+        let output = run(
+            directory.path(),
+            &[
+                "ed.spec",
+                "--set",
+                &format!("sources.0.url={URL}"),
+                "--stdout",
+            ],
         );
+        if known {
+            success(&output);
+            assert_eq!(output.stdout, source.as_bytes());
+        } else {
+            rejected(&output, "sources.0.url");
+        }
         let summary = selected_view(directory.path(), "package.summary");
         success(&summary);
         assert!(
@@ -296,12 +300,11 @@ fn implicit_source_numbers_follow_rpm_before_field_selection() {
 #[test]
 fn uncertain_implicit_source_numbers_do_not_block_unrelated_edits() {
     for prefix in [
-        "%if 0\nSource3: https://example.org/conditional.tar.gz\n%endif\n",
+        "%if %{unknown}\nSource3: https://example.org/conditional.tar.gz\n%endif\n",
         "%include absent.inc\n",
         "%{unknown_statement}\n",
         "%global number %{unknown_number}\n",
         "Vendor: %{unknown_vendor}\n",
-        "%if 0\nVendor: %{unknown_vendor}\n%endif\n",
     ] {
         let source = format!("{prefix}{}", SPEC.replace("Source0:", "Source:"));
         let directory = fixture(&source);

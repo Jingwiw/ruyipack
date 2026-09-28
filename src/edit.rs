@@ -611,15 +611,16 @@ fn read_candidate(item: &Input, options: &Options) -> Result<candidate::Candidat
     } else {
         Some(complete_hashes(item, document.to_mut(), options)?)
     };
-    let mut candidate = candidate::prepare(&item.snapshot, &document).map_err(|error| {
-        let path = item.draft.as_deref().unwrap_or(&item.path);
-        EditError::at(
-            Kind::InvalidCandidate,
-            path,
-            item.snapshot.selection(),
-            format!("{}: {error}", path.display()),
-        )
-    })?;
+    let mut candidate =
+        candidate::prepare(&item.snapshot, &document, &options.defines).map_err(|error| {
+            let path = item.draft.as_deref().unwrap_or(&item.path);
+            EditError::at(
+                Kind::InvalidCandidate,
+                path,
+                item.snapshot.selection(),
+                format!("{}: {error}", path.display()),
+            )
+        })?;
     candidate.source_hashes = source_hashes;
     Ok(candidate)
 }
@@ -644,13 +645,10 @@ fn complete_hashes(
                 ));
             }
         }
-        let contents = item.snapshot.render_before_hashing(document)?;
-        crate::source::calculate(
-            &item.path,
-            &contents,
-            &options.hash_sources,
-            &options.defines,
-        )
+        let contents = item
+            .snapshot
+            .render_before_hashing(document, &options.defines)?;
+        crate::source::calculate(&contents, &options.hash_sources, &options.defines)
     };
     let hashes = complete().map_err(|e| {
         EditError::at(

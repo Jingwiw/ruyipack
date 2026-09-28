@@ -30,7 +30,7 @@ pub(crate) enum Command {
     Init(init::Options),
     /// Edits SPEC fields through TOML or command-line assignments.
     Edit(edit::Options),
-    /// Resolves a trusted SPEC with native RPM and downloads one Source to hash it.
+    /// Resolves a Source statically and reports the SHA-256 of its downloaded bytes.
     SourceHash(source_hash::Options),
     /// Checks selected static package metadata and build requirements.
     Check {
@@ -55,7 +55,7 @@ pub(crate) enum Command {
         after_help = "The default output is NAME.spec beside the manifest. Its parent directory must exist.\n\
 For different existing content, select an output option or use the terminal menu.\n\
 Without a usable terminal or an explicit action, conflicting output is an error.\n\
-Sources with missing digests are downloaded automatically using curl, not RPM.\n\
+Sources with missing digests are downloaded automatically by the built-in HTTP client.\n\
 Failures warn and leave that digest missing; use --offline to disable downloads."
     )]
     Gen {

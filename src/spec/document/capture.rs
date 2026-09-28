@@ -8,7 +8,7 @@
 
 use rpm_spec::{
     ast::{FileDirective, FilesContent, Section, Span, SpecItem, Tag},
-    parse_result::{ParseResult, Severity},
+    parse_result::Severity,
 };
 use std::{collections::BTreeMap, ops::Range};
 use toml::{Table, Value};
@@ -42,11 +42,6 @@ impl<'src> Snapshot<'src> {
             source: source.into(),
             document: Table::new(),
             selection: selection.to_vec(),
-            package_context: if needs_sources {
-                package_context(source, parsed)
-            } else {
-                BTreeMap::new()
-            },
             scalars: Vec::new(),
             digest_markers: BTreeMap::new(),
             lists: BTreeMap::new(),
@@ -60,18 +55,19 @@ impl<'src> Snapshot<'src> {
         let mut comments = Vec::new();
         let mut consumed_assets = Vec::new();
         let mut sections = Vec::new();
-        // RPM assigns an implicit Source the next available number, not always 0.
-        // Explicit lower numbers do not rewind it. None means an earlier construct
-        // may have declared unseen Sources; later literals cannot prove the counter.
-        // Native examples are shared with scripts/check-native-sources.
-        let mut next_source = Some(0_u32);
+        // Editing locates declarations; static resolution supplies implicit identities.
+        // Explicit fields remain repairable even when other Source values are unknown.
+        let source_numbers = needs_sources
+            .then(|| crate::spec::sources::resolve(spec, &[]))
+            .and_then(Result::ok)
+            .map(|sources| {
+                sources
+                    .sources
+                    .into_iter()
+                    .map(|(number, source)| (source.offset, number))
+                    .collect::<BTreeMap<_, _>>()
+            });
         for (index, item) in parsed.spec.items.iter().enumerate() {
-            if needs_sources
-                && !matches!(item, SpecItem::Preamble(_))
-                && may_declare_sources(source, item)
-            {
-                next_source = None;
-            }
             match item {
                 SpecItem::Blank => {}
                 SpecItem::Comment(comment) => {
@@ -80,39 +76,15 @@ impl<'src> Snapshot<'src> {
                     comments.push(range);
                 }
                 SpecItem::Preamble(item) => {
-                    // Number every declaration before filtering the selected fields.
                     let number = if let Tag::Source(explicit) = item.tag
                         && needs_sources
                     {
-                        let number = crate::spec::source_number(&mut next_source, explicit);
-                        if number.is_none() && snapshot.selects("sources") {
-                            return Err("sources: implicit Source number is uncertain after unsupported or conditional declarations".into());
-                        }
-                        number
+                        Some(explicit.or_else(|| source_numbers.as_ref()
+                            .and_then(|numbers| numbers.get(&item.data.start_byte).copied()))
+                            .ok_or("sources: implicit Source number is uncertain after unsupported or conditional declarations")?)
                     } else {
                         None
                     };
-                    // Only literals, known package references and the profile's
-                    // Release expression are known not to emit extra declarations.
-                    let raw_value = source
-                        .get(item.data.start_byte..item.data.end_byte)
-                        .and_then(|raw| raw.split_once(':'))
-                        .map(|(_, value)| value.trim());
-                    if let Some(value) =
-                        raw_value.filter(|value| needs_sources && value.contains('%'))
-                    {
-                        let fields = snapshot
-                            .package_context
-                            .iter()
-                            .map(|(name, value)| (name.as_str(), value.as_str()))
-                            .collect::<Vec<_>>();
-                        if !(matches!(item.tag, Tag::Release) && value == profile.release)
-                            && crate::spec::expression::substitute_fields(value, &fields)
-                                .map_or(true, |value| value.contains(['\n', '\r']))
-                        {
-                            next_source = None;
-                        }
-                    }
                     let field = number
                         .map(|number| format!("sources.{number}"))
                         .or_else(|| preamble_field(&item.tag));
@@ -534,47 +506,6 @@ impl<'src> Snapshot<'src> {
     }
 }
 
-// Unknown declarations can advance RPM's source counter; never execute them.
-fn may_declare_sources(source: &str, item: &SpecItem<Span>) -> bool {
-    match item {
-        SpecItem::Preamble(item) => {
-            matches!(item.tag, Tag::Source(_))
-                || source
-                    .get(item.data.start_byte..item.data.end_byte)
-                    .is_none_or(|raw| raw.contains('%'))
-        }
-        SpecItem::Conditional(condition) => {
-            condition.branches.iter().any(|branch| {
-                branch
-                    .body
-                    .iter()
-                    .any(|item| may_declare_sources(source, item))
-            }) || condition
-                .otherwise
-                .as_ref()
-                .is_some_and(|items| items.iter().any(|item| may_declare_sources(source, item)))
-        }
-        SpecItem::Section(section) => matches!(
-            section.as_ref(),
-            Section::SourceList { .. } | Section::Package { .. }
-        ),
-        SpecItem::MacroDef(definition) => definition
-            .body
-            .literal_str()
-            .is_none_or(|body| body.contains(['\n', '\r'])),
-        SpecItem::BuildCondition(condition) => condition
-            .default
-            .as_ref()
-            .is_some_and(|value| value.literal_str().is_none()),
-        SpecItem::Comment(comment) => {
-            comment.style == rpm_spec::ast::CommentStyle::Hash
-                && comment.text.literal_str().is_none()
-        }
-        SpecItem::Blank => false,
-        _ => true,
-    }
-}
-
 fn scalar_preamble(tag: &Tag) -> Option<(&'static str, &'static str)> {
     Some(match tag {
         Tag::Name => ("package.name", "Name"),
@@ -697,66 +628,4 @@ fn validate_coverage(
         return Err("source: unmapped trailing content".into());
     }
     Ok(())
-}
-
-/// Retains raw main-package context even when an edit projects only Source fields.
-/// Missing and repeated fields are unavailable, not guessed from an arbitrary tag.
-fn package_context(source: &str, parsed: &ParseResult<Span>) -> BTreeMap<String, String> {
-    fn collect(
-        source: &str,
-        items: &[SpecItem<Span>],
-        conditional: bool,
-        fields: &mut BTreeMap<String, Option<String>>,
-    ) {
-        for item in items {
-            let item = match item {
-                SpecItem::Preamble(item) => item,
-                SpecItem::Conditional(condition) => {
-                    for branch in &condition.branches {
-                        collect(source, &branch.body, true, fields);
-                    }
-                    if let Some(items) = &condition.otherwise {
-                        collect(source, items, true, fields);
-                    }
-                    continue;
-                }
-                SpecItem::MacroDef(definition) => {
-                    fields.insert(definition.name.clone(), None);
-                    continue;
-                }
-                SpecItem::Include(_) | SpecItem::Statement(_) => {
-                    fields.extend(["name", "version", "url"].map(|name| (name.to_owned(), None)));
-                    continue;
-                }
-                _ => continue,
-            };
-            let name = match item.tag {
-                Tag::Name => "name",
-                Tag::Version => "version",
-                Tag::URL => "url",
-                _ => continue,
-            };
-            if conditional || !item.qualifiers.is_empty() || item.lang.is_some() {
-                fields.insert(name.to_owned(), None);
-                continue;
-            }
-            let Some(raw) = source.get(item.data.start_byte..item.data.end_byte) else {
-                continue;
-            };
-            let Some((_, value)) = raw.split_once(':') else {
-                continue;
-            };
-            // Only a first, unconditional declaration is usable. None stays unavailable.
-            fields
-                .entry(name.to_owned())
-                .and_modify(|value| *value = None)
-                .or_insert_with(|| Some(value.trim().to_owned()));
-        }
-    }
-    let mut fields = BTreeMap::new();
-    collect(source, &parsed.spec.items, false, &mut fields);
-    fields
-        .into_iter()
-        .filter_map(|(name, value)| value.map(|value| (name, value)))
-        .collect()
 }

@@ -28,6 +28,7 @@ fn reviewed(output: &Output, field: &str) {
 #[test]
 fn generated_sources_are_viewable_and_round_trip_without_changing_a_byte() {
     for url in [
+        "https://example.org/%{?name}",
         "%{url}/download#/%{name}-%{version}.tar.lz",
         "%url/download#/%name-%version.tar.lz",
         "https://example.org/%{name}/a%%20b-%{version}.tar.lz#/%{name}.tar.lz",
@@ -79,7 +80,6 @@ fn invalid_or_unsupported_sources_can_be_viewed_but_not_published() {
         "https://example.org/%{unknown}",
         "https://example.org/file#/%{unknown}",
         "https://example.org/a%20b#/%{unknown}",
-        "https://example.org/%{?name}",
         "https://example.org/%{name extra}",
         "https://example.org/%{lua:print(123)}",
         "https://example.org/%(touch MUST_NOT_EXIST)",
@@ -405,7 +405,7 @@ fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
 }
 
 #[test]
-fn source_context_is_order_independent_and_only_required_when_referenced() {
+fn views_preserve_raw_context_and_updates_require_available_values() {
     let directory = tempfile::tempdir().unwrap();
     let line = "URL:            https://www.gnu.org/software/ed/\n";
     let spec = SPEC
@@ -447,7 +447,7 @@ fn source_context_is_order_independent_and_only_required_when_referenced() {
 }
 
 #[test]
-fn source_macros_do_not_recursively_evaluate_package_fields() {
+fn source_context_never_executes_unknown_or_dynamic_package_values() {
     let directory = tempfile::tempdir().unwrap();
     for version in ["%{unknown}", "%41", "%(touch MUST_NOT_EXIST)"] {
         let spec = SPEC.replace(
@@ -470,7 +470,7 @@ fn source_macros_do_not_recursively_evaluate_package_fields() {
                     "--stdout",
                 ],
             ),
-            "not a supported static literal",
+            "sources.0.url",
         );
         assert!(!directory.path().join("MUST_NOT_EXIST").exists());
     }

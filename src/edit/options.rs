@@ -15,7 +15,7 @@ use std::path::PathBuf;
     group(ArgGroup::new("edit_action").args([
         "prepare", "view", "schema", "check", "diff", "stdout", "output"
     ])),
-    after_help = "Opens selected SPEC fields as TOML in $VISUAL, $EDITOR, or vim.\nChoose fields interactively, or use --field / --set. Use --all only for fully supported SPECs.\nUse --set FIELD=VALUE repeatedly for string fields.\nUse --prepare DIR for persistent drafts.\nCommon fields: package.version, build-requires.rpm (array), sources.N.url, sources.N.sha256.\nUse --hash-source N --trusted-spec to calculate and fill a Source digest.\nAfter the editor exits, checked edits are written to the source SPEC files.\nUse --diff to preview without writing; --from DIR applies saved drafts.\nChanging Version or Source only refreshes explicitly selected --hash-source digests; patches are not verified.\nReview them before building or submitting the package.\nExamples:\n  ruyipack edit ed.spec --set package.version=1.22 --diff\n  ruyipack edit ed.spec --field package.version --editor 'code --wait'\n  ruyipack edit ed.spec make.spec --field package.version --prepare drafts\n  ruyipack edit --from drafts --check\n  ruyipack edit --from drafts --diff\n  ruyipack edit --from drafts"
+    after_help = "Opens selected SPEC fields as TOML in $VISUAL, $EDITOR, or vim.\nChoose fields interactively, or use --field / --set. Use --all only for fully supported SPECs.\nUse --set FIELD=VALUE repeatedly for string fields.\nUse --prepare DIR for persistent drafts.\nCommon fields: package.version, build-requires.rpm (array), sources.N.url, sources.N.sha256.\nUse --hash-source N to calculate and fill a Source digest.\nAfter the editor exits, checked edits are written to the source SPEC files.\nUse --diff to preview without writing; --from DIR applies saved drafts.\nChanging Version or Source only refreshes explicitly selected --hash-source digests; patches are not verified.\nReview them before building or submitting the package.\nExamples:\n  ruyipack edit ed.spec --set package.version=1.22 --diff\n  ruyipack edit ed.spec --field package.version --editor 'code --wait'\n  ruyipack edit ed.spec make.spec --field package.version --prepare drafts\n  ruyipack edit --from drafts --check\n  ruyipack edit --from drafts --diff\n  ruyipack edit --from drafts"
 )]
 pub(crate) struct Options {
     /// SPEC files to edit.
@@ -35,12 +35,9 @@ pub(crate) struct Options {
     #[arg(long, value_name = "FIELD=VALUE", value_parser = assignment, conflicts_with_all = ["fields", "view", "schema", "editor"])]
     pub set: Vec<(String, String)>,
     /// Recalculate a Source SHA-256 from the pending candidate; repeat for more Sources.
-    #[arg(long = "hash-source", value_name = "N", requires = "trusted_spec", conflicts_with_all = ["view", "schema"])]
+    #[arg(long = "hash-source", value_name = "N", conflicts_with_all = ["view", "schema"])]
     pub hash_sources: Vec<u32>,
-    /// Acknowledge native macro execution for --hash-source. Isolate untrusted input.
-    #[arg(long, requires = "hash_sources")]
-    pub trusted_spec: bool,
-    /// Pass an RPM macro definition verbatim, in order, when calculating hashes.
+    /// Define a static macro before reading the candidate, in order.
     #[arg(
         short = 'D',
         long = "define",

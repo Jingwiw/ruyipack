@@ -87,12 +87,10 @@ After filling the scaffold, `gen NAME` automatically attempts to download remote
 Sources whose `sha256` is absent and fill the generated SPEC. Use `--offline` to
 skip downloads entirely. Existing digests are retained, not downloaded or
 verified; remove a digest from the TOML when you intend to recalculate it.
-Completion requires curl, not RPM, and uses the package fields below without
-executing macros. Missing tools, download failures and timeouts warn per Source
-with a reason; other Sources can still succeed and generation continues without
-inventing a digest. curl has a 10-second connection timeout and a 300-second total
-limit per Source. Invalid manifests and input changes during hashing remain hard
-errors that prevent publication. The final SPEC is reparsed and checked as usual.
+Completion uses built-in Rust HTTP/TLS and the package fields below, without
+executing macros. Download failures warn per Source and leave its digest missing.
+Connection setup is limited to 10 seconds; the complete transfer, including
+redirects and reading the body, to 300 seconds.
 
 Completion changes the same in-memory manifest used by the renderer: it never
 writes the author TOML or an intermediate TOML. `--stdout` / `--diff` preview the
@@ -315,63 +313,58 @@ Standalone `check` warns about missing Source digests but does not fully validat
 Source URLs/RemoteAsset associations or refresh archive digests. Static commands
 do not download sources or expand native RPM macros. No command resolves dependencies, verifies patches, or builds packages.
 
-## Computing a Source digest
+## Source downloads and static resolution
+
+Source commands use a shared Rust HTTP/TLS client: no curl, RPM installation or
+container is required. Responses stream directly into SHA-256 without temporary
+archives or HTTP content decoding. HTTP(S) only; credentials in URLs, HTTPS-to-HTTP
+redirects, partial responses and truncated bodies are rejected. Redirects are
+limited to 10 per attempt, connection setup to 10 seconds, and each source to a
+300-second budget shared by redirects, body reads and retries. Transient network
+failures and HTTP 408/429/502/503/504 get at most one retry after a 100 ms pause;
+TLS, URL-policy and other HTTP errors do not retry. A retry restarts the hash,
+never resumes a partial digest. Static macro evaluation is limited to 64 levels,
+1 MiB per expanded value and 100,000 evaluation steps per context.
+The `#/filename` suffix names the archive locally and is not sent to the server.
+Proxy environment variables are supported. TLS uses bundled Mozilla roots;
+`SSL_CERT_FILE` selects an explicit PEM CA bundle instead. Certificate validation
+is never disabled. Downloading a hash does not authenticate an upstream publisher.
+
+SPEC input is parsed with `rpm-spec`. Source identities, URL expressions and
+adjacent RemoteAsset declarations come from the same AST. Static resolution supports
+known package tags, plain/braced references, ordered nonparametric `%global`
+(eager), `%define` (lazy), `%undefine` (pop), known-presence conditional references,
+integer/boolean conditions and quoted-string equality. Architecture/OS conditions
+need explicit `_target_cpu`/`_target_os`; the host is not the target environment.
+`-D 'NAME EXPR'` supplies definitions before reading the SPEC; later definitions
+in the SPEC can override them. Cycles, excessive expansion and missing values
+produce reasons, not guessed URLs. Unknown environment macros are **not** assumed
+undefined, including in `%{?name}`. No Shell, Lua, parameterized macro or include
+is executed. Generated declarations, `%sourcelist`, and Sources inside subpackages are unsupported.
+
+## Computing or completing a Source digest
 
 ```sh
-ruyipack source-hash package.spec --trusted-spec --source 0 --format json
-ruyipack source-hash package.spec --trusted-spec -D 'archive_version 2.0'
+ruyipack source-hash package.spec --source 0 --format json
+ruyipack edit package.spec --set package.version=2.0 --hash-source 0 --diff
+ruyipack edit package.spec --hash-source 0 --prepare drafts
 ```
 
-Source hashing is explicit; ordinary generation, checking and editing stay offline.
-Run native hashing in a prepared target RPM environment with `rpmspec` and `curl`. RPM expands
-**the full SPEC with its real conditions**, using ordered `--define` arguments and
-normal RPM precedence: a later definition inside the SPEC can override a CLI
-value. The JSON records the input hash, native version, definitions, expanded-SPEC
-hash, resolved/effective URLs, byte count and calculated SHA-256. Human output is
-the digest on stdout and copyable preview/apply commands on stderr.
-JSON failures return `valid: false`, an error and exit 1, without a fabricated digest.
-CLI argument and output-write failures may precede JSON.
+`source-hash` downloads one selected Source without writing. Human output is its
+digest on stdout and copyable preview/apply commands on stderr, with an input hash
+guard against stale edits. JSON failures contain an error, never a fabricated hash.
 
-Review the resolved URL, not only the digest. The copyable edit commands include
-`--expect-sha256`, so an intervening SPEC change cannot silently receive a stale
-hash. `source-hash` itself never writes the SPEC or refreshes other Sources,
-verifies upstream authenticity, or proves the package builds. It accepts a bare marker or
-no marker; the effective Source number comes from native RPM output, not marker
-presence. `%sourcelist` is not supported by this command.
+`edit --hash-source N` calculates against the pending candidate, including version
+or URL edits. All selected URLs resolve before downloading; all normal candidate
+and stale-input checks still run before publication. Saved drafts must already
+select those digest fields. Bare adjacent RemoteAsset markers can gain a digest;
+unmarked/local or ambiguous edit mappings are refused. Failure leaves SPECs unchanged.
+Macro-bearing digest markers must be repaired before calculation, so replacing
+one cannot change the meaning of the URL whose bytes were hashed.
 
-Native RPM may execute shell/Lua and read includes; `--trusted-spec` acknowledges
-that boundary, not a sandbox guarantee. Use isolation for untrusted inputs.
-Missing build-system macros or any native stderr diagnostic stop calculation;
-no first-branch substitution or fallback URL is guessed. Use the distribution's
-prepared SPEC/macro environment, or explicit, reviewed definitions. HTTP(S) only,
-including redirects; URL credentials are refused. Curl configuration files are
-ignored, but normal proxy/certificate environment settings still apply. Temporary
-downloads are removed and failed downloads never produce a digest. A checksum
-identifies the bytes retrieved in this run, not all future responses from a URL.
-
-### Complete digests while editing
-
-```sh
-ruyipack edit package.spec --set package.version=2.0 --hash-source 0 --trusted-spec --diff
-# Review, then omit --diff to write; add --format json for a publication receipt.
-ruyipack edit package.spec --hash-source 0 --trusted-spec --prepare drafts
-```
-
-Repeat `--hash-source N` for multiple Sources; use `-D 'MACRO EXPR'` for the same
-native overrides as `source-hash`. Native resolution sees the pending Version/URL
-edits **before** downloads. Digest comments are filled afterwards, then the same
-candidate parsing, static checks and source-change protections run before publication.
-For saved drafts, the digest must already be selected; hashing never widens their
-scope. Bare adjacent RemoteAsset markers can gain a digest; unmarked/local or
-ambiguous Source mappings are still refused. Download failure leaves SPECs unchanged.
-
-Pending edits use a private same-named SPEC with the original working directory.
-The report records this and the expanded-SPEC hash. Path-dependent `__file_name`
-expressions are refused on temporary candidates; use a reviewed saved copy instead.
-External includes/macros and remote responses are not frozen by an input digest.
-Hashing proves the retrieved bytes, not authenticity, patch applicability or a build.
-A selected digest marker containing `%` must be repaired first: RPM expands macros
-even in comments, and replacing that marker after hashing could change resolution.
+Ordinary checking and editing stay offline; `gen` automatically attempts missing
+hashes unless `--offline` is used. Existing gen digests and author TOMLs are never
+updated. No Source operation proves patch applicability or package build success.
 
 ## JSON and inspection
 
@@ -413,7 +406,7 @@ Missing Source SHA-256 is `RPK005`, a warning in all three commands, not a hard
 failure or evidence of verified source content. Static detection covers adjacent
 bare markers and literal HTTP(S) Source prefixes, not arbitrary macro expansion.
 
-All five reporting commands use an `error` object with `code` and `message`.
+Reporting commands use an `error` object with `code` and `message`.
 Unreadable/invalid-UTF-8 inputs report `valid: false`, `code: "input-read"`, and
 no fabricated input hash. Generation uses report version 3; `source-hash` uses
 version 2. Codes describe the failing boundary, not text matched from a message.
@@ -445,3 +438,6 @@ severity names and remain inside JSON rather than stderr.
 Pin tool/parser identities and check `format_version`. Incompatible report changes
 increment it; optional fields and unknown error codes must be tolerated. Saved
 drafts and manifests have no cross-version compatibility guarantee in this preview.
+
+The native RPM development gate limits each command to 120 seconds and kills its
+process group on timeout. It is not a runtime fallback for Source operations.

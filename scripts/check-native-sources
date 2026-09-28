@@ -70,6 +70,21 @@ with tempfile.TemporaryDirectory(prefix="ruyipack-native-") as directory:
             raise SystemExit(f"{headers}: expected {expected}, observed {observed}")
         print(f"{','.join(headers)} -> {','.join(map(str, numbers))}: PASS")
 
+    # The Rust resolver consumes these same literal expectations independently.
+    for row in (root / "tests/fixtures/source-expressions.tsv").read_text().splitlines():
+        if not row or row.startswith("#"):
+            continue
+        definitions, expression, expected, define = row.split("\t")
+        path = pathlib.Path(directory) / "expression.spec"
+        path.write_text("%global _smp_mflags -j1\nName: probe\nVersion: 1\nRelease: 1\nSummary: Probe\nLicense: MIT\n"
+                        + definitions.replace("\\n", "\n") + f"Source0: {expression}\n%description\nProbe\n%files\n")
+        flags = ["--define", define] if define else []
+        expanded = run_checked(["rpmspec", "--define", f"_tmppath {directory}", *flags, "-P", str(path)])
+        urls = [line.split(":", 1)[1].strip() for line in expanded.splitlines() if line.startswith("Source0:")]
+        if urls != [expected]:
+            raise SystemExit(f"Native macro mismatch: {expression}: expected {expected!r}, got {urls!r}")
+        print(f"static Source expression {expression} -> {expected}: PASS")
+
     for path in args.spec:
         source = path.read_bytes()
         parsed = run_checked(["rpmspec", "--define", f"_tmppath {directory}", "-P", str(path)])

@@ -39,7 +39,8 @@ regenerating. No filename heuristic chooses an authority or synchronizes files.
 | `file_output` | Written/unchanged/skipped paths, typed partial failures | `edit` formats results and retains recovery information |
 | `check` | Findings and explicit incomplete reasons | `check`, `gen`, and `edit` reports |
 | `profile::buildsystems` | Embedded system names, requirements, stage guidance and identity | `init`, manifest validation, generation reports and RPK004 |
-| `source` | Resolved URLs and digests of actual downloads | `gen` fills missing manifest digests in memory; `edit` fills selected native-resolved candidate digests; `source-hash` reports without writing |
+| `spec::sources` | Ordered Source identities, original expressions, declared digests and static values | Hash calculation and read-only verification; selected URL validation |
+| `source` | Resolved URLs and digests of actual downloads | `gen` fills missing manifest digests in memory; `edit` fills selected candidate digests; `source-hash` calculates without writing |
 | `edit::drafts` | Draft storage layout and output protection | Saved and interactive editing |
 
 Read `generate.rs` and `edit.rs` for orchestration, then `render.rs` and
@@ -48,7 +49,7 @@ Read `generate.rs` and `edit.rs` for orchestration, then `render.rs` and
 applies replacements. `file_output.rs` owns conflict handling and publication. `output_cli` owns argument translation and
 terminal conflict selection; publication retains the checks around that selection.
 CLI/editor interactions stay outside candidate calculation. `source_hash` only
-presents the native hashing command; generation and editing consume `source`
+presents the explicit hashing command; generation and editing consume `source`
 directly. `spec::files` parses file rows for both manifest validation and result
 comparison; input validation does not call the output verifier. These are private
 modules, not a promised Rust library API.

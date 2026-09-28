@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+# Definitions (escaped newlines)	Source expression	Expected URL	Optional --define
+%global v old\n%global eager %{v}\n%define lazy %{v}\n%global v new\n	https://example.org/%{eager}/%{lazy}	https://example.org/old/new	
+%global v old\n%global v new\n%undefine v\n	https://example.org/%{v}	https://example.org/old	
+%if 0\n%global v wrong\n%else\n%global v right\n%endif\n	https://example.org/%{v}	https://example.org/right	
+%global enabled 1\n%if 0%{?enabled} == 1\n%global v right\n%endif\n	https://example.org/%{v}	https://example.org/right	
+%global v own\n	https://example.org/%{v}	https://example.org/own	v supplied
+%ifarch aarch64\n%global v arm\n%else\n%global v other\n%endif\n	https://example.org/%{v}	https://example.org/arm	_target_cpu aarch64
+%if "%{v}" == "one"\n%global chosen yes\n%else\n%global chosen no\n%endif\n	https://example.org/%{chosen}	https://example.org/yes	v one
+%global enabled 1\n	https://example.org/%{?enabled:yes}%{!?enabled:no}	https://example.org/yes	

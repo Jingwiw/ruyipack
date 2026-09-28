@@ -25,7 +25,7 @@ fn dependencies(values: &[&str]) -> String {
     let mut edited = snapshot.document().clone();
     edited["build-requires"]["rpm"] =
         Value::Array(values.iter().map(|value| (*value).into()).collect());
-    snapshot.render(&edited).unwrap()
+    snapshot.render(&edited, &[]).unwrap()
 }
 
 #[test]
@@ -66,14 +66,14 @@ fn annotated_dependency_groups_allow_append_but_not_ambiguous_regrouping() {
         "# 分组原因保留\nBuildRequires:  second",
     );
     let snapshot = capture(&source);
-    assert_eq!(snapshot.render(snapshot.document()).unwrap(), source);
+    assert_eq!(snapshot.render(snapshot.document(), &[]).unwrap(), source);
     let mut edited = snapshot.document().clone();
     edited["build-requires"]["rpm"]
         .as_array_mut()
         .unwrap()
         .push("third".into());
     assert_eq!(
-        snapshot.render(&edited).unwrap(),
+        snapshot.render(&edited, &[]).unwrap(),
         source.replace(
             "BuildRequires:  second\n",
             "BuildRequires:  second\nBuildRequires:  third\n"
@@ -89,7 +89,7 @@ fn annotated_dependency_groups_allow_append_but_not_ambiguous_regrouping() {
         .remove(0);
     assert!(
         snapshot
-            .render(&edited)
+            .render(&edited, &[])
             .unwrap_err()
             .contains("across separate source groups")
     );
@@ -107,9 +107,9 @@ fn copyright_years_and_holders_change_without_overlapping_replacements() {
             format!("{prefix}{years} {first}\n{prefix}{years} Second Holder\nName: demo\n");
         let snapshot = capture(&source);
         if years == "INVALID" || first.is_empty() {
-            assert!(snapshot.render(snapshot.document()).is_err());
+            assert!(snapshot.render(snapshot.document(), &[]).is_err());
         } else {
-            assert_eq!(snapshot.render(snapshot.document()).unwrap(), source);
+            assert_eq!(snapshot.render(snapshot.document(), &[]).unwrap(), source);
         }
         for (holders, expected) in [
             (
@@ -127,7 +127,7 @@ fn copyright_years_and_holders_change_without_overlapping_replacements() {
             edited["spec"]["copyright-years"] = "2026-2027".into();
             edited["spec"]["copyright-holders"] =
                 Value::Array(holders.into_iter().map(Value::from).collect());
-            assert_eq!(snapshot.render(&edited).unwrap(), expected);
+            assert_eq!(snapshot.render(&edited, &[]).unwrap(), expected);
         }
     }
 }
@@ -139,7 +139,7 @@ fn multiline_description_keeps_the_following_section_unchanged() {
     let mut edited = snapshot.document().clone();
     edited["package"]["description"] = "A text editor.\n\nIt keeps its source.\n\n".into();
     assert_eq!(
-        snapshot.render(&edited).unwrap(),
+        snapshot.render(&edited, &[]).unwrap(),
         "Name: demo\n%description\nA text editor.\n\nIt keeps its source.\n\n%files\n/usr/bin/demo\n"
     );
 }
@@ -152,7 +152,7 @@ fn comment_growth_preserves_surrounding_bytes() {
         "# VCS: No VCS link available\n# Check upstream before changing the archive".into(),
     ]);
     assert_eq!(
-        snapshot.render(&edited).unwrap(),
+        snapshot.render(&edited, &[]).unwrap(),
         SPEC.replace(
             "# VCS: No VCS link available",
             "# VCS: No VCS link available\n# Check upstream before changing the archive"
@@ -167,11 +167,11 @@ fn digest_edits_preserve_bare_markers_until_explicitly_filled() {
     for original in [marker, "#!RemoteAsset"] {
         let source = SPEC.replace(marker, original);
         let snapshot = capture(&source);
-        assert_eq!(snapshot.render(snapshot.document()).unwrap(), source);
+        assert_eq!(snapshot.render(snapshot.document(), &[]).unwrap(), source);
         let mut edited = snapshot.document().clone();
         edited["sources"]["0"]["sha256"] = "a".repeat(64).into();
         assert_eq!(
-            snapshot.render(&edited).unwrap(),
+            snapshot.render(&edited, &[]).unwrap(),
             source.replace(
                 original,
                 &format!("#!RemoteAsset:  sha256:{}", "a".repeat(64))
@@ -184,7 +184,7 @@ fn digest_edits_preserve_bare_markers_until_explicitly_filled() {
             edited["sources"]["0"]["sha256"] = invalid.into();
             assert!(
                 snapshot
-                    .render(&edited)
+                    .render(&edited, &[])
                     .unwrap_err()
                     .contains("64 hexadecimal digits")
             );
@@ -199,7 +199,7 @@ fn clearing_doc_paths_removes_their_shared_line_once() {
     let mut edited = snapshot.document().clone();
     edited["package"]["files"]["doc"] = Value::Array(Vec::new());
     assert_eq!(
-        snapshot.render(&edited).unwrap(),
+        snapshot.render(&edited, &[]).unwrap(),
         "Name: demo\n%files\n/usr/bin/demo\n"
     );
 }
@@ -210,11 +210,11 @@ fn repeated_utf8_paths_keep_their_own_ranges() {
     let snapshot =
         Snapshot::capture_selected(&ParsedSpec::parse(source), &["package.files.doc".into()])
             .unwrap();
-    assert_eq!(snapshot.render(snapshot.document()).unwrap(), source);
+    assert_eq!(snapshot.render(snapshot.document(), &[]).unwrap(), source);
     let mut edited = snapshot.document().clone();
     edited["package"]["files"]["doc"] = Value::Array(vec!["新说明".into(), "second".into()]);
     assert_eq!(
-        snapshot.render(&edited).unwrap(),
+        snapshot.render(&edited, &[]).unwrap(),
         "Name: demo\n%files\n\t%doc\t新说明\tsecond\n# 保留\n/usr/bin/demo\n"
     );
 }
@@ -236,7 +236,7 @@ fn multiple_resized_replacements_preserve_intervening_utf8_bytes() {
     edited["package"]["version"] = "22.333".into();
     edited["package"]["summary"] = "新摘要".into();
     assert_eq!(
-        snapshot.render(&edited).unwrap(),
+        snapshot.render(&edited, &[]).unwrap(),
         source
             .replace("Name: demo", "Name: longer-name")
             .replace("Version: 1", "Version: 22.333")
@@ -263,11 +263,11 @@ proptest! {
             &ParsedSpec::parse(&source),
             &["package.version".into(), "package.summary".into()],
         ).unwrap();
-        prop_assert_eq!(snapshot.render(snapshot.document()).unwrap(), source.as_str());
+        prop_assert_eq!(snapshot.render(snapshot.document(), &[]).unwrap(), source.as_str());
         let mut edited = snapshot.document().clone();
         edited["package"]["version"] = new_version.clone().into();
         edited["package"]["summary"] = new_summary.clone().into();
-        let combined = snapshot.render(&edited).unwrap();
+        let combined = snapshot.render(&edited, &[]).unwrap();
         prop_assert_eq!(&combined, &spec(&new_version, &new_summary));
 
         // Only independent literal fields commute. Each step must capture the
@@ -278,7 +278,7 @@ proptest! {
             ).unwrap();
             let mut document = snapshot.document().clone();
             document["package"][field] = value.into();
-            snapshot.render(&document).unwrap()
+            snapshot.render(&document, &[]).unwrap()
         };
         let version_first = edit(&source, "version", &new_version);
         let summary_first = edit(&source, "summary", &new_summary);
