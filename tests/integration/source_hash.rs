@@ -8,7 +8,7 @@
 
 use super::{
     http::{Server, response},
-    support::{assert_file, json_line, success},
+    support::{assert_file, command, json_line, success},
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -19,6 +19,47 @@ use std::{
 
 fn sha(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+#[test]
+fn invalid_ca_bundles_identify_the_file_without_changing_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.spec");
+    let source = "Name: probe\nSource0: https://example.invalid/archive\n";
+    fs::write(&input, source).unwrap();
+    let ca = dir.path().join("custom CA.pem");
+    for (contents, diagnostic) in [
+        (None, "open file"),
+        (Some(""), "no certificates"),
+        (
+            Some("-----BEGIN CERTIFICATE-----\n!\n-----END CERTIFICATE-----"),
+            "pem",
+        ),
+    ] {
+        if let Some(contents) = contents {
+            fs::write(&ca, contents).unwrap();
+        }
+        let output = command()
+            .env("SSL_CERT_FILE", &ca)
+            .arg("source-hash")
+            .arg(&input)
+            .args(["--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let report = json_line(&output);
+        let error = &report["error"];
+        let message = error["message"].as_str().unwrap();
+        assert!(
+            message.contains(ca.to_str().unwrap()) && message.contains("SSL_CERT_FILE"),
+            "{message}"
+        );
+        assert!(message.to_lowercase().contains(diagnostic), "{message}");
+        assert_eq!(error["reason"], "tls");
+        assert_eq!(error["retryable"], false);
+        assert!(report["sha256"].is_null());
+        assert_file(&input, source);
+    }
 }
 
 #[test]

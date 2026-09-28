@@ -8,11 +8,11 @@
 
 use std::{
     collections::HashSet,
-    fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
 };
 
+use fs_err::{self as fs, OpenOptions};
 use serde::{Deserialize, Serialize};
 
 use crate::utf8_file;
@@ -55,8 +55,7 @@ pub(super) fn create(
     let mut names = HashSet::new();
     // Validate and serialize every input before creating any state or draft files.
     for (position, (source, original, fields, table)) in sources.iter().enumerate() {
-        let source = fs::canonicalize(source)
-            .map_err(|error| format!("cannot resolve source {}: {error}", source.display()))?;
+        let source = fs::canonicalize(source).map_err(|error| error.to_string())?;
         if !source_paths.insert(source.clone()) {
             return Err(format!(
                 "source {} was selected more than once",
@@ -100,14 +99,11 @@ pub(super) fn create(
     for entry in &index.drafts {
         ensure_absent(&dir.join(draft_name(&entry.source)?))?;
     }
-    fs::create_dir_all(dir)
-        .map_err(|error| format!("cannot create draft directory {}: {error}", dir.display()))?;
-    let dir = fs::canonicalize(dir)
-        .map_err(|error| format!("cannot resolve draft directory {}: {error}", dir.display()))?;
+    fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+    let dir = fs::canonicalize(dir).map_err(|error| error.to_string())?;
     let state = dir.join(".state");
     for path in [&state, &state.join("originals"), &state.join("schema")] {
-        fs::create_dir(path)
-            .map_err(|error| format!("cannot create draft state {}: {error}", path.display()))?;
+        fs::create_dir(path).map_err(|error| error.to_string())?;
     }
     let mut drafts = Vec::new();
     for (position, ((entry, (document, schema)), (_, original, _, _))) in
@@ -128,12 +124,10 @@ pub(super) fn create(
 }
 
 pub(super) fn load(dir: &Path) -> Result<Vec<Draft>, String> {
-    let dir = fs::canonicalize(dir)
-        .map_err(|error| format!("cannot resolve draft directory {}: {error}", dir.display()))?;
+    let dir = fs::canonicalize(dir).map_err(|error| error.to_string())?;
     let state = dir.join(".state");
     for path in [&state, &state.join("originals"), &state.join("schema")] {
-        let metadata = fs::symlink_metadata(path)
-            .map_err(|error| format!("cannot read draft state {}: {error}", path.display()))?;
+        let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
         if !metadata.file_type().is_dir() {
             return Err(format!(
                 "draft state {} must be a directory, not a symlink",
@@ -201,7 +195,7 @@ pub(super) fn protect_output(output: &Path, drafts: &[&Path]) -> Result<(), Stri
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let target = fs::canonicalize(parent)
-        .map_err(|e| format!("{}: {e}", parent.display()))?
+        .map_err(|e| e.to_string())?
         .join(output.file_name().ok_or("output must name a file")?);
     if target.starts_with(root) {
         return Err(format!(
@@ -222,7 +216,7 @@ pub(super) fn protect_output(output: &Path, drafts: &[&Path]) -> Result<(), Stri
             protected.push(root.join(format!(".state/schema/{index}.json")));
         }
         for path in protected {
-            let metadata = fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let metadata = fs::metadata(&path).map_err(|e| e.to_string())?;
             if metadata.dev() == target_metadata.dev() && metadata.ino() == target_metadata.ino() {
                 return Err(format!(
                     "{}: output aliases a draft or its state",
@@ -253,7 +247,7 @@ fn draft_name(source: &Path) -> Result<String, String> {
 fn ensure_absent(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("cannot inspect {}: {error}", path.display())),
+        Err(error) => Err(error.to_string()),
         Ok(_) => Err(format!(
             "draft path {} already exists; use a new draft directory",
             path.display()
@@ -266,34 +260,29 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
+        use fs_err::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options
-        .open(path)
-        .map_err(|error| format!("cannot create draft file {}: {error}", path.display()))?;
-    file.write_all(bytes)
-        .map_err(|error| format!("cannot write draft file {}: {error}", path.display()))
+    let mut file = options.open(path).map_err(|error| error.to_string())?;
+    file.write_all(bytes).map_err(|error| error.to_string())
 }
 
 fn open_regular(path: &Path) -> Result<fs::File, String> {
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|error| format!("cannot inspect draft file {}: {error}", path.display()))?;
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
     if !metadata.file_type().is_file() {
         return Err(format!(
             "draft file {} must be a regular file, not a symlink",
             path.display()
         ));
     }
-    fs::File::open(path)
-        .map_err(|error| format!("cannot read draft file {}: {error}", path.display()))
+    fs::File::open(path).map_err(|error| error.to_string())
 }
 
 fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     open_regular(path)?
         .read_to_end(&mut bytes)
-        .map_err(|error| format!("cannot read draft file {}: {error}", path.display()))?;
+        .map_err(|error| error.to_string())?;
     Ok(bytes)
 }
 
@@ -326,10 +315,21 @@ mod tests {
     }
 
     #[test]
-    fn reading_utf8_drafts_rejects_symlinks() {
+    fn reading_drafts_reports_io_context_and_rejects_symlinks() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("draft.toml");
-        fs::write(&path, "after").unwrap();
+        let error = read_text(&path).unwrap_err();
+        assert!(
+            error.contains(path.to_str().unwrap()) && error.contains("metadata"),
+            "{error}"
+        );
+        assert!(ensure_absent(&path).is_ok());
+        write_new(&path, b"after").unwrap();
+        let error = write_new(&path, b"overwrite").unwrap_err();
+        assert!(
+            error.contains(path.to_str().unwrap()) && error.contains("open file"),
+            "{error}"
+        );
         assert_eq!(read_text(&path).unwrap(), "after");
         #[cfg(unix)]
         {

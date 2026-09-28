@@ -12,10 +12,10 @@ use crate::{
     source, spec, utf8_file,
 };
 use clap::Args;
+use fs_err as fs;
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
-    fs,
     io::{self, Write},
     path::PathBuf,
 };
@@ -130,8 +130,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
     let mut sources = BTreeMap::new();
     let mut incomplete = None;
     let result = (|| {
-        let path = fs::canonicalize(input)
-            .map_err(|e| ("input-read", format!("{}: {e}", input.display())))?;
+        let path = fs::canonicalize(input).map_err(|e| ("input-read", e.to_string()))?;
         let original = utf8_file::read(&path).map_err(|e| ("input-read", e.to_string()))?;
         input_sha256 = Some(utf8_file::sha256(&original));
         if options.manifest.is_some() {

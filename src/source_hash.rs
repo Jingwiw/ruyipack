@@ -11,8 +11,8 @@ use crate::{
     source, utf8_file,
 };
 use clap::Args;
+use fs_err as fs;
 use std::{
-    fs,
     io::{self, Write},
     path::PathBuf,
 };
@@ -34,8 +34,7 @@ pub(crate) struct Options {
 
 pub(crate) fn run(options: &Options) -> Result<bool, String> {
     let result = (|| {
-        let path = fs::canonicalize(&options.spec)
-            .map_err(|e| HashError::Input(format!("{}: {e}", options.spec.display())))?;
+        let path = fs::canonicalize(&options.spec).map_err(|e| HashError::Input(e.to_string()))?;
         let original = utf8_file::read(&path).map_err(|e| HashError::Input(e.to_string()))?;
         let result = source::calculate(&original, &[options.source_number], &options.defines)
             .map_err(HashError::Source)?;

@@ -173,16 +173,18 @@ impl<'url> RemoteSource<'url> {
             let mut tls = ureq::tls::TlsConfig::builder();
             // Respect an explicit CA bundle without silently disabling TLS validation.
             if let Some(path) = std::env::var_os("SSL_CERT_FILE") {
-                let pem = std::fs::read(&path).map_err(|e| format!("SSL_CERT_FILE: {e}"))?;
+                let path = std::path::Path::new(&path);
+                let pem = fs_err::read(path).map_err(|e| format!("SSL_CERT_FILE: {e}"))?;
                 let certs = ureq::tls::parse_pem(&pem)
                     .filter_map(|item| match item {
                         Ok(ureq::tls::PemItem::Certificate(cert)) => Some(Ok(cert)),
                         Ok(_) => None,
                         Err(e) => Some(Err(e.to_string())),
                     })
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("SSL_CERT_FILE {}: {e}", path.display()))?;
                 if certs.is_empty() {
-                    return Err("SSL_CERT_FILE: no certificates".into());
+                    return Err(format!("SSL_CERT_FILE {}: no certificates", path.display()));
                 }
                 tls = tls.root_certs(certs.into());
             }

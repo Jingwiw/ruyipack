@@ -21,10 +21,10 @@ pub(crate) use options::Options;
 use crate::output_cli::ReportFormat;
 use crate::spec::{ParsedSpec, document::Snapshot};
 use crate::{file_output, utf8_file};
+use fs_err as fs;
 use serde_json::json;
 use std::{
     borrow::Cow,
-    fs,
     io::{self, Write},
     path::{Path, PathBuf},
 };
@@ -157,14 +157,8 @@ fn load_inputs(options: &Options) -> Result<Vec<Input>, EditError> {
                         }
                     }
                 }
-                let path = fs::canonicalize(path).map_err(|e| {
-                    EditError::at(
-                        Kind::InputRead,
-                        path,
-                        &fields,
-                        format!("{}: {e}", path.display()),
-                    )
-                })?;
+                let path = fs::canonicalize(path)
+                    .map_err(|e| EditError::at(Kind::InputRead, path, &fields, e.to_string()))?;
                 let source = utf8_file::read(&path)
                     .map_err(|e| EditError::at(Kind::InputRead, &path, &fields, e.to_string()))?;
                 input(path, source, fields, None)
