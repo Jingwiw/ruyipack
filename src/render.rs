@@ -21,7 +21,7 @@ pub(crate) fn run(manifest: &manifest::Manifest) -> Result<RenderedSpec, RenderE
     let contents = spec::render(manifest, profile);
     let parsed = ParsedSpec::parse(&contents);
     verify::run(&parsed, manifest, profile)?;
-    let report = check::analyze(&parsed);
+    let report = check::analyze(&parsed, check::Policy::Authoring, &[]);
     let build_contract = manifest
         .build
         .system

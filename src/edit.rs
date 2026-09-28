@@ -347,7 +347,7 @@ fn input(
     Ok(Input {
         path,
         snapshot: snapshot.into_owned(),
-        baseline: crate::check::analyze(&parsed),
+        baseline: crate::check::analyze(&parsed, crate::check::Policy::Authoring, &[]),
         draft,
     })
 }

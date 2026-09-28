@@ -64,7 +64,7 @@ impl<'src> Snapshot<'src> {
                 sources
                     .sources
                     .into_iter()
-                    .map(|(number, source)| (source.offset, number))
+                    .map(|(number, source)| (source.span.bytes.start, number))
                     .collect::<BTreeMap<_, _>>()
             });
         for (index, item) in parsed.spec.items.iter().enumerate() {

@@ -15,7 +15,7 @@ use rpm_spec::{
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) struct Source {
-    pub(crate) offset: usize,
+    pub(crate) span: crate::source_location::SourceLocation,
     pub(crate) expression: String,
     pub(crate) digest: Result<Option<String>, String>,
     pub(crate) url: Result<String, String>,
@@ -97,7 +97,7 @@ impl Sources<'_> {
                             .as_ref()
                             .map_or(value, |reason| Err(reason.clone()));
                         let source = Source {
-                            offset: item.data.start_byte,
+                            span: super::diagnostic::location(item.data),
                             expression: expression.to_owned(),
                             digest: self.digest(item.data.start_byte),
                             url,

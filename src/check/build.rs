@@ -53,6 +53,7 @@ impl BuildRequirements {
         RuleResult {
             findings,
             incomplete_reasons,
+            ..RuleResult::default()
         }
     }
 }

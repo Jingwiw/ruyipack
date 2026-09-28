@@ -37,11 +37,13 @@ pub(crate) enum IncompleteReason {
     ParserError,
     UnresolvedLicense,
     UnresolvedBuildRequirements,
+    UnresolvedSources,
 }
 
 impl IncompleteReason {
     fn explanation(self) -> &'static str {
         match self {
+            Self::UnresolvedSources => "Source declarations require an unambiguous static context",
             Self::ParserError => "the SPEC parser reported an error",
             Self::UnresolvedLicense => "license expressions require RPM evaluation",
             Self::UnresolvedBuildRequirements => "build requirements require RPM evaluation",
@@ -65,6 +67,9 @@ enum CheckStatus {
 /// Results produced by one execution of the static SPEC check.
 pub(crate) struct CheckReport {
     sha256: String,
+    policy: crate::check::Policy,
+    source_uncertainty: Option<String>,
+    defines: Vec<String>,
     status: CheckStatus,
     incomplete_reasons: Vec<IncompleteReason>,
     selected_rules: Vec<SelectedRule>,
@@ -73,30 +78,20 @@ pub(crate) struct CheckReport {
 }
 
 impl CheckReport {
-    /// Records a check stopped by parser errors.
-    pub(crate) fn incomplete(
-        source: &str,
-        selected_rules: Vec<SelectedRule>,
-        parser_diagnostics: Vec<ParserDiagnostic>,
-    ) -> Self {
-        Self {
-            sha256: crate::utf8_file::sha256(source),
-            status: CheckStatus::Incomplete,
-            incomplete_reasons: vec![IncompleteReason::ParserError],
-            selected_rules,
-            parser_diagnostics,
-            findings: Vec::new(),
-        }
-    }
-
     /// Combines findings and records any unresolved field checks.
     pub(crate) fn analyzed(
         source: &str,
         selected_rules: Vec<SelectedRule>,
         parser_diagnostics: Vec<ParserDiagnostic>,
-        mut findings: Vec<Finding>,
-        mut incomplete_reasons: Vec<IncompleteReason>,
+        result: crate::check::RuleResult,
+        policy: crate::check::Policy,
+        defines: &[String],
     ) -> Self {
+        let crate::check::RuleResult {
+            mut findings,
+            mut incomplete_reasons,
+            source_uncertainty,
+        } = result;
         findings.sort_by(|left, right| {
             left.span
                 .bytes
@@ -118,7 +113,10 @@ impl CheckReport {
             CheckStatus::Pass
         };
         Self {
+            defines: defines.to_vec(),
             sha256: crate::utf8_file::sha256(source),
+            policy,
+            source_uncertainty,
             status,
             incomplete_reasons,
             selected_rules,
@@ -188,7 +186,13 @@ impl CheckReport {
                 writer,
                 "{}: error: check incomplete because {}",
                 path.display(),
-                reason.explanation()
+                if *reason == IncompleteReason::UnresolvedSources {
+                    self.source_uncertainty
+                        .as_deref()
+                        .unwrap_or(reason.explanation())
+                } else {
+                    reason.explanation()
+                }
             )?;
         }
         Ok(())
@@ -204,6 +208,10 @@ impl CheckReport {
             },
             evidence: Evidence {
                 stage: "spec-static",
+                policy: self.policy,
+                defines: &self.defines,
+                source_uncertainty: self.source_uncertainty.as_deref(),
+                not_checked: ["source-content", "native-rpm", "build"],
                 status: self.status.name(),
                 incomplete_reasons: &self.incomplete_reasons,
                 tool: crate::tool::identity(),
@@ -262,6 +270,10 @@ struct InputIdentity<'a> {
 
 #[derive(Serialize)]
 struct Evidence<'a> {
+    policy: crate::check::Policy,
+    source_uncertainty: Option<&'a str>,
+    defines: &'a [String],
+    not_checked: [&'static str; 3],
     stage: &'static str,
     status: &'static str,
     incomplete_reasons: &'a [IncompleteReason],
@@ -304,7 +316,11 @@ mod tests {
             }
         }
 
-        let report = CheckReport::incomplete("", vec![], vec![]);
+        let report = crate::check::analyze(
+            &crate::spec::ParsedSpec::parse(""),
+            crate::check::Policy::Authoring,
+            &[],
+        );
         let error = report
             .write_json(Path::new("input.spec"), &mut BrokenWriter)
             .unwrap_err();

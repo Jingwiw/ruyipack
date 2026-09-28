@@ -6,17 +6,18 @@
 
 //! openRuyi policy checks over literal fields, without RPM evaluation.
 
-use rpm_spec::ast::{PreambleItem, Span, SpecFile, SpecItem, Tag, TagValue};
+use rpm_spec::ast::{PreambleItem, Span, SpecItem, Tag, TagValue};
 use rpm_spec_analyzer::visit::Visit;
 
 use crate::check::{RuleResult, build::BuildRequirements, license};
 
-pub(super) fn run(spec: &SpecFile<Span>, source: &str) -> RuleResult {
+pub(super) fn run(parsed: &super::ParsedSpec<'_>, defines: &[String]) -> RuleResult {
+    let spec = &parsed.parsed.spec;
+    let source = parsed.source();
     let mut visitor = CheckVisitor {
         result: RuleResult::default(),
         build: BuildRequirements::default(),
         conditional: false,
-        source,
     };
     visitor.visit_spec(spec);
     // Match the top-level comments exposed as spec.license by header editing,
@@ -41,17 +42,63 @@ pub(super) fn run(spec: &SpecFile<Span>, source: &str) -> RuleResult {
         .result
         .incomplete_reasons
         .extend(build.incomplete_reasons);
+    check_sources(parsed, defines, &mut visitor.result);
     visitor.result
 }
 
-struct CheckVisitor<'a> {
-    source: &'a str,
+/// Share ordered macro/conditional facts with hashing and verification. Unknown
+/// context is not evidence that a digest is missing, or that no Sources exist.
+fn check_sources(parsed: &super::ParsedSpec<'_>, defines: &[String], result: &mut RuleResult) {
+    let resolved = match super::sources::resolve(parsed, defines) {
+        Ok(resolved) => resolved,
+        Err(reason) => {
+            result.source_uncertainty = Some(reason);
+            return;
+        }
+    };
+    result.source_uncertainty = resolved.incomplete;
+    for (number, source) in resolved.sources {
+        let remote = match &source.url {
+            Ok(url) => url.split_once(':').is_some_and(|(scheme, _)| {
+                scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")
+            }),
+            Err(reason) => {
+                result
+                    .source_uncertainty
+                    .get_or_insert_with(|| reason.clone());
+                false
+            }
+        };
+        let problem = match &source.digest {
+            Err(reason) => Some(reason.as_str()),
+            Ok(Some(hash)) if crate::source::validate_sha256(hash).is_err() => Some(
+                "invalid sha256; expected 64 hexadecimal digits. Repair the digest before submitting the package",
+            ),
+            Ok(None) if remote => Some(
+                "no sha256; openRuyi requires SHA-256 for HTTP(S) sources. gen attempts missing digests automatically unless --offline; for an existing SPEC, use edit --hash-source N. A passing static check is not source verification",
+            ),
+            _ => None,
+        };
+        if let Some(problem) = problem {
+            let rule = crate::check::SOURCE_DIGEST_RULE;
+            result.findings.push(crate::check_report::Finding {
+                producer: "ruyipack",
+                code: rule.code,
+                severity: rule.severity,
+                span: source.span,
+                message: format!("Source{number}: {problem}"),
+            });
+        }
+    }
+}
+
+struct CheckVisitor {
     result: RuleResult,
     build: BuildRequirements,
     conditional: bool,
 }
 
-impl<'ast> Visit<'ast> for CheckVisitor<'_> {
+impl<'ast> Visit<'ast> for CheckVisitor {
     fn visit_item(&mut self, item: &'ast rpm_spec::ast::SpecItem<Span>) {
         use rpm_spec::ast::SpecItem;
         match item {
@@ -92,45 +139,6 @@ impl<'ast> Visit<'ast> for CheckVisitor<'_> {
                     .filter(|_| !self.conditional)
                     .map(|s| s.trim().to_owned());
                 self.build.systems.push((system, span));
-            }
-            Tag::Source(_) => {
-                let profile = crate::profile::load();
-                let before = &self.source[..item.data.start_byte];
-                let previous = before
-                    .strip_suffix('\n')
-                    .unwrap_or(before)
-                    .rsplit('\n')
-                    .next()
-                    .unwrap_or("");
-                let raw = &self.source[item.data.start_byte..item.data.end_byte];
-                let remote = previous == profile.remote_asset_bare
-                    || raw.split_once(':').is_some_and(|(_, value)| {
-                        value.trim_start().starts_with("https://")
-                            || value.trim_start().starts_with("http://")
-                    });
-                let problem = if let Some(hash) =
-                    previous.strip_prefix(&profile.remote_asset_prefix)
-                {
-                    crate::source::validate_sha256(hash.trim()).err().map(|_| {
-                        "Source: invalid sha256; expected 64 hexadecimal digits. Repair the digest before submitting the package"
-                    })
-                } else if remote {
-                    Some(
-                        "Source: no sha256; openRuyi requires SHA-256 for HTTP(S) sources. gen attempts missing digests automatically unless --offline; for an existing SPEC, use edit --hash-source N. A passing static check is not source verification",
-                    )
-                } else {
-                    None
-                };
-                if let Some(problem) = problem {
-                    let rule = crate::check::SOURCE_DIGEST_RULE;
-                    self.result.findings.push(crate::check_report::Finding {
-                        producer: "ruyipack",
-                        code: rule.code,
-                        severity: rule.severity,
-                        span,
-                        message: problem.into(),
-                    });
-                }
             }
             Tag::BuildRequires => {
                 if !self.conditional

@@ -518,3 +518,148 @@ fn independent_incomplete_reasons_survive_each_other_and_confirmed_failures() {
         assert_file(&path, &source);
     }
 }
+
+#[test]
+fn static_policy_changes_admission_without_inventing_source_facts() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = SPEC.find("#!RemoteAsset:").unwrap();
+    let end = SPEC.find("BuildSystem:").unwrap();
+    let hash = "a".repeat(64);
+    for (declarations, violation, unknown) in [
+        (
+            format!("#!RemoteAsset:  sha256:{hash}\nSource0: https://example.org/archive\n"),
+            false,
+            false,
+        ),
+        ("Source0: https://example.org/archive\n".into(), true, false),
+        (
+            "%global archive https://example.org/archive\nSource0: %{archive}\n".into(),
+            true,
+            false,
+        ),
+        (
+            "#!RemoteAsset:  sha256:INVALID\nSource0: https://example.org/archive\n".into(),
+            true,
+            false,
+        ),
+        (
+            "#!RemoteAsset: md5:abc\nSource0: https://example.org/archive\n".into(),
+            true,
+            false,
+        ),
+        ("Source0: local.tar.gz\n".into(), false, false),
+        (
+            "%if 0\nSource0: https://example.org/archive\n%endif\n".into(),
+            false,
+            false,
+        ),
+        ("Source0: %{unknown}\n".into(), false, true),
+        ("%include absent.inc\n".into(), false, true),
+        (
+            "Source0: https://example.org/archive\n%include absent.inc\n".into(),
+            true,
+            true,
+        ),
+        ("".into(), false, false),
+    ] {
+        let source = format!("{}{}{}", &SPEC[..start], declarations, &SPEC[end..]);
+        fs::write(dir.path().join("ed.spec"), &source).unwrap();
+        for policy in ["authoring", "submit"] {
+            let output = run(
+                dir.path(),
+                &["check", "ed.spec", "--format", "json", "--policy", policy],
+            );
+            let report = super::support::json_line(&output);
+            let evidence = &report["evidence"];
+            let blocks = policy == "submit";
+            let expected_status = if blocks && violation {
+                "fail"
+            } else if blocks && unknown {
+                "incomplete"
+            } else {
+                "pass"
+            };
+            assert_eq!(
+                output.status.code(),
+                Some(i32::from(blocks && (violation || unknown))),
+                "{declarations}: {report}"
+            );
+            assert_eq!(evidence["status"], expected_status);
+            assert_eq!(evidence["policy"], policy);
+            assert_eq!(evidence["source_uncertainty"].is_string(), unknown);
+            assert_eq!(
+                evidence["incomplete_reasons"],
+                if blocks && unknown {
+                    serde_json::json!(["unresolved-sources"])
+                } else {
+                    serde_json::json!([])
+                }
+            );
+            assert_eq!(
+                evidence["not_checked"],
+                serde_json::json!(["source-content", "native-rpm", "build"])
+            );
+            let findings = report["findings"].as_array().unwrap();
+            assert_eq!(
+                findings.len(),
+                usize::from(violation),
+                "{declarations}: {report}"
+            );
+            if violation {
+                assert_eq!(findings[0]["code"], "RPK005");
+                assert_eq!(
+                    findings[0]["severity"],
+                    if blocks { "deny" } else { "warn" }
+                );
+                let span = &findings[0]["span"];
+                assert!(
+                    source[span["start_byte"].as_u64().unwrap() as usize
+                        ..span["end_byte"].as_u64().unwrap() as usize]
+                        .starts_with("Source0:")
+                );
+            }
+        }
+        let edited = run(
+            dir.path(),
+            &["edit", "ed.spec", "--set", "package.version=2", "--diff"],
+        );
+        assert!(edited.status.success(), "{declarations}: {edited:?}");
+        assert!(String::from_utf8_lossy(&edited.stdout).contains("+Version:        2"));
+        assert_file(dir.path().join("ed.spec"), &source);
+    }
+}
+
+#[test]
+fn source_definitions_are_recorded_without_claiming_native_evaluation() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = SPEC.replace(
+        "https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz",
+        "%{archive}",
+    );
+    fs::write(dir.path().join("ed.spec"), &source).unwrap();
+    let definition = "archive https://example.org/archive";
+    let output = run(
+        dir.path(),
+        &[
+            "check", "ed.spec", "--policy", "submit", "--format", "json", "-D", definition,
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = super::support::json_line(&output);
+    assert_eq!(
+        report["evidence"]["defines"],
+        serde_json::json!([definition])
+    );
+    assert!(report["evidence"]["source_uncertainty"].is_null());
+    assert_file(dir.path().join("ed.spec"), &source);
+    let output = run(
+        dir.path(),
+        &[
+            "check", "ed.spec", "--policy", "submit", "--format", "json", "-D", "broken(",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report = super::support::json_line(&output);
+    assert_eq!(report["evidence"]["status"], "incomplete");
+    assert!(report["evidence"]["source_uncertainty"].is_string());
+}

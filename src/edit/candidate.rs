@@ -32,7 +32,7 @@ pub(super) fn prepare(
     if observed.document() != document {
         return Err("edited fields did not survive SPEC parsing".into());
     }
-    let report = check::analyze(&parsed);
+    let report = check::analyze(&parsed, check::Policy::Authoring, &[]);
     let mut review_triggers = Vec::new();
     let before = snapshot.document();
     if table::lookup(before, "package.version") != table::lookup(document, "package.version") {

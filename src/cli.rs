@@ -36,6 +36,12 @@ pub(crate) enum Command {
     VerifySources(verify_sources::Options),
     /// Checks selected static package metadata and build requirements.
     Check {
+        /// Static admission policy; neither policy verifies source bytes or native builds.
+        #[arg(long, value_enum, default_value_t = crate::check::Policy::Authoring)]
+        policy: crate::check::Policy,
+        /// Define a static Source macro; other rules still check unevaluated syntax.
+        #[arg(short = 'D', long = "define", value_name = "MACRO EXPR")]
+        defines: Vec<String>,
         /// RPM SPEC file to check.
         #[arg(value_name = "SPEC")]
         spec: PathBuf,

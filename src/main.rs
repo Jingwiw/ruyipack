@@ -43,7 +43,12 @@ fn main() -> ExitCode {
         Command::Edit(options) => exit_for(edit::run(options)),
         Command::SourceHash(options) => exit_for(source_hash::run(&options)),
         Command::VerifySources(options) => exit_for(verify_sources::run(&options)),
-        Command::Check { spec, format } => exit_for(check::run(&spec, format)),
+        Command::Check {
+            spec,
+            format,
+            policy,
+            defines,
+        } => exit_for(check::run(&spec, format, policy, &defines)),
         Command::Inspect { spec, format } => exit_for(inspect::run(&spec, format)),
         Command::Gen {
             name,

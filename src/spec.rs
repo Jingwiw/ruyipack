@@ -49,8 +49,8 @@ impl<'src> ParsedSpec<'src> {
         analyzer::run(self.source, &self.parsed.spec, rules)
     }
 
-    pub(crate) fn policy_checks(&self) -> RuleResult {
-        checks::run(&self.parsed.spec, self.source)
+    pub(crate) fn policy_checks(&self, defines: &[String]) -> RuleResult {
+        checks::run(self, defines)
     }
 }
 

@@ -293,7 +293,7 @@ Editor work is retained after validation failure or when changes remain unapplie
 | RPK002 | Literal Name, Version, Release syntax; `Epoch: 0` is not rejected |
 | RPK003 | Literal project URL syntax; existing HTTP/HTTPS accepted |
 | RPK004 | Profile direct requirements for a single literal BuildSystem; currently Autotools has required tools |
-| RPK005 | Warning for a missing or malformed adjacent Source SHA-256; unrelated edits can continue |
+| RPK005 | Missing or malformed adjacent Source SHA-256; warning for authoring, error under the submit static policy |
 
 SPDX covers main/subpackages and conditional branches, not upstream license
 correctness. IDs are case-insensitive, operators uppercase, deprecated IDs valid;
@@ -309,8 +309,18 @@ have no common required-tool set here. Unknown/context-dependent BuildSystem
 selections are outside this contract, not inferred.
 
 `pass` means only the selected rules passed; parser warnings may remain.
-Standalone `check` warns about missing Source digests but does not fully validate
-Source URLs/RemoteAsset associations or refresh archive digests. Static commands
+`check --policy authoring` (the default, also used by gen/edit) warns about missing
+Source digests. `check --policy submit` rejects confirmed digest violations and
+requires unambiguous static Source resolution. `-D 'MACRO EXPR'` supplies Source
+context and is recorded in the report; it does not evaluate License or other rules.
+Unknown Source context is reported
+separately, not called a missing digest; it does not block unrelated authoring edits.
+Nonblocking Source uncertainty remains in JSON evidence rather than producing
+repeated warnings for ordinary native build macros; submit explains it as incomplete.
+Both policies are **static checks only**, not submission or release approval:
+source-content verification, native RPM validation and builds remain unperformed.
+Use `verify-sources` separately to compare downloaded bytes. Neither policy fully
+validates Source URLs or refreshes archive digests. Static commands
 do not download sources or expand native RPM macros. No command resolves dependencies, verifies patches, or builds packages.
 
 ## Source downloads and static resolution
@@ -410,7 +420,8 @@ spans without hiding messages. This does not establish general semantic accuracy
 
 Static reports carry `evidence.incomplete_reasons` as a deterministic, deduplicated
 list, including when `status` is `fail`. Reasons distinguish `parser-error`,
-`unresolved-license`, and `unresolved-build-requirements`; an empty list does not
+`unresolved-license`, `unresolved-build-requirements`, and (for submit)
+`unresolved-sources`; an empty list does not
 expand the selected rule scope. Parser errors stop rule execution. Ordinary parser
 warnings do not imply incomplete checks. Both generation and editing embed this
 same versioned report, independently of their outer envelope version.
@@ -424,9 +435,11 @@ static failures yield one report and exit 1. Before a candidate exists,
 `report_subject` and `report` are null and `error` explains the failure; unreadable
 input has no SHA-256. CLI argument and output-write failures can precede JSON.
 
-Missing Source SHA-256 is `RPK005`, a warning in all three commands, not a hard
-failure or evidence of verified source content. Static detection covers adjacent
-bare markers and literal HTTP(S) Source prefixes, not arbitrary macro expansion.
+Static evidence records `policy`, `source_uncertainty` (null when resolved), and
+`not_checked` stages. RPK005 uses the same ordered Source resolver as source
+hashing: known macros and conditions are evaluated without executing RPM macros;
+unknown declarations remain explicit. Gen/edit retain authoring warnings for
+missing SHA-256. A declared digest is never evidence that downloaded bytes match.
 
 Reporting commands use an `error` object with `code` and `message`.
 Unreadable/invalid-UTF-8 inputs report `valid: false`, `code: "input-read"`, and
