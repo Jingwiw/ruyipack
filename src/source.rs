@@ -423,7 +423,7 @@ impl Error {
 mod tests {
     use super::*;
     use std::{
-        io::{BufRead, BufReader, Write},
+        io::{self, BufRead, BufReader, Write},
         net::TcpListener,
         thread,
     };
@@ -431,16 +431,44 @@ mod tests {
     #[test]
     fn slow_headers_and_bodies_share_a_deadline_without_partial_hashes() {
         let agent: ureq::Agent = ureq::Agent::config_builder().proxy(None).build().into();
-        for headers in [false, true] {
+        for (headers, budget) in [
+            (false, Duration::ZERO),
+            (false, Duration::from_secs(1)),
+            (true, Duration::from_secs(1)),
+        ] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
             let url = format!("http://{}/archive", listener.local_addr().unwrap());
             let (release, hold) = std::sync::mpsc::channel();
             let server = thread::spawn(move || {
-                let (mut socket, _) = listener.accept().unwrap();
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let mut socket = loop {
+                    match listener.accept() {
+                        Ok((socket, _)) => break socket,
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            match hold.recv_timeout(Duration::from_millis(5)) {
+                                Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                    return false;
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                    assert!(
+                                        Instant::now() < deadline,
+                                        "client did not finish or connect"
+                                    );
+                                }
+                            }
+                        }
+                        Err(error) => panic!("accept: {error}"),
+                    }
+                };
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
                 let mut reader = BufReader::new(&mut socket);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                assert!(request.starts_with("GET /archive "), "{request:?}");
                 loop {
                     let mut line = String::new();
                     reader.read_line(&mut line).unwrap();
@@ -457,14 +485,13 @@ mod tests {
                 // Hold the socket until the client times out, not for a timing-sensitive sleep.
                 // The fallback makes a broken timeout fail rather than hang the test suite.
                 hold.recv_timeout(Duration::from_secs(10)).unwrap();
+                true
             });
             let result = RemoteSource::parse(&url)
                 .unwrap()
-                .download_with(&agent, Duration::from_millis(100));
-            release
-                .send(())
-                .expect("client must finish before the peer closes");
-            server.join().unwrap();
+                .download_with(&agent, budget);
+            let _ = release.send(());
+            assert_eq!(server.join().unwrap(), !budget.is_zero());
             assert!(
                 result
                     .as_ref()
