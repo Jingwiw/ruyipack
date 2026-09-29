@@ -32,11 +32,17 @@ pub(crate) struct EditError {
     path: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     selected_fields: Vec<String>,
-    #[serde(flatten, serialize_with = "publication_details")]
+    #[serde(flatten, serialize_with = "cause_details")]
     #[source]
-    publication: Option<Box<crate::file_output::OutputError>>,
-    #[serde(flatten, serialize_with = "source_details")]
-    source_hash: Option<Box<crate::source::Error>>,
+    cause: Option<Box<Cause>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum Cause {
+    #[error("{0}")]
+    Publication(#[source] crate::file_output::OutputError),
+    #[error("{0}")]
+    SourceHash(#[source] crate::source::Error),
 }
 
 impl EditError {
@@ -46,26 +52,27 @@ impl EditError {
             message,
             path: Some(path.display().to_string()),
             selected_fields: fields.to_vec(),
-            publication: None,
-            source_hash: None,
+            cause: None,
         }
     }
 
     pub(super) fn source_hash(error: crate::source::Error, path: &Path, fields: &[String]) -> Self {
         let mut result = Self::at(Kind::SourceHashFailed, path, fields, error.to_string());
-        result.source_hash = Some(Box::new(error));
+        result.cause = Some(Box::new(Cause::SourceHash(error)));
         result
     }
 
     pub(super) fn publication(error: crate::file_output::OutputError) -> Self {
         let mut result = Self::from(error.to_string());
-        result.publication = Some(Box::new(error));
+        result.cause = Some(Box::new(Cause::Publication(error)));
         result
     }
 
     pub(super) fn written_paths(&self) -> &[PathBuf] {
-        match self.publication.as_deref() {
-            Some(crate::file_output::OutputError::Partial { written, .. }) => written,
+        match self.cause.as_deref() {
+            Some(Cause::Publication(crate::file_output::OutputError::Partial {
+                written, ..
+            })) => written,
             _ => &[],
         }
     }
@@ -83,9 +90,7 @@ impl EditError {
                 _ => false,
             }
         }
-        self.publication
-            .as_deref()
-            .is_some_and(|error| invalidates(error, sources))
+        matches!(self.cause.as_deref(), Some(Cause::Publication(error)) if invalidates(error, sources))
     }
 }
 
@@ -96,8 +101,7 @@ impl From<String> for EditError {
             message,
             path: None,
             selected_fields: Vec::new(),
-            publication: None,
-            source_hash: None,
+            cause: None,
         }
     }
 }
@@ -108,14 +112,23 @@ impl From<&str> for EditError {
 }
 
 // Derive machine details from the same error retained for recovery decisions.
-fn publication_details<S: serde::Serializer>(
-    error: &Option<Box<crate::file_output::OutputError>>,
+fn cause_details<S: serde::Serializer>(
+    cause: &Option<Box<Cause>>,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     use crate::file_output::OutputError as E;
     use serde_json::json;
-    let Some(mut error) = error.as_deref() else {
-        return json!({}).serialize(serializer);
+    let mut error = match cause.as_deref() {
+        None => return json!({}).serialize(serializer),
+        Some(Cause::SourceHash(error)) => {
+            let mut value = serde_json::to_value(error).expect("serializable source error");
+            value
+                .as_object_mut()
+                .expect("error object")
+                .remove("message");
+            return value.serialize(serializer);
+        }
+        Some(Cause::Publication(error)) => error,
     };
     while let E::Partial { source, .. } = error {
         error = source;
@@ -153,17 +166,18 @@ fn publication_details<S: serde::Serializer>(
     details.serialize(serializer)
 }
 
-fn source_details<S: serde::Serializer>(
-    error: &Option<Box<crate::source::Error>>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    let mut value = error.as_ref().map_or_else(
-        || serde_json::json!({}),
-        |error| serde_json::to_value(error).expect("serializable source error"),
-    );
-    value
-        .as_object_mut()
-        .expect("error object")
-        .remove("message");
-    value.serialize(serializer)
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn source_hash_failure_retains_its_typed_cause() {
+        let error = super::EditError::source_hash(
+            crate::source::Error::resolution("unresolved"),
+            std::path::Path::new("package.spec"),
+            &[],
+        );
+        assert!(
+            std::iter::successors(Some(&error as &dyn std::error::Error), |e| e.source())
+                .any(|e| e.is::<crate::source::Error>())
+        );
+    }
 }

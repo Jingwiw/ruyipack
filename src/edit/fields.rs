@@ -24,14 +24,20 @@ pub(super) fn assign<'a>(
         if !seen.insert(field) {
             return Err(format!("{field}: repeated assignment"));
         }
+        if matches!(&document, Cow::Borrowed(table) if lookup(table, field).and_then(Value::as_str) == Some(value))
+        {
+            continue;
+        }
         let target = lookup_mut(document.to_mut(), field)
             .ok_or_else(|| format!("{field}: unknown field"))?;
-        if !target.is_str() {
+        let Some(current) = target.as_str() else {
             return Err(format!(
                 "{field}: direct assignment requires a string field; use --field {field} --prepare DIR for arrays or groups, edit the TOML, then use --from DIR"
             ));
+        };
+        if current != value {
+            *target = Value::String(value.clone());
         }
-        *target = Value::String(value.clone());
     }
     Ok(document)
 }
