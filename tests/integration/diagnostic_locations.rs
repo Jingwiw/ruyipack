@@ -105,3 +105,73 @@ fn batch_edit_parser_diagnostics_identify_each_candidate_file() {
         assert_file(path, &source);
     }
 }
+
+#[test]
+fn parser_input_boundaries_are_reported_without_panicking_or_writing() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("boundary.spec");
+    for (source, limited) in [
+        ("BuildRequires: é 中 😀\n".to_owned(), false),
+        (
+            format!(
+                "Version: {}1{}\n",
+                "%{expand:".repeat(2048),
+                "}".repeat(2048)
+            ),
+            true,
+        ),
+        (
+            format!(
+                "{}Version: 1\n{}",
+                "%if 1\n".repeat(1024),
+                "%endif\n".repeat(1024)
+            ),
+            true,
+        ),
+    ] {
+        fs::write(&path, &source).unwrap();
+        for (command, exit) in [("check", 1), ("inspect", 0)] {
+            let output = support::command()
+                .arg(command)
+                .arg(&path)
+                .args([
+                    "--format",
+                    if limited && command == "inspect" {
+                        "human"
+                    } else {
+                        "json"
+                    },
+                ])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(exit), "{output:?}");
+            if limited && command == "inspect" {
+                assert!(support::output_text(&output.stderr).contains("rpmspec/E0011"));
+                continue;
+            }
+            assert!(output.stderr.is_empty(), "{output:?}");
+            let report = support::json_line(&output);
+            assert_eq!(
+                report["parser_diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|d| d["code"] == "rpmspec/E0011"),
+                limited
+            );
+            if limited && command == "check" {
+                assert_eq!(report["evidence"]["status"], "incomplete");
+            }
+        }
+        if limited {
+            let output = support::command()
+                .arg("edit")
+                .arg(&path)
+                .args(["--set", "package.version=2"])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1), "{output:?}");
+        }
+        assert_file(&path, &source);
+    }
+}
