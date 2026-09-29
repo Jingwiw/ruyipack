@@ -15,6 +15,7 @@ mod generation;
 mod http;
 mod init;
 mod inspect;
+mod materials;
 mod output;
 mod source_hash;
 mod source_validation;

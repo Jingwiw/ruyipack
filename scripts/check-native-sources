@@ -94,6 +94,20 @@ with tempfile.TemporaryDirectory(prefix="ruyipack-native-") as directory:
             raise SystemExit(f"Native macro mismatch: {expression}: expected {expected!r}, got {urls!r}")
         print(f"static Source expression {expression} -> {expected}: PASS")
 
+    # RPM Source and Patch share _sourcedir filename mapping, not URL decoding.
+    for row in (root / "tests/fixtures/material-filenames.tsv").read_text().splitlines():
+        if not row or row.startswith("#"):
+            continue
+        expression, expected = row.split("\t")
+        path = pathlib.Path(directory) / "filename.spec"
+        path.write_text("Name: probe\nVersion: 1\nRelease: 1\nSummary: Probe\nLicense: MIT\nURL: https://example.org\n"
+                        + f"Source0: {expression}\nPatch0: {expression}\n%description\nSOURCE=%{{SOURCE0}}\nPATCH=%{{PATCH0}}\n%files\n")
+        parsed = run_checked(["rpmspec", "--define", f"_sourcedir {directory}", "--define", f"_tmppath {directory}", "-P", str(path)])
+        observed = [line.split("=", 1)[1] for line in parsed.splitlines() if line.startswith(("SOURCE=", "PATCH="))]
+        if observed != [str(pathlib.Path(directory) / expected)] * 2:
+            raise SystemExit(f"Native filename mismatch: {expression}: {observed}")
+        print(f"Source/Patch filename {expression} -> {expected}: PASS")
+
     for path in args.spec:
         source = path.read_bytes()
         parsed = run_checked(["rpmspec", "--define", f"_tmppath {directory}", "-P", str(path)])
@@ -123,6 +137,16 @@ with tempfile.TemporaryDirectory(prefix="ruyipack-native-") as directory:
         # values do not validate OBS services or claim a production release identity.
         defines = ["--define", f"_topdir {work}", "--define", f"_tmppath {work}", "--define", "autorelease 1", "--define", "autochangelog %nil", "--define", "_buildhost ruyipack-native"]
         print(json.dumps({"ruyipack_sha256": hashlib.sha256(args.ruyipack.read_bytes()).hexdigest(), "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(), "spec_sha256": hashlib.sha256(spec.read_bytes()).hexdigest(), "fixture_defines": defines}))
+        inventory = json.loads(run_checked([str(args.ruyipack.resolve()), "check", str(spec), "--materials", "--source-dir", str(sources), "--format", "json"], "Material preflight failed"))
+        expected_inputs = ["rpk-native-1.tar.gz", "rpk-native.conf", "2000-first.patch", "0001-second.patch"]
+        rows = inventory["materials"]["files"]
+        if not inventory["valid"] or [row["identity"] for row in rows] != ["Source0", "Source1", "Patch20", "Patch0"]:
+            raise SystemExit(f"Invalid material inventory: {inventory}")
+        for row, name in zip(rows, expected_inputs):
+            data = (sources / name).read_bytes()
+            if row["path"] != str(sources / name) or row["content"] != {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}:
+                raise SystemExit(f"Material inventory differs from staged bytes: {row}")
+        print(json.dumps({"material_preflight": inventory["materials"]}))
         run_checked(["rpmbuild", "-bb", *defines, str(spec)], "Native fixture build failed", allow_stderr=True)
         if (work / "check-ran").read_text() != "checked\n":
             raise SystemExit("Native fact mismatch: %check did not run")

@@ -31,6 +31,8 @@ pub(crate) fn failure(code: &str, message: impl std::fmt::Display) -> serde_json
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ReportError {
     #[error("{0}")]
+    Manifest(#[from] crate::render::RenderError),
+    #[error("{0}")]
     Input(#[from] crate::utf8_file::Utf8FileError),
     #[error("failed to write output to stdout: {0}")]
     Stdout(#[source] io::Error),

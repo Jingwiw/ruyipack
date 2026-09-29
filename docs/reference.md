@@ -309,6 +309,44 @@ Editor work is retained after validation failure or when changes remain unapplie
 - Use only trusted local drafts: hashes prove consistency, not authorship. The
   configured editor is a trusted executable, not a sandbox.
 
+## Local build materials
+
+```sh
+ruyipack check package.spec --materials --source-dir ./SOURCES
+ruyipack check --manifest package.toml --materials --source-dir ./SOURCES --format json
+```
+
+`--materials` adds offline Source/Patch checks to the normal static checks; it
+never replaces them. Manifest input is rendered and verified in memory, without
+hash downloads or output files. Diagnostic positions then refer to the generated
+SPEC; JSON identifies both the original input and generated SPEC digest.
+
+`--source-dir` requires `--materials`. It selects the prepared RPM `_sourcedir`;
+by default this is the canonical recipe's directory, **not** the working directory.
+Both local declarations and downloaded URL resources must already be staged there.
+The filename follows RPM rules: the suffix after the last `/`, then after the last
+`=` in that suffix, with no URL decoding. For example `patches/fix.patch` requires
+`SOURCES/fix.patch`, not `SOURCES/patches/fix.patch`.
+
+The report lists each declaration, resolved path, byte size and observed SHA-256.
+Missing files, non-regular files (including symlinks), mismatched declared digests,
+and different declared locations targeting one filename fail. Identical resolved
+declarations may reuse a file. Missing declared SHA-256 remains an authoring
+warning for remote Sources; computing local bytes does not satisfy `--policy submit`
+or modify the declaration. Unknown macros, includes, `%sourcelist` and `%patchlist`
+are not executed or guessed and cannot establish a complete inventory.
+
+JSON `materials` contains `valid`, `source_dir`, `files` and any inventory-level
+`error`; each file has a status and structured error when unavailable. Top-level
+`valid` combines static and material results; `evidence.status` describes static
+checks only. Ordinary `check` does not read materials. Material checks collect
+independent file failures even when static rules fail.
+
+This is a local snapshot, not a build certificate: no downloading, patch
+application, external `%files -f` evaluation, unused-file scan or native build.
+Use a stable, trusted staging directory; mutation checks are best effort, not
+filesystem locking. Recheck after changing inputs and before queuing a build.
+
 ## Static checks
 
 `check`, generated candidates, and edit candidates share these checks:

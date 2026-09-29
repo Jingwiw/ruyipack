@@ -67,6 +67,8 @@ enum CheckStatus {
 /// Results produced by one execution of the static SPEC check.
 pub(crate) struct CheckReport {
     sha256: String,
+    generated_spec_sha256: Option<String>,
+    pub(crate) materials: Option<crate::check::materials::Report>,
     policy: crate::check::Policy,
     source_uncertainty: Option<String>,
     defines: Vec<String>,
@@ -113,6 +115,8 @@ impl CheckReport {
             CheckStatus::Pass
         };
         Self {
+            generated_spec_sha256: None,
+            materials: None,
             defines: defines.to_vec(),
             sha256: crate::utf8_file::sha256(source),
             policy,
@@ -128,6 +132,15 @@ impl CheckReport {
     /// Returns whether the selected static checks passed.
     pub(crate) fn is_success(&self) -> bool {
         matches!(self.status, CheckStatus::Pass)
+            && self.materials.as_ref().is_none_or(|report| report.valid)
+    }
+
+    /// Keep manifest bytes as the input identity; positions still refer to generated SPEC.
+    pub(crate) fn set_manifest_input(&mut self, original: &str) {
+        self.generated_spec_sha256 = Some(std::mem::replace(
+            &mut self.sha256,
+            crate::utf8_file::sha256(original),
+        ));
     }
 
     /// Positions move after edits. Compare rule facts and multiplicities, not offsets;
@@ -163,6 +176,13 @@ impl CheckReport {
 
     /// Writes human-readable parser diagnostics and static-check findings.
     pub(crate) fn write_human(&self, path: &Path, writer: &mut impl Write) -> io::Result<()> {
+        if self.generated_spec_sha256.is_some() {
+            writeln!(
+                writer,
+                "{}: checking generated SPEC; diagnostic positions refer to that SPEC, not TOML",
+                path.display()
+            )?;
+        }
         parser_diagnostic::write(path, &self.parser_diagnostics, writer)?;
         for finding in &self.findings {
             let severity = match finding.severity {
@@ -202,6 +222,9 @@ impl CheckReport {
     pub(crate) fn structured<'a>(&'a self, path: &'a Path) -> impl Serialize + 'a {
         MachineReport {
             format_version: FORMAT_VERSION,
+            valid: self.is_success(),
+            generated_spec_sha256: self.generated_spec_sha256.as_deref(),
+            materials: self.materials.as_ref(),
             input: InputIdentity {
                 display_path: path.to_string_lossy(),
                 sha256: &self.sha256,
@@ -255,6 +278,11 @@ impl CheckStatus {
 
 #[derive(Serialize)]
 struct MachineReport<'a> {
+    valid: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generated_spec_sha256: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    materials: Option<&'a crate::check::materials::Report>,
     format_version: u32,
     input: InputIdentity<'a>,
     evidence: Evidence<'a>,

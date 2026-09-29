@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+# Source/Patch expression	RPM build filename
+simple.tar	simple.tar
+subdir/simple.tar	simple.tar
+https://example.org/archive?file=simple.tar	simple.tar
+https://example.org/v1#/simple.tar	simple.tar
+a/b=c	c
+a=b	a=b
+https://example.org/a%%20b.tar	a%20b.tar

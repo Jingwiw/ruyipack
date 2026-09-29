@@ -23,11 +23,28 @@ pub(crate) struct Source {
 
 pub(crate) struct Resolution {
     pub(crate) sources: BTreeMap<u32, Source>,
+    pub(crate) patches: BTreeMap<u32, Source>,
     // Known entries do not prove that unexecuted constructs declare no others.
     pub(crate) incomplete: Option<String>,
 }
 
 pub(crate) fn resolve(spec: &ParsedSpec<'_>, defines: &[String]) -> Result<Resolution, String> {
+    resolve_with_patches(spec, defines, false)
+}
+
+/// Include Patch declarations without changing the scope of existing Source operations.
+pub(crate) fn resolve_materials(
+    spec: &ParsedSpec<'_>,
+    defines: &[String],
+) -> Result<Resolution, String> {
+    resolve_with_patches(spec, defines, true)
+}
+
+fn resolve_with_patches(
+    spec: &ParsedSpec<'_>,
+    defines: &[String],
+    patches: bool,
+) -> Result<Resolution, String> {
     if spec
         .parsed
         .diagnostics
@@ -41,12 +58,16 @@ pub(crate) fn resolve(spec: &ParsedSpec<'_>, defines: &[String]) -> Result<Resol
         context: Context::from_defines(defines)?,
         next: Some(0),
         sources: BTreeMap::new(),
+        patches: BTreeMap::new(),
+        next_patch: Some(0),
+        include_patches: patches,
         seen: BTreeSet::new(),
         unknown: None,
     };
     walk.items(&spec.parsed.spec.items)?;
     Ok(Resolution {
         sources: walk.sources,
+        patches: walk.patches,
         incomplete: walk.unknown,
     })
 }
@@ -56,6 +77,9 @@ struct Sources<'a> {
     context: Context,
     next: Option<u32>,
     sources: BTreeMap<u32, Source>,
+    patches: BTreeMap<u32, Source>,
+    next_patch: Option<u32>,
+    include_patches: bool,
     unknown: Option<String>,
     seen: BTreeSet<&'static str>,
 }
@@ -68,6 +92,7 @@ impl Sources<'_> {
                     if let Err(reason) = self.context.define(definition) {
                         self.unknown = Some(reason);
                         self.next = None;
+                        self.next_patch = None;
                     }
                 }
                 SpecItem::Preamble(item) => {
@@ -86,11 +111,30 @@ impl Sources<'_> {
                             Ok(value)
                         }
                     });
-                    if let Tag::Source(explicit) = item.tag {
-                        let number = super::source_number(&mut self.next, explicit)
-                            .ok_or("implicit Source number is uncertain or overflowed")?;
+                    let material = match item.tag {
+                        Tag::Source(number) => Some((false, number)),
+                        Tag::Patch(number) if self.include_patches => Some((true, number)),
+                        _ => None,
+                    };
+                    if let Some((patch, explicit)) = material {
+                        let number = super::source_number(
+                            if patch {
+                                &mut self.next_patch
+                            } else {
+                                &mut self.next
+                            },
+                            explicit,
+                        )
+                        .ok_or(if patch {
+                            "implicit Patch number is uncertain or overflowed"
+                        } else {
+                            "implicit Source number is uncertain or overflowed"
+                        })?;
                         if item.lang.is_some() || !item.qualifiers.is_empty() {
-                            return Err("qualified Source declarations are unsupported".into());
+                            return Err(format!(
+                                "qualified {} declarations are unsupported",
+                                if patch { "Patch" } else { "Source" }
+                            ));
                         }
                         let url = self
                             .unknown
@@ -103,12 +147,23 @@ impl Sources<'_> {
                             url,
                         };
                         let unresolved = source.url.as_ref().err().cloned();
-                        if self.sources.insert(number, source).is_some() {
-                            return Err(format!("duplicate Source{number}"));
+                        if (if patch {
+                            &mut self.patches
+                        } else {
+                            &mut self.sources
+                        })
+                        .insert(number, source)
+                        .is_some()
+                        {
+                            return Err(format!(
+                                "duplicate {}{number}",
+                                if patch { "Patch" } else { "Source" }
+                            ));
                         }
                         if let Some(reason) = unresolved {
                             self.unknown = Some(reason);
                             self.next = None;
+                            self.next_patch = None;
                         }
                     } else {
                         // Unknown expansions can emit declarations or change macros. The
@@ -119,6 +174,7 @@ impl Sources<'_> {
                         {
                             self.unknown = Some(reason.clone());
                             self.next = None;
+                            self.next_patch = None;
                         }
                         let name = match item.tag {
                             Tag::Name => Some("name"),
@@ -156,6 +212,7 @@ impl Sources<'_> {
                                 );
                                 self.unknown = Some(reason.clone());
                                 self.next = None;
+                                self.next_patch = None;
                                 for branch in &condition.branches {
                                     self.uncertain(&branch.body, &reason)?;
                                 }
@@ -179,6 +236,7 @@ impl Sources<'_> {
                 SpecItem::Include(_) | SpecItem::Statement(_) => {
                     self.unknown = Some("Source context is unavailable or ambiguous after an include or top-level invocation; not executed".into());
                     self.next = None;
+                    self.next_patch = None;
                 }
                 SpecItem::Comment(comment)
                     if comment.style == CommentStyle::Hash
@@ -194,6 +252,7 @@ impl Sources<'_> {
                         self.unknown =
                             Some("macro-bearing comment has unknown effects; not executed".into());
                         self.next = None;
+                        self.next_patch = None;
                     }
                 }
                 SpecItem::BuildCondition(condition) => {
@@ -206,16 +265,24 @@ impl Sources<'_> {
                         self.unknown =
                             Some("build condition default has unknown macro effects".into());
                         self.next = None;
+                        self.next_patch = None;
                     }
                 }
-                SpecItem::Section(section) if matches!(section.as_ref(), Section::Package { content, .. } if subpackage_sources(content)) =>
+                SpecItem::Section(section) if matches!(section.as_ref(), Section::Package { content, .. } if subpackage_sources(content, self.include_patches)) =>
                 {
                     return Err("Source declarations inside a subpackage are unsupported".into());
                 }
                 SpecItem::Section(section)
-                    if matches!(section.as_ref(), Section::SourceList { .. }) =>
+                    if matches!(section.as_ref(), Section::SourceList { .. })
+                        || self.include_patches
+                            && matches!(section.as_ref(), Section::PatchList { .. }) =>
                 {
-                    return Err("%sourcelist is not supported by Source operations".into());
+                    return Err(if matches!(section.as_ref(), Section::PatchList { .. }) {
+                        "%patchlist is not supported by material resolution"
+                    } else {
+                        "%sourcelist is not supported by Source resolution"
+                    }
+                    .into());
                 }
                 _ => {}
             }
@@ -231,6 +298,7 @@ impl Sources<'_> {
                     .literal(&definition.name, Err(reason.to_owned())),
                 SpecItem::Preamble(item) => match item.tag {
                     Tag::Source(_) => return Err(reason.to_owned()),
+                    Tag::Patch(_) if self.include_patches => return Err(reason.to_owned()),
                     Tag::Name => self.context.literal("name", Err(reason.to_owned())),
                     Tag::Version => self.context.literal("version", Err(reason.to_owned())),
                     Tag::URL => self.context.literal("url", Err(reason.to_owned())),
@@ -247,6 +315,7 @@ impl Sources<'_> {
                 SpecItem::Include(_) | SpecItem::Statement(_) => {
                     self.unknown = Some(reason.to_owned());
                     self.next = None;
+                    self.next_patch = None;
                 }
                 _ => {}
             }
@@ -276,18 +345,20 @@ impl Sources<'_> {
     }
 }
 
-fn subpackage_sources(items: &[PreambleContent<Span>]) -> bool {
+fn subpackage_sources(items: &[PreambleContent<Span>], patches: bool) -> bool {
     items.iter().any(|item| match item {
-        PreambleContent::Item(item) => matches!(item.tag, Tag::Source(_)),
+        PreambleContent::Item(item) => {
+            matches!(item.tag, Tag::Source(_)) || patches && matches!(item.tag, Tag::Patch(_))
+        }
         PreambleContent::Conditional(condition) => {
             condition
                 .branches
                 .iter()
-                .any(|branch| subpackage_sources(&branch.body))
+                .any(|branch| subpackage_sources(&branch.body, patches))
                 || condition
                     .otherwise
                     .as_ref()
-                    .is_some_and(|body| subpackage_sources(body))
+                    .is_some_and(|body| subpackage_sources(body, patches))
         }
         _ => false,
     })

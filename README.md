@@ -83,6 +83,10 @@ or `--set`; full-view editing only supports a limited subset.
   module responsibilities, and regression contracts
 - [Example manifest](examples/ed/ed.toml)
 
+Before queuing a build, `ruyipack check package.spec --materials --source-dir SOURCES`
+checks staged Source/Patch files offline and reports their SHA-256 inventory.
+See [local material checks](docs/reference.md#local-build-materials) for scope and limitations.
+
 ## Development
 
 ```sh

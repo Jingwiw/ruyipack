@@ -8,9 +8,13 @@
 
 pub(crate) mod build;
 pub(crate) mod license;
+pub(crate) mod materials;
 pub(crate) mod metadata;
 
-use std::{io, path::Path};
+use std::{
+    io::{self, Write},
+    path::PathBuf,
+};
 
 use crate::{
     check_report::{CheckReport, Finding, IncompleteReason, SelectedRule, Severity},
@@ -114,22 +118,95 @@ pub(crate) fn analyze(spec: &ParsedSpec<'_>, policy: Policy, defines: &[String])
     CheckReport::analyzed(source, selected_rules, diagnostics, result, policy, defines)
 }
 
-/// Checks the selected static rules in one SPEC.
-pub(crate) fn run(
-    path: &Path,
-    format: ReportFormat,
+#[derive(clap::Args)]
+pub(crate) struct Options {
+    /// RPM SPEC to check.
+    #[arg(value_name = "SPEC", required_unless_present = "manifest")]
+    spec: Option<PathBuf>,
+    /// Check an authoring manifest by rendering it in memory, without downloads or writes.
+    #[arg(long, conflicts_with_all = ["spec", "defines"], value_name = "PATH")]
+    manifest: Option<PathBuf>,
+    /// Also check staged Source/Patch files and report sizes and SHA-256 digests.
+    #[arg(long)]
+    materials: bool,
+    /// Prepared RPM _sourcedir; defaults to the recipe directory, not the current directory.
+    #[arg(long, requires = "materials", value_name = "DIR")]
+    source_dir: Option<PathBuf>,
+    /// Static admission policy; neither policy verifies native builds.
+    #[arg(long, value_enum, default_value_t = Policy::Authoring)]
     policy: Policy,
-    defines: &[String],
-) -> Result<bool, ReportError> {
-    let Some(source) = read_source(path, format)? else {
+    /// Define a static Source/Patch macro; other rules still check unevaluated syntax.
+    #[arg(short = 'D', long = "define", value_name = "MACRO EXPR")]
+    defines: Vec<String>,
+    #[arg(long, value_enum, default_value_t = ReportFormat::Human)]
+    format: ReportFormat,
+}
+
+pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
+    let path = options
+        .manifest
+        .as_ref()
+        .or(options.spec.as_ref())
+        .expect("required CLI input");
+    let Some(original) = read_source(path, options.format)? else {
         return Ok(false);
     };
-    let report = analyze(&ParsedSpec::parse(&source), policy, defines);
-
-    match format {
-        ReportFormat::Human => report
-            .write_human(path, &mut io::stderr().lock())
-            .map_err(ReportError::Stderr)?,
+    let rendered;
+    let mut authoring_report = None;
+    let source = if options.manifest.is_some() {
+        match crate::render::manifest::parse(&original)
+            .and_then(|manifest| crate::render::run(&manifest))
+        {
+            Ok(result) => {
+                authoring_report = Some(result.report);
+                rendered = result.contents;
+                &rendered
+            }
+            Err(error) => {
+                if matches!(options.format, ReportFormat::Json) {
+                    let mut stdout = io::stdout().lock();
+                    let report = serde_json::json!({"format_version": 2, "valid": false,
+                        "tool": crate::tool::identity(), "input": {"display_path":path,"sha256":crate::utf8_file::sha256(&original)},
+                        "error": crate::output_cli::failure("invalid-manifest", &error)});
+                    serde_json::to_writer(&mut stdout, &report)
+                        .map_err(|e| ReportError::Stdout(e.into()))?;
+                    writeln!(stdout).map_err(ReportError::Stdout)?;
+                    return Ok(false);
+                }
+                return Err(ReportError::Manifest(error));
+            }
+        }
+    } else {
+        &original
+    };
+    let parsed = ParsedSpec::parse(source);
+    let mut report = match (options.policy, authoring_report) {
+        (Policy::Authoring, Some(report)) => report,
+        _ => analyze(&parsed, options.policy, &options.defines),
+    };
+    if options.manifest.is_some() {
+        report.set_manifest_input(&original);
+    }
+    if options.materials {
+        report.materials = Some(materials::analyze(
+            path,
+            &original,
+            &parsed,
+            &options.defines,
+            options.source_dir.as_deref(),
+        ));
+    }
+    match options.format {
+        ReportFormat::Human => {
+            report
+                .write_human(path, &mut io::stderr().lock())
+                .map_err(ReportError::Stderr)?;
+            if let Some(materials) = &report.materials {
+                materials
+                    .write_human(&mut io::stdout().lock())
+                    .map_err(ReportError::Stdout)?;
+            }
+        }
         ReportFormat::Json => report
             .write_json(path, &mut io::stdout().lock())
             .map_err(ReportError::Stdout)?,
