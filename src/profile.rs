@@ -48,6 +48,21 @@ pub(crate) struct Profile {
 }
 
 impl Profile {
+    /// Decode one marker line, not its association with a Source or digest validity.
+    /// Keep damaged digests repairable; surrounding digest whitespace is not data.
+    pub(crate) fn remote_asset_digest<'a>(
+        &self,
+        line: &'a str,
+    ) -> Result<Option<&'a str>, &'static str> {
+        if line == self.remote_asset_bare {
+            Ok(None)
+        } else {
+            line.strip_prefix(&self.remote_asset_prefix)
+                .map(|hash| Some(hash.trim()))
+                .ok_or("unsupported RemoteAsset digest declaration")
+        }
+    }
+
     /// The RemoteAsset marker, including a digest when supplied.
     pub(crate) fn remote_asset(&self, digest: Option<&str>) -> String {
         match digest {

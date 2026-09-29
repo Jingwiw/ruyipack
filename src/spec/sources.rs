@@ -333,15 +333,13 @@ impl Sources<'_> {
             .unwrap_or("")
             .trim_end_matches('\r');
         let profile = crate::profile::load();
-        if let Some(hash) = previous.strip_prefix(&profile.remote_asset_prefix) {
-            Ok(Some(hash.trim().to_owned()))
-        } else if previous.starts_with(&profile.remote_asset_bare)
-            && previous != profile.remote_asset_bare
-        {
-            Err("unsupported RemoteAsset digest declaration".into())
-        } else {
-            Ok(None)
+        if !previous.starts_with(&profile.remote_asset_bare) {
+            return Ok(None);
         }
+        profile
+            .remote_asset_digest(previous)
+            .map(|hash| hash.map(str::to_owned))
+            .map_err(str::to_owned)
     }
 }
 

@@ -336,6 +336,34 @@ fn uncertain_implicit_source_numbers_do_not_block_unrelated_edits() {
 }
 
 #[test]
+fn digest_whitespace_has_one_meaning_without_rewriting_untouched_bytes() {
+    let replacement = "a".repeat(64);
+    let changed = SPEC.replace(HASH, &replacement);
+    for digest in [
+        format!(" {HASH}"),
+        format!("{HASH} "),
+        format!("\t{HASH}\t"),
+    ] {
+        let source = SPEC.replace(HASH, &digest);
+        let directory = fixture(&source);
+        success(&super::super::support::run(
+            directory.path(),
+            &["check", "ed.spec", "--policy", "submit"],
+        ));
+        for (value, expected) in [(HASH, &source), (replacement.as_str(), &changed)] {
+            let assignment = format!("sources.0.sha256={value}");
+            let output = run(
+                directory.path(),
+                &["ed.spec", "--set", &assignment, "--stdout"],
+            );
+            success(&output);
+            assert_eq!(output.stdout, expected.as_bytes());
+        }
+        assert_file(directory.path().join("ed.spec"), &source);
+    }
+}
+
+#[test]
 fn a_damaged_selected_digest_can_be_repaired_without_changing_other_bytes() {
     let replacement = "a".repeat(64);
     let damaged = "INVALID";

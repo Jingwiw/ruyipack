@@ -146,18 +146,10 @@ impl<'src> Snapshot<'src> {
                             if !asset_text.starts_with(profile.remote_asset_bare.as_str()) {
                                 return Err(missing_asset());
                             }
-                            let hash = if asset_text.strip_suffix('\n')
-                                == Some(profile.remote_asset_bare.as_str())
-                            {
-                                ""
-                            } else {
-                                // Map damaged values too, so the selected digest can be repaired.
-                                asset_text
-                                    .strip_circumfix(profile.remote_asset_prefix.as_str(), '\n')
-                                    .ok_or_else(|| {
-                                        format!("{identity}.sha256: unsupported RemoteAsset syntax")
-                                    })?
-                            };
+                            let hash = profile
+                                .remote_asset_digest(asset_text.trim_end_matches('\n'))
+                                .map_err(|reason| format!("{identity}.sha256: {reason}"))?
+                                .unwrap_or("");
                             let field = format!("{identity}.sha256");
                             if snapshot.selects(&field) {
                                 insert(

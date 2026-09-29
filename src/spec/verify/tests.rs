@@ -265,36 +265,45 @@ fn preserves_remote_asset_marker_bytes() {
     );
 }
 
+fn rejects_mutations(input: &str, mutations: &[(&str, &str)]) {
+    let manifest = manifest::parse(input).unwrap();
+    let profile = profile::load();
+    let original = spec::render(&manifest, profile);
+    let parsed = ParsedSpec::parse(&original);
+    assert!(parsed.parsed.diagnostics.is_empty());
+    assert!(run(&parsed, &manifest, profile).is_ok());
+    for &(before, after) in mutations {
+        let changed = original.replacen(before, after, 1);
+        assert_ne!(changed, original, "mutation did not apply: {before}");
+        let parsed = ParsedSpec::parse(&changed);
+        assert!(parsed.parsed.diagnostics.is_empty(), "{before}");
+        assert!(run(&parsed, &manifest, profile).is_err(), "{before}");
+    }
+}
+
 #[test]
 fn stage_options_match_their_stage_value_and_order() {
     let input = format!(
         "{MANIFEST}\n[build.stages.conf]\noptions = [\"--enable-nls\", \"--disable-rpath\"]\n\
          [build.stages.build]\noptions = [\"CC_FOR_BUILD=gcc\"]\n"
     );
-    let manifest = manifest::parse(&input).unwrap();
-    let profile = profile::load();
-    let original = spec::render(&manifest, profile);
-    assert!(run(&ParsedSpec::parse(&original), &manifest, profile).is_ok());
-    for (before, after) in [
-        ("BuildOption(conf):  --enable-nls\n", ""),
-        ("--enable-nls", "--disable-nls"),
-        ("BuildOption(conf):", "BuildOption(install):"),
-        ("BuildOption(conf):", "BuildOption:"),
-        (
-            "BuildOption(conf):  --enable-nls\nBuildOption(conf):  --disable-rpath\n",
-            "BuildOption(conf):  --disable-rpath\nBuildOption(conf):  --enable-nls\n",
-        ),
-        (
-            "BuildOption(conf):  --enable-nls\n",
-            "BuildOption(conf):  --enable-nls\nBuildOption(conf):  --enable-nls\n",
-        ),
-    ] {
-        let changed = original.replacen(before, after, 1);
-        assert_ne!(changed, original);
-        let parsed = ParsedSpec::parse(&changed);
-        assert!(parsed.parsed.diagnostics.is_empty(), "{before}");
-        assert!(run(&parsed, &manifest, profile).is_err(), "{before}");
-    }
+    rejects_mutations(
+        &input,
+        &[
+            ("BuildOption(conf):  --enable-nls\n", ""),
+            ("--enable-nls", "--disable-nls"),
+            ("BuildOption(conf):", "BuildOption(install):"),
+            ("BuildOption(conf):", "BuildOption:"),
+            (
+                "BuildOption(conf):  --enable-nls\nBuildOption(conf):  --disable-rpath\n",
+                "BuildOption(conf):  --disable-rpath\nBuildOption(conf):  --enable-nls\n",
+            ),
+            (
+                "BuildOption(conf):  --enable-nls\n",
+                "BuildOption(conf):  --enable-nls\nBuildOption(conf):  --enable-nls\n",
+            ),
+        ],
+    );
 }
 
 #[test]
@@ -304,34 +313,27 @@ fn stage_scripts_match_kind_placement_and_exact_body() {
          append = '''echo configured\n'''\n\
          [build.stages.install]\nappend = '''cat <<'END' > generated\n\tcontent\n\nEND\n\n'''\n"
     );
-    let manifest = manifest::parse(&input).unwrap();
-    let profile = profile::load();
-    let original = spec::render(&manifest, profile);
-    assert!(run(&ParsedSpec::parse(&original), &manifest, profile).is_ok());
-    for (before, after) in [
-        ("%conf -p", "%build -p"),
-        ("%conf -p", "%conf -a"),
-        ("%conf -p", "%conf"),
-        ("autoreconf -fiv", "autoreconf -fi"),
-        ("\tcontent", "content"),
-        ("content\n\nEND", "content\nEND"),
-        ("END\n\n\n", "END\n\n"),
-        ("%conf -p\nautoreconf -fiv\n\n", ""),
-        (
-            "%conf -p\nautoreconf -fiv\n\n",
-            "%conf -p\nautoreconf -fiv\n\n%conf -p\nautoreconf -fiv\n\n",
-        ),
-        (
-            "%conf -p\nautoreconf -fiv\n\n%conf -a\necho configured\n\n",
-            "%conf -a\necho configured\n\n%conf -p\nautoreconf -fiv\n\n",
-        ),
-    ] {
-        let changed = original.replacen(before, after, 1);
-        assert_ne!(changed, original);
-        let parsed = ParsedSpec::parse(&changed);
-        assert!(parsed.parsed.diagnostics.is_empty(), "{before}");
-        assert!(run(&parsed, &manifest, profile).is_err(), "{before}");
-    }
+    rejects_mutations(
+        &input,
+        &[
+            ("%conf -p", "%build -p"),
+            ("%conf -p", "%conf -a"),
+            ("%conf -p", "%conf"),
+            ("autoreconf -fiv", "autoreconf -fi"),
+            ("\tcontent", "content"),
+            ("content\n\nEND", "content\nEND"),
+            ("END\n\n\n", "END\n\n"),
+            ("%conf -p\nautoreconf -fiv\n\n", ""),
+            (
+                "%conf -p\nautoreconf -fiv\n\n",
+                "%conf -p\nautoreconf -fiv\n\n%conf -p\nautoreconf -fiv\n\n",
+            ),
+            (
+                "%conf -p\nautoreconf -fiv\n\n%conf -a\necho configured\n\n",
+                "%conf -a\necho configured\n\n%conf -p\nautoreconf -fiv\n\n",
+            ),
+        ],
+    );
 }
 
 #[test]
@@ -340,25 +342,18 @@ fn stage_replacement_checks_explicit_main_sections() {
         "{MANIFEST}\n[build.stages.conf]\nreplace = ''\n\
          [build.stages.check]\nreplace = '# Tests require unavailable hardware.'\n"
     );
-    let manifest = manifest::parse(&input).unwrap();
-    let profile = profile::load();
-    let original = spec::render(&manifest, profile);
-    assert!(run(&ParsedSpec::parse(&original), &manifest, profile).is_ok());
-    for (before, after) in [
-        ("%conf\n\n", ""),
-        ("%conf\n", "%conf -p\n"),
-        ("%conf\n", "%conf -a\n"),
-        ("%conf\n", "%build\n"),
-        ("%conf\n", "%conf\necho unexpected\n"),
-        ("%conf\n\n", "%conf\n\n%conf\n\n"),
-        ("# Tests require unavailable hardware.", "# No tests."),
-    ] {
-        let changed = original.replacen(before, after, 1);
-        assert_ne!(changed, original);
-        let parsed = ParsedSpec::parse(&changed);
-        assert!(parsed.parsed.diagnostics.is_empty(), "{before}");
-        assert!(run(&parsed, &manifest, profile).is_err(), "{before}");
-    }
+    rejects_mutations(
+        &input,
+        &[
+            ("%conf\n\n", ""),
+            ("%conf\n", "%conf -p\n"),
+            ("%conf\n", "%conf -a\n"),
+            ("%conf\n", "%build\n"),
+            ("%conf\n", "%conf\necho unexpected\n"),
+            ("%conf\n\n", "%conf\n\n%conf\n\n"),
+            ("# Tests require unavailable hardware.", "# No tests."),
+        ],
+    );
 }
 
 #[test]
@@ -401,75 +396,60 @@ description = "Install the editor family."
 
 #[test]
 fn subpackage_facts_are_verified_independently_of_the_main_package() {
-    let manifest = manifest::parse(&format!("{MANIFEST}{SUBPACKAGES}")).unwrap();
-    let profile = profile::load();
-    let original = spec::render(&manifest, profile);
-    let parsed = ParsedSpec::parse(&original);
-    assert!(parsed.parsed.diagnostics.is_empty());
-    assert!(run(&parsed, &manifest, profile).is_ok());
-    for (before, after) in [
-        ("%package        devel", "%package        headers"),
-        ("%package        devel", "%package        -n devel"),
-        (
-            "%package        -n editor-tools",
-            "%package        editor-tools",
-        ),
-        ("%description    devel", "%description    headers"),
-        ("%description    devel", "%description    -n devel"),
-        (
-            "%description    -n editor-tools",
-            "%description    editor-tools",
-        ),
-        ("%files devel", "%files headers"),
-        ("%files devel", "%files -n devel"),
-        ("%files -n editor-tools", "%files editor-tools"),
-        (
-            "%files -n editor-tools",
-            "%files -n unexpected -n editor-tools",
-        ),
-        (
-            "%files -n editor-tools",
-            "%files unexpected -n editor-tools",
-        ),
-        ("%files devel", "%files -f extra.files devel"),
-        (
-            "Summary:        Development files",
-            "Summary:        Other headers",
-        ),
-        (
-            "Summary:        Development files",
-            "Summary(fr):    Development files",
-        ),
-        (
-            "Requires:       %{name} = %{version}-%{release}",
-            "Requires:       %{name} >= %{version}-%{release}",
-        ),
-        (
-            "Requires:       pkgconfig(example) >= 1",
-            "Requires(pre):  pkgconfig(example) >= 1",
-        ),
-        (
-            "Provides:       ed-devel-api = %{version}",
-            "Provides:       ed-devel-api = 2",
-        ),
-        ("Headers for ed development.", "Headers for another editor."),
-        ("%license COPYING.devel", "%doc COPYING.devel"),
-        ("%doc README.devel", "%doc NEWS.devel"),
-        ("%{_includedir}/ed.h", "%{_includedir}/red.h"),
-        ("%files meta\n", "%files meta\n/usr/share/unexpected\n"),
-    ] {
-        let changed = original.replacen(before, after, 1);
-        assert_ne!(changed, original, "mutation did not apply: {before}");
-        let parsed = ParsedSpec::parse(&changed);
-        assert!(
-            parsed.parsed.diagnostics.is_empty(),
-            "not a clean parser result: {before}"
-        );
-        assert!(
-            run(&parsed, &manifest, profile).is_err(),
-            "accepted: {before}"
-        );
-    }
+    rejects_mutations(
+        &format!("{MANIFEST}{SUBPACKAGES}"),
+        &[
+            ("%package        devel", "%package        headers"),
+            ("%package        devel", "%package        -n devel"),
+            (
+                "%package        -n editor-tools",
+                "%package        editor-tools",
+            ),
+            ("%description    devel", "%description    headers"),
+            ("%description    devel", "%description    -n devel"),
+            (
+                "%description    -n editor-tools",
+                "%description    editor-tools",
+            ),
+            ("%files devel", "%files headers"),
+            ("%files devel", "%files -n devel"),
+            ("%files -n editor-tools", "%files editor-tools"),
+            (
+                "%files -n editor-tools",
+                "%files -n unexpected -n editor-tools",
+            ),
+            (
+                "%files -n editor-tools",
+                "%files unexpected -n editor-tools",
+            ),
+            ("%files devel", "%files -f extra.files devel"),
+            (
+                "Summary:        Development files",
+                "Summary:        Other headers",
+            ),
+            (
+                "Summary:        Development files",
+                "Summary(fr):    Development files",
+            ),
+            (
+                "Requires:       %{name} = %{version}-%{release}",
+                "Requires:       %{name} >= %{version}-%{release}",
+            ),
+            (
+                "Requires:       pkgconfig(example) >= 1",
+                "Requires(pre):  pkgconfig(example) >= 1",
+            ),
+            (
+                "Provides:       ed-devel-api = %{version}",
+                "Provides:       ed-devel-api = 2",
+            ),
+            ("Headers for ed development.", "Headers for another editor."),
+            ("%license COPYING.devel", "%doc COPYING.devel"),
+            ("%doc README.devel", "%doc NEWS.devel"),
+            ("%{_includedir}/ed.h", "%{_includedir}/red.h"),
+            ("%files meta\n", "%files meta\n/usr/share/unexpected\n"),
+        ],
+    );
 }
 
 #[test]
