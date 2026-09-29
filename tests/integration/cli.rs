@@ -489,6 +489,10 @@ fn check_json_reports_parser_error_as_incomplete() {
         "incomplete",
         &["parser-error"],
     );
+    assert_eq!(
+        report["evidence"]["source_uncertainty"],
+        "parser errors prevent Source resolution"
+    );
     assert_eq!(report["findings"], serde_json::json!([]));
     assert_eq!(
         report["parser_diagnostics"],

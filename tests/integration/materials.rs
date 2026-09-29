@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-use super::support::{command, json_line, success};
+use super::support::{command, json_line, output_text, success};
 use sha2::{Digest, Sha256};
 use std::fs;
 
@@ -22,17 +22,17 @@ fn inventory_is_offline_ordered_and_bound_to_actual_staged_bytes() {
         "Name: probe\nVersion: 1\nRelease: 1\nSummary: Probe\nLicense: MIT\nURL: https://example.org\n#!RemoteAsset:  sha256:{hash}\nSource3: https://example.invalid/archive\n#!RemoteAsset\nSource: https://example.invalid/archive\nPatch20: nested/first.patch\nPatch0: second.patch\n"
     );
     fs::write(&input, &spec).unwrap();
-    let run = || {
+    let run = |format| {
         command()
             .args(["check", "--materials"])
             .arg(&input)
             .arg("--source-dir")
             .arg(&materials)
-            .args(["--format", "json"])
+            .args(["--format", format])
             .output()
             .unwrap()
     };
-    let output = run();
+    let output = run("json");
     success(&output);
     let report = json_line(&output);
     let rows = report["materials"]["files"].as_array().unwrap();
@@ -54,9 +54,16 @@ fn inventory_is_offline_ordered_and_bound_to_actual_staged_bytes() {
             .unwrap()
     );
     assert_eq!(rows[0]["expression"], "https://example.invalid/archive");
-    assert_eq!(json_line(&run()), report);
+    let human = run("human");
+    success(&human);
+    let text = output_text(&human.stdout);
+    assert!(text.contains(&format!(
+        "Source3 {}: 8 bytes sha256={hash}",
+        materials.canonicalize().unwrap().join("archive").display()
+    )));
+    assert!(text.contains("PASS: local material snapshot only"));
     fs::write(materials.join("archive"), b"replaced").unwrap();
-    let output = run();
+    let output = run("json");
     assert_eq!(output.status.code(), Some(1));
     let report = json_line(&output);
     assert_eq!(
@@ -67,6 +74,10 @@ fn inventory_is_offline_ordered_and_bound_to_actual_staged_bytes() {
         report["materials"]["files"][0]["content"]["sha256"],
         format!("{:x}", Sha256::digest(b"replaced"))
     );
+    let human = run("human");
+    assert_eq!(human.status.code(), Some(1));
+    assert!(output_text(&human.stdout).contains("digest-mismatch"));
+    assert!(output_text(&human.stdout).contains("FAIL: local material snapshot only"));
     assert_eq!(fs::read_to_string(&input).unwrap(), spec);
     assert_eq!(fs::read(materials.join("archive")).unwrap(), b"replaced");
 }

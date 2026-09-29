@@ -29,6 +29,10 @@ fn command(directory: &Path) -> Command {
         .env("GIT_AUTHOR_NAME", "Packager \"A\" \\测试")
         .env("GIT_AUTHOR_EMAIL", "packager@example.org")
         .current_dir(directory);
+    // Keep coverage output outside the workspace without inheriting user configuration.
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        command.env("LLVM_PROFILE_FILE", profile);
+    }
     command
 }
 

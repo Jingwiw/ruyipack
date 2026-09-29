@@ -51,17 +51,11 @@ pub(super) fn create(
         drafts: Vec::new(),
     };
     let mut contents = Vec::new();
-    let mut source_paths = HashSet::new();
+    // Unique draft names also reject selecting the same source twice.
     let mut names = HashSet::new();
     // Validate and serialize every input before creating any state or draft files.
     for (position, (source, original, fields, table)) in sources.iter().enumerate() {
         let source = fs::canonicalize(source).map_err(|error| error.to_string())?;
-        if !source_paths.insert(source.clone()) {
-            return Err(format!(
-                "source {} was selected more than once",
-                source.display()
-            ));
-        }
         if !utf8_file::is_unchanged(&source, original)
             .map_err(|error| format!("cannot read source {}: {error}", source.display()))?
         {
@@ -147,12 +141,11 @@ pub(super) fn load(dir: &Path) -> Result<Vec<Draft>, String> {
     if index.drafts.is_empty() {
         return Err("draft index contains no sources".into());
     }
-    let mut source_paths = HashSet::new();
     let mut names = HashSet::new();
     let mut drafts = Vec::new();
     for (position, entry) in index.drafts.into_iter().enumerate() {
-        if !entry.source.is_absolute() || !source_paths.insert(entry.source.clone()) {
-            return Err("draft index source paths must be absolute and unique".into());
+        if !entry.source.is_absolute() {
+            return Err("draft index source paths must be absolute".into());
         }
         let name = draft_name(&entry.source)?;
         let path = dir.join(&name);
@@ -422,6 +415,15 @@ mod tests {
         let mut value = original.clone();
         value["unexpected"] = true.into();
         invalid.push(value);
+        let mut value = original.clone();
+        value["drafts"][0]["source"] = "demo.spec".into();
+        invalid.push(value);
+        let mut value = original.clone();
+        value["drafts"] = serde_json::json!([]);
+        invalid.push(value);
+        let mut value = original.clone();
+        value["drafts"] = serde_json::json!([original["drafts"][0], original["drafts"][0]]);
+        invalid.push(value);
         let mut value = original;
         value["drafts"][0]["unexpected"] = true.into();
         invalid.push(value);
@@ -437,6 +439,8 @@ mod tests {
         let input = source(temp.path(), "demo.spec");
         let duplicate = source(temp.path(), "demo.other");
         let dir = temp.path().join("drafts");
+        assert!(create(&dir, &[input.clone(), input.clone()]).is_err());
+        assert!(!dir.exists());
         assert!(
             create(&dir, &[input.clone(), duplicate])
                 .err()
