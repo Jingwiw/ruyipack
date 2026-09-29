@@ -190,7 +190,7 @@ impl<'url> RemoteSource<'url> {
                 .into())
         });
         let agent = CLIENT.as_ref().map_err(|e| Error::new(Reason::Tls, e))?;
-        self.download_with(agent, Duration::from_secs(300))
+        self.download_with(agent, Duration::from_mins(5))
     }
 
     fn download_with(self, agent: &ureq::Agent, budget: Duration) -> Result<Download, Error> {

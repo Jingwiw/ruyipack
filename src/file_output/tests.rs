@@ -202,8 +202,9 @@ fn all_sources_are_checked_before_force_writes_any_member() {
             contents: "edited second\n",
         },
     ];
-    assert!(
-        matches!(run_edits(&files, None, EditMode::Overwrite, no_prompt), Err(OutputError::SourceChanged(path)) if path == second)
+    std::assert_matches!(
+        run_edits(&files, None, EditMode::Overwrite, no_prompt),
+        Err(OutputError::SourceChanged(path)) if path == second
     );
     assert_eq!(fs::read_to_string(first).unwrap(), "first\n");
     assert_eq!(fs::read_to_string(second).unwrap(), "changed externally\n");
