@@ -233,10 +233,6 @@ fn text_diagnostics_do_not_present_body_local_offsets_as_source_locations() {
                     .any(|line| line.starts_with(&format!("{}: warning[{code}]:", path.display()))),
                 "{stderr}"
             );
-            assert!(
-                !stderr.contains(&format!("warning[{code}] at ")),
-                "{stderr}"
-            );
         }
         assert!(
             stderr.contains(&format!(

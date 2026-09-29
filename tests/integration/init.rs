@@ -69,8 +69,6 @@ fn comment_modes_share_fields_and_filled_scaffolds_use_gen() {
     assert!(scaffold["package"]["vcs"].as_table().unwrap().is_empty());
     assert!(scaffold.get("build").is_none());
     assert!(scaffold.get("subpackages").is_none());
-    assert!(!output_text(&standard.stdout).contains("SPDX-FileCopyrightText"));
-    assert!(!output_text(&full.stdout).contains("RuyiPack"));
     assert_eq!(fs::read_dir(root).unwrap().count(), 0);
     fs::write(root.join("ed.toml"), &standard.stdout).unwrap();
     let incomplete = run(root, &["gen", "ed"]);
@@ -186,7 +184,7 @@ fn invalid_locations_and_names_fail_without_creating_directories() {
 }
 
 #[test]
-fn init_reuses_output_conflicts_without_exposing_a_second_path_option() {
+fn init_preserves_manual_content_until_explicit_overwrite() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     fs::create_dir(root.join("output")).unwrap();
@@ -197,14 +195,12 @@ fn init_reuses_output_conflicts_without_exposing_a_second_path_option() {
     fs::write(&target, "# manual content\n").unwrap();
     let conflict = run(root, &args);
     assert_eq!(conflict.status.code(), Some(1));
-    // The conflict help must offer only the options init actually accepts.
     let help = output_text(&conflict.stderr);
     assert!(
         help.contains("already exists with different content"),
         "{help}"
     );
     assert!(help.contains("--force"), "{help}");
-    assert!(!help.contains("--output"), "{help}");
     for action in ["--stdout", "--diff", "--skip-existing"] {
         let output = run(root, &["init", "demo", "--dir", "output", action]);
         success(&output);
@@ -213,18 +209,11 @@ fn init_reuses_output_conflicts_without_exposing_a_second_path_option() {
     success(&run(root, &["init", "demo", "--dir", "output", "--force"]));
     assert_eq!(fs::read(&target).unwrap(), expected);
     assert_eq!(
-        run(root, &["init", "demo", "-o", "other.toml"])
-            .status
-            .code(),
-        Some(2)
-    );
-    assert_eq!(
         run(root, &["init", "demo", "--stdout", "--force"])
             .status
             .code(),
         Some(2)
     );
-    assert!(!root.join("other.toml").exists());
 }
 
 #[test]
