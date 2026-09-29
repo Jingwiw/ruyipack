@@ -247,15 +247,7 @@ fn execute(options: &Options) -> Result<EditResult, EditError> {
             }
         }
         if options.from.is_none() {
-            let dir = tempfile::Builder::new()
-                .prefix("ruyipack-edit-")
-                .tempdir()
-                .map_err(|e| e.to_string())?;
-            let created = create_drafts(dir.path(), &inputs, None)?;
-            for (item, draft) in inputs.iter_mut().zip(created) {
-                item.draft = Some(draft);
-            }
-            temporary = Some(dir);
+            temporary = Some(temporary_drafts(&mut inputs)?);
         }
         let paths = inputs
             .iter()
@@ -294,7 +286,14 @@ fn execute(options: &Options) -> Result<EditResult, EditError> {
         Err(error) => Err(retain(error, temporary, &result.inputs)),
         Ok(outcomes) => {
             // Finalize drafts from publication facts before fallible notifications.
-            let retained = temporary.filter(|_| unapplied).map(tempfile::TempDir::keep);
+            let retained = temporary.and_then(|mut dir| {
+                if unapplied {
+                    Some(dir.keep())
+                } else {
+                    dir.disable_cleanup(false);
+                    None
+                }
+            });
             if !matches!(options.format, Some(ReportFormat::Json)) {
                 for outcome in &outcomes {
                     outcome
@@ -346,6 +345,20 @@ fn input(
         baseline: crate::check::analyze(&parsed, crate::check::Policy::Authoring, &[]),
         draft,
     })
+}
+
+fn temporary_drafts(inputs: &mut [Input]) -> Result<tempfile::TempDir, EditError> {
+    let mut dir = tempfile::Builder::new()
+        .prefix("ruyipack-edit-")
+        .tempdir()
+        .map_err(|e| e.to_string())?;
+    let created = create_drafts(dir.path(), inputs, None)?;
+    for (item, draft) in inputs.iter_mut().zip(created) {
+        item.draft = Some(draft);
+    }
+    // Once the editor can modify these files, unwinding must not discard its work.
+    dir.disable_cleanup(true);
+    Ok(dir)
 }
 
 fn create_drafts(
@@ -740,6 +753,37 @@ mod tests {
             [source, Path::new("second.spec")].into_iter(),
             &[EditOutcome::Written(source.into())],
         ));
+    }
+
+    #[test]
+    fn unwinding_preserves_editor_changes() {
+        let work = tempfile::tempdir().unwrap();
+        let source = work.path().join("input.spec");
+        let original = include_str!("../tests/fixtures/ed.spec");
+        fs::write(&source, original).unwrap();
+        let mut inputs = vec![
+            input(
+                source.clone(),
+                original.into(),
+                vec!["package.version".into()],
+                None,
+            )
+            .unwrap(),
+        ];
+        let mut retained = None;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let dir = temporary_drafts(&mut inputs).unwrap();
+            retained = Some(dir.path().to_owned());
+            fs::write(inputs[0].draft.as_ref().unwrap(), "user changes").unwrap();
+            panic!("candidate construction failed unexpectedly");
+        }));
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(inputs[0].draft.as_ref().unwrap()).unwrap(),
+            "user changes"
+        );
+        assert_eq!(fs::read_to_string(&source).unwrap(), original);
+        fs::remove_dir_all(retained.unwrap()).unwrap();
     }
 
     #[test]
