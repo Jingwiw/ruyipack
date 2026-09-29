@@ -148,7 +148,7 @@ fn cause_details<S: serde::Serializer>(
     };
     let mut details = json!({"stage": "publication", "reason": reason});
     if let Some(path) = path {
-        details["path"] = json!(path);
+        details["path"] = json!(path.to_string_lossy());
     }
     if let Some(io) = io {
         use std::io::ErrorKind;

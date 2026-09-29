@@ -293,6 +293,29 @@ fn json_reports_cover_check_prepare_apply_retry_and_partial_failure() {
         );
         assert_file(written, &version_source("3"));
         assert_file(locked.join("second.spec"), SPEC);
+
+        use std::os::unix::ffi::OsStringExt;
+        let missing = directory
+            .path()
+            .join(std::ffi::OsString::from_vec(b"missing-\xff".to_vec()));
+        let failed = command(directory.path())
+            .args([
+                "ed.spec",
+                "--set",
+                "package.version=4",
+                "--format",
+                "json",
+                "--output",
+            ])
+            .arg(missing.join("out.spec"))
+            .output()
+            .unwrap();
+        assert_eq!(failed.status.code(), Some(1));
+        assert!(failed.stderr.is_empty());
+        let report: serde_json::Value = serde_json::from_slice(&failed.stdout).unwrap();
+        assert_eq!(report["error"]["reason"], "read-failed");
+        assert_eq!(report["error"]["path"], missing.to_string_lossy().as_ref());
+        assert_file(directory.path().join("ed.spec"), &version_source("3"));
     }
 }
 
