@@ -84,7 +84,6 @@ impl Comparison {
         url: Result<String, String>,
         digest: Result<Option<String>, String>,
     ) -> Self {
-        let declared_sha256 = digest.as_ref().ok().cloned().flatten();
         let outcome = match url {
             Err(message) => Outcome::Unresolved {
                 error: source::Error::resolution(message),
@@ -94,14 +93,14 @@ impl Comparison {
             },
             Ok(url) => {
                 let download = (|| {
-                    let digest = digest.map_err(source::Error::invalid_digest)?;
-                    if let Some(hash) = &digest {
+                    let digest = digest.as_ref().map_err(source::Error::invalid_digest)?;
+                    if let Some(hash) = digest {
                         source::validate_sha256(hash).map_err(source::Error::invalid_digest)?;
                     }
                     source::RemoteSource::parse(&url)?.download()
                 })();
                 match download {
-                    Ok(download) => match &declared_sha256 {
+                    Ok(download) => match digest.as_ref().ok().and_then(|hash| hash.as_ref()) {
                         None => Outcome::Missing { download },
                         Some(hash) if hash.eq_ignore_ascii_case(&download.sha256) => {
                             Outcome::Match { download }
@@ -114,7 +113,7 @@ impl Comparison {
         };
         Self {
             expression,
-            declared_sha256,
+            declared_sha256: digest.ok().flatten(),
             outcome,
         }
     }
@@ -137,28 +136,26 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
             let manifest =
                 manifest::parse(&original).map_err(|e| ("invalid-manifest", e.to_string()))?;
             let package = &manifest.package;
-            for (number, material) in &manifest.sources {
+            for (number, material) in manifest.sources {
                 let comparison = match material {
                     manifest::Source::Local { path } => Comparison {
-                        expression: path.clone(),
+                        expression: path,
                         declared_sha256: None,
                         outcome: Outcome::NotApplicable {
                             reason: "local material; remote verification only",
                         },
                     },
                     manifest::Source::Remote { url, sha256 } => {
-                        let resolved = spec::expression::substitute_fields(
-                            url,
-                            &[
-                                ("name", &package.name),
-                                ("version", &package.version),
-                                ("url", &package.url),
-                            ],
+                        let resolved = manifest::resolve_source(
+                            &url,
+                            &package.name,
+                            &package.version,
+                            &package.url,
                         );
-                        Comparison::compare(url.clone(), resolved, Ok(sha256.clone()))
+                        Comparison::compare(url, resolved, Ok(sha256))
                     }
                 };
-                sources.insert(*number, comparison);
+                sources.insert(number, comparison);
             }
         } else {
             let parsed = spec::ParsedSpec::parse(&original);

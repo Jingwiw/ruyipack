@@ -606,15 +606,9 @@ fn validate_single_line(field: &str, value: &str) -> Result<(), String> {
 /// Generation has an HTTPS-only policy; editing existing HTTP sources is supported.
 fn validate_source_url(field: &str, value: &str, package: &PackageInput) -> Result<(), String> {
     validate_single_line(field, value)?;
-    let url = crate::source::validate_expression(
-        value,
-        &[
-            ("name", &package.name),
-            ("version", &package.version),
-            ("url", &package.url),
-        ],
-    )
-    .map_err(|reason| format!("{field}: {reason}"))?;
+    let url = resolve_source(value, &package.name, &package.version, &package.url)
+        .and_then(|resolved| crate::source::validate_authoring_url(&resolved))
+        .map_err(|reason| format!("{field}: {reason}"))?;
     crate::source::require_https(field, url)
 }
 
@@ -623,4 +617,18 @@ fn validate_https_url(field: &str, value: &str) -> Result<(), String> {
     let url = crate::source::validate_authoring_url(value)
         .map_err(|reason| format!("{field}: {reason}"))?;
     crate::source::require_https(field, url)
+}
+
+/// The authoring manifest exposes only these package fields to Source expressions.
+/// Share the mapping across validation, hash completion and read-only verification.
+pub(crate) fn resolve_source(
+    expression: &str,
+    name: &str,
+    version: &str,
+    url: &str,
+) -> Result<String, String> {
+    crate::spec::expression::substitute_fields(
+        expression,
+        &[("name", name), ("version", version), ("url", url)],
+    )
 }

@@ -87,13 +87,11 @@ pub(crate) fn run(
                 }
                 attempted = true;
                 let downloaded = (|| {
-                    let url = crate::spec::expression::substitute_fields(
+                    let url = render::manifest::resolve_source(
                         url,
-                        &[
-                            ("name", &package.name),
-                            ("version", &package.version),
-                            ("url", &package.url),
-                        ],
+                        &package.name,
+                        &package.version,
+                        &package.url,
                     )
                     .map_err(source::Error::resolution)?;
                     source::RemoteSource::parse(&url)?.download()

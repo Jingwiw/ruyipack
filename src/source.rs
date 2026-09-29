@@ -18,13 +18,6 @@ use std::{
 };
 use url::{SyntaxViolation, Url};
 
-/// Checks a Source using only already-known package fields, preserving its spelling.
-/// RPM syntax is recognized before URL validation, including escaped literal percent signs.
-pub(crate) fn validate_expression(value: &str, fields: &[(&str, &str)]) -> Result<Url, String> {
-    let resolved = crate::spec::expression::substitute_fields(value, fields)?;
-    validate_authoring_url(&resolved)
-}
-
 /// Checks URL syntax independently of the generator's HTTPS-only publishing policy.
 pub(crate) fn validate_url(value: &str) -> Result<Url, String> {
     let invalid = || {

@@ -179,7 +179,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
     } else {
         &original
     };
-    let parsed = ParsedSpec::parse(source);
+    let parsed = std::cell::LazyCell::new(|| ParsedSpec::parse(source));
     let mut report = match (options.policy, authoring_report) {
         (Policy::Authoring, Some(report)) => report,
         _ => analyze(&parsed, options.policy, &options.defines),
