@@ -55,3 +55,10 @@ proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 [lints.rust]
 unsafe_code = "forbid"
 dead_code_pub_in_binary = "warn"
+
+# Prevent avoidable allocations without imposing broad stylistic lint groups.
+[lints.clippy]
+assigning_clones = "warn"
+format_collect = "warn"
+format_push_string = "warn"
+redundant_clone = "warn"

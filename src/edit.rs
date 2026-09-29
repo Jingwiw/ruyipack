@@ -25,6 +25,7 @@ use fs_err as fs;
 use serde_json::json;
 use std::{
     borrow::Cow,
+    fmt::Write as _,
     io::{self, Write},
     path::{Path, PathBuf},
 };
@@ -118,7 +119,8 @@ pub(crate) fn run(mut options: Options) -> Result<bool, EditError> {
             Err(error) => error.written_paths().iter().collect(),
         };
         if !paths.is_empty() {
-            message.push_str(&format!("\nFiles already written: {paths:?}\nInspect these files and their current SHA-256 before retrying; publication was not rolled back."));
+            write!(message, "\nFiles already written: {paths:?}\nInspect these files and their current SHA-256 before retrying; publication was not rolled back.")
+                .expect("writing to a String cannot fail");
         }
         message
     })?;
@@ -330,9 +332,9 @@ fn input(
         }) {
             let name = path.to_string_lossy();
             let quoted = shell_words::quote(&name);
-            message.push_str(&format!(
+            write!(message,
                 "\nFull-view editing requires a mapping for every construct. Select supported fields instead, for example:\n  ruyipack edit {quoted} --field package.version --view\nOmit --view to edit the selected field. Use inspect to read the main-package tags."
-            ));
+            ).expect("writing to a String cannot fail");
         }
         EditError::at(Kind::UnmappableFields, &path, &fields, message)
     })?;

@@ -8,7 +8,7 @@
 
 use super::super::support::{assert_file, rejected, success};
 use super::{SPEC, command, fixture};
-use std::{fs, path::Path, process::Output};
+use std::{fmt::Write as _, fs, path::Path, process::Output};
 
 const URL: &str = "https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz";
 const HASH: &str = "56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc";
@@ -244,13 +244,14 @@ fn implicit_source_numbers_follow_rpm_before_field_selection() {
             .split(',')
             .map(|n| n.parse::<u32>().unwrap())
             .collect::<Vec<_>>();
-        let declarations = headers
-            .iter()
-            .enumerate()
-            .map(|(i, header)| {
-                format!("#!RemoteAsset\n{header}: https://example.org/asset-{i}.tar.gz\n")
-            })
-            .collect::<String>();
+        let mut declarations = String::new();
+        for (i, header) in headers.iter().enumerate() {
+            writeln!(
+                declarations,
+                "#!RemoteAsset\n{header}: https://example.org/asset-{i}.tar.gz"
+            )
+            .unwrap();
+        }
         let old = format!("#!RemoteAsset:  sha256:{HASH}\nSource0:        {URL}\n");
         let source = format!(
             "%global _smp_mflags -j1\n{}",

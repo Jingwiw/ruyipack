@@ -422,7 +422,7 @@ mod tests {
         let mut value = original.clone();
         value["unexpected"] = true.into();
         invalid.push(value);
-        let mut value = original.clone();
+        let mut value = original;
         value["drafts"][0]["unexpected"] = true.into();
         invalid.push(value);
         for value in invalid {

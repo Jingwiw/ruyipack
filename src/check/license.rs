@@ -105,7 +105,7 @@ fn validate_expression(value: &str) -> Result<(), String> {
     spdx::Expression::parse_mode(&normalized, mode)
         .map(|_| ())
         .map_err(|mut error| {
-            error.original = value.to_owned();
+            value.clone_into(&mut error.original);
             format!("SPDX list {}: {error}", spdx::license_version())
         })
 }
