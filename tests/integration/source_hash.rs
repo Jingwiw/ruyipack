@@ -331,6 +331,8 @@ fn edit_hashes_the_pending_candidate_and_keeps_drafts_and_stale_guards() {
         "package.version=2",
         "--hash-source",
         "0",
+        "--hash-source",
+        "0",
     ];
     let output = run(&[&args[..], &["--check", "--format", "json"]].concat());
     success(&output);
@@ -338,6 +340,7 @@ fn edit_hashes_the_pending_candidate_and_keeps_drafts_and_stale_guards() {
         json_line(&output)["files"][0]["source_hashes"]["sources"]["0"]["sha256"],
         sha(b"/2.tar")
     );
+    assert_eq!(*server.calls.lock().unwrap(), ["/2.tar"]);
     success(&run(&[&args[..], &["--diff"]].concat()));
     assert_file(&input, &source);
     *mode.lock().unwrap() = "fail";

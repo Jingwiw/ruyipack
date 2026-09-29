@@ -39,7 +39,7 @@ regenerating. No filename heuristic chooses an authority or synchronizes files.
 | `file_output` | Written/unchanged/skipped paths, typed partial failures | `edit` formats results and retains recovery information |
 | `check` | Findings and explicit incomplete reasons | `check`, `gen`, and `edit` reports |
 | `profile::buildsystems` | Embedded system names, requirements, stage guidance and identity | `init`, manifest validation, generation reports and RPK004 |
-| `spec::sources` | Ordered Source identities, original expressions, declared digests and static values | Hash calculation and read-only verification; selected URL validation |
+| `spec::sources` | Source/Patch identities, original expressions, declared digests and static values | Source hashing/verification and selected URL validation; `check --materials` inventories staged files |
 | `source` | Resolved URLs and digests of actual downloads | `gen` fills missing manifest digests in memory; `edit` fills selected candidate digests; `source-hash` calculates and `verify-sources` compares without writing |
 | `edit::drafts` | Draft storage layout and output protection | Saved and interactive editing |
 
@@ -121,12 +121,12 @@ Closed-stream
 regressions remain isolated in `tests/stdio.rs`. Argument-conflict matrices use
 `Cli::try_parse_from`; CLI cases retain exit-status and file-safety checks.
 
-- `spec::document` property tests and `tests/integration/edit_selected.rs` check
+- `spec::document` property tests and `tests/integration/edit/selection.rs` check
   exact preservation outside selected fields, including unsupported syntax.
 - `file_output/tests.rs` tests no-op byte/inode/mtime preservation, stale-source rejection,
   and partial I/O failure with exact already-written paths.
 - `tests/integration/generation.rs` checks input authority, provenance, and
   validation failures without publication.
 - `tests/integration/edit/drafts.rs` checks identity/shape failures; `edit/reports.rs` checks error codes and publication receipts.
-- `tests/integration/source_validation.rs` and `edit_source_selection.rs` distinguish
+- `tests/integration/source_validation.rs` and `tests/integration/edit/sources.rs` distinguish
   safely locating an old invalid value from validating its replacement.

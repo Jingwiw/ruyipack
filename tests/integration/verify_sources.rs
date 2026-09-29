@@ -122,11 +122,19 @@ fn verification_distinguishes_missing_mismatch_and_uncertainty_without_writing()
         toml::from_str(include_str!("../../examples/ed/ed.toml")).unwrap();
     manifest["sources"]["0"]["url"] = format!("{}/match", server.url).into();
     manifest["sources"]["0"]["sha256"] = hash.into();
+    manifest["sources"]
+        .as_table_mut()
+        .unwrap()
+        .insert("1".into(), toml::toml! { path = "local:1.tar.gz" }.into());
     let original = toml::to_string(&manifest).unwrap();
     fs::write(root.join("ed.toml"), &original).unwrap();
     let output = run(&["--manifest", "ed.toml", "--format", "json"]);
     success(&output);
     assert_eq!(json_line(&output)["sources"]["0"]["status"], "match");
+    assert_eq!(
+        json_line(&output)["sources"]["1"]["status"],
+        "not-applicable"
+    );
     assert_file(root.join("ed.toml"), &original);
     manifest["sources"]["0"]
         .as_table_mut()

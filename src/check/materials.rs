@@ -16,13 +16,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-struct Declaration {
-    identity: String,
-    expression: String,
-    value: Result<String, String>,
-    digest: Result<Option<String>, String>,
-}
-
 #[derive(Serialize)]
 struct Failure {
     code: &'static str,
@@ -162,7 +155,10 @@ pub(crate) fn analyze(
         let root = fs::canonicalize(source_dir.unwrap_or(path.parent().expect("absolute input")))
             .map_err(|e| failure("source-directory", e))?;
         if !root.is_dir() {
-            return Err(failure("source-directory", "expected a directory"));
+            return Err(failure(
+                "source-directory",
+                format!("{}: expected a directory", root.display()),
+            ));
         }
         directory = Some(root.clone());
         let resolved = spec::sources::resolve_materials(parsed, defines)
@@ -179,52 +175,44 @@ pub(crate) fn analyze(
             )
             .collect::<Vec<_>>();
         declarations.sort_by_key(|(_, s)| s.span.bytes.start);
-        let materials = declarations
-            .into_iter()
-            .map(|(identity, s)| Declaration {
-                identity,
-                expression: s.expression,
-                value: s.url,
-                digest: s.digest,
-            })
-            .collect::<Vec<_>>();
-        let incomplete = resolved.incomplete;
-        let mut names: BTreeMap<&str, Vec<&Declaration>> = BTreeMap::new();
-        for material in &materials {
-            if let Ok(value) = &material.value
+        let mut names: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
+        for (identity, material) in &declarations {
+            if let Ok(value) = &material.url
                 && let Ok(name) = filename(value)
             {
-                names.entry(name).or_default().push(material);
+                names.entry(name).or_default().push((identity, value));
             }
         }
-        for material in &materials {
+        // Identical declarations may reuse one file. Different locations targeting
+        // that filename are ambiguous, even when the staged bytes happen to match.
+        let collisions = names
+            .into_iter()
+            .filter(|(_, peers)| peers.iter().any(|(_, value)| *value != peers[0].1))
+            .map(|(name, peers)| {
+                (
+                    name.to_owned(),
+                    format!(
+                        "{name} is targeted by {}",
+                        peers
+                            .iter()
+                            .map(|(identity, _)| *identity)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        for (identity, material) in declarations {
             let mut local = None;
-            let mut observed = None;
             let checked = (|| {
                 let value = material
-                    .value
+                    .url
                     .as_ref()
                     .map_err(|e| failure("unresolved", e))?;
                 let name = filename(value)?;
-                local = Some(root.join(name));
-                let peers = &names[name];
-                // Identical declarations may intentionally reuse one file. Different
-                // declared locations targeting that file are ambiguous, even if bytes match.
-                if peers
-                    .iter()
-                    .any(|peer| peer.value.as_ref().ok() != Some(value))
-                {
-                    return Err(failure(
-                        "name-collision",
-                        format!(
-                            "{name} is targeted by {}",
-                            peers
-                                .iter()
-                                .map(|p| p.identity.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
-                    ));
+                let path = local.insert(root.join(name));
+                if let Some(message) = collisions.get(name) {
+                    return Err(failure("name-collision", message));
                 }
                 let declared = material
                     .digest
@@ -233,34 +221,35 @@ pub(crate) fn analyze(
                 if let Some(hash) = declared {
                     source::validate_sha256(hash).map_err(|e| failure("invalid-digest", e))?;
                 }
-                let bytes = content(local.as_deref().expect("resolved path"))?;
-                let matches = declared
-                    .as_ref()
-                    .is_none_or(|hash| hash.eq_ignore_ascii_case(&bytes.sha256));
-                observed = Some(bytes);
-                if !matches {
-                    return Err(failure(
+                content(path)
+            })();
+            let declared_sha256 = material.digest.ok().flatten();
+            let outcome = match checked {
+                Ok(content)
+                    if declared_sha256
+                        .as_ref()
+                        .is_none_or(|hash| hash.eq_ignore_ascii_case(&content.sha256)) =>
+                {
+                    Outcome::Ready { content }
+                }
+                Ok(content) => Outcome::Error {
+                    content: Some(content),
+                    error: failure(
                         "digest-mismatch",
                         "staged bytes do not match the declared SHA-256; neither was changed",
-                    ));
-                }
-                Ok(())
-            })();
-            let outcome = match checked {
-                Ok(()) => Outcome::Ready {
-                    content: observed.expect("successful file read"),
+                    ),
                 },
                 Err(error) => Outcome::Error {
-                    content: observed,
+                    content: None,
                     error,
                 },
             };
             records.push(Record {
-                identity: material.identity.clone(),
-                expression: material.expression.clone(),
-                resolved: material.value.as_ref().ok().cloned(),
+                identity,
+                expression: material.expression,
+                resolved: material.url.ok(),
                 path: local,
-                declared_sha256: material.digest.as_ref().ok().cloned().flatten(),
+                declared_sha256,
                 outcome,
             });
         }
@@ -270,7 +259,7 @@ pub(crate) fn analyze(
                 "recipe changed during inventory; retry",
             ));
         }
-        if let Some(reason) = incomplete {
+        if let Some(reason) = resolved.incomplete {
             return Err(failure("material-resolution", reason));
         }
         Ok(())

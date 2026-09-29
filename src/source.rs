@@ -136,7 +136,7 @@ pub(crate) fn calculate(
                 .map(|url| (*number, url))
                 .map_err(|error| error.at(*number))
         })
-        .collect::<Result<Vec<_>, Error>>()?;
+        .collect::<Result<std::collections::BTreeMap<_, _>, Error>>()?;
     let sources = urls
         .into_iter()
         .map(|(number, url)| {

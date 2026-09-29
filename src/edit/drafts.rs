@@ -154,7 +154,9 @@ pub(super) fn load(dir: &Path) -> Result<Vec<Draft>, String> {
         if !entry.source.is_absolute() || !source_paths.insert(entry.source.clone()) {
             return Err("draft index source paths must be absolute and unique".into());
         }
-        if !names.insert(draft_name(&entry.source)?) {
+        let name = draft_name(&entry.source)?;
+        let path = dir.join(&name);
+        if !names.insert(name) {
             return Err("draft index contains duplicate generated paths".into());
         }
         let original_path = state.join(format!("originals/{position}.spec"));
@@ -172,7 +174,6 @@ pub(super) fn load(dir: &Path) -> Result<Vec<Draft>, String> {
         }
         // Current source changes are reported per file by the candidate check.
         open_regular(&state.join(format!("schema/{position}.json")))?;
-        let path = dir.join(draft_name(&entry.source)?);
         open_regular(&path)?;
         drafts.push(Draft {
             source: entry.source,

@@ -139,9 +139,13 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
             let package = &manifest.package;
             for (number, material) in &manifest.sources {
                 let comparison = match material {
-                    manifest::Source::Local { path } => {
-                        Comparison::compare(path.clone(), Ok(path.clone()), Ok(None))
-                    }
+                    manifest::Source::Local { path } => Comparison {
+                        expression: path.clone(),
+                        declared_sha256: None,
+                        outcome: Outcome::NotApplicable {
+                            reason: "local material; remote verification only",
+                        },
+                    },
                     manifest::Source::Remote { url, sha256 } => {
                         let resolved = spec::expression::substitute_fields(
                             url,
