@@ -64,11 +64,10 @@ fn invalid_ca_bundles_identify_the_file_without_changing_input() {
     }
 }
 
-#[test]
-fn streaming_hashes_validate_tls_redirects_and_complete_response_bodies() {
+fn hash_server() -> Server {
     let attempts = Cell::new(0);
     let redirects = Cell::new(0);
-    let server = Server::new(true, move |path| {
+    Server::new(true, move |path| {
         if path == "/retry" || path == "/busy" {
             if path == "/retry" {
                 attempts.set(attempts.get() + 1);
@@ -96,7 +95,12 @@ fn streaming_hashes_validate_tls_redirects_and_complete_response_bodies() {
         "/encoding" => b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 4\r\n\r\nraw!".to_vec(),
         _ => response(b"\0\xffasset\n"),
     }
-    });
+    })
+}
+
+#[test]
+fn streaming_hashes_validate_tls_redirects_and_complete_response_bodies() {
+    let server = hash_server();
     let directory = tempfile::tempdir().unwrap();
     let input = directory.path().join("input.spec");
     let source = format!(
@@ -176,13 +180,22 @@ fn streaming_hashes_validate_tls_redirects_and_complete_response_bodies() {
     }
     drop(calls);
     // A retry starts a fresh digest; a failed attempt never returns partial bytes.
-    fs::write(&input, source.replace("route redirect", "route retry")).unwrap();
-    let output = run();
-    success(&output);
-    assert_eq!(
-        machine_report(&output)["sha256"].as_str(),
-        Some((sha(b"\0\xffasset\n")).as_str())
-    );
+    for (route, bytes) in [
+        ("retry", b"\0\xffasset\n".as_slice()),
+        ("encoding", b"raw!"),
+    ] {
+        fs::write(
+            &input,
+            source.replace("route redirect", &format!("route {route}")),
+        )
+        .unwrap();
+        let output = run();
+        success(&output);
+        assert_eq!(
+            machine_report(&output)["sha256"].as_str(),
+            Some(sha(bytes).as_str())
+        );
+    }
     assert_eq!(
         server
             .calls
@@ -193,13 +206,14 @@ fn streaming_hashes_validate_tls_redirects_and_complete_response_bodies() {
             .count(),
         2
     );
-    fs::write(&input, source.replace("route redirect", "route encoding")).unwrap();
-    let output = run();
-    success(&output);
-    assert_eq!(
-        machine_report(&output)["sha256"].as_str(),
-        Some((sha(b"raw!")).as_str())
-    );
+}
+
+#[test]
+fn untrusted_tls_is_rejected_as_non_retryable() {
+    let server = hash_server();
+    let directory = tempfile::tempdir().unwrap();
+    let input = directory.path().join("input.spec");
+    fs::write(&input, format!("Source4: {}/encoding\n", server.url)).unwrap();
     let rejected = server
         .command()
         .env_remove("SSL_CERT_FILE")
@@ -403,7 +417,7 @@ fn edit_hashes_the_pending_candidate_and_keeps_drafts_and_stale_guards() {
         );
     assert_file(&input, &expected);
     server.calls.lock().unwrap().clear();
-    let stale = run(&[
+    let stale_result = run(&[
         "edit",
         "--spec=input.spec",
         "--hash-source",
@@ -412,7 +426,7 @@ fn edit_hashes_the_pending_candidate_and_keeps_drafts_and_stale_guards() {
         &sha(source.as_bytes()),
         "--check",
     ]);
-    assert_eq!(stale.status.code(), Some(1));
+    assert_eq!(stale_result.status.code(), Some(1));
     assert!(server.calls.lock().unwrap().is_empty());
     fs::remove_dir_all(root.join(".ruyipack-stage")).unwrap();
     fs::write(

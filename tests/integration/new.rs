@@ -635,61 +635,65 @@ fn package_binding_creates_one_sparse_checkout_and_previews_write_nothing() {
     );
     assert!(!root.join("ed-test.spec").exists());
     assert!(!area.join("ed-test.toml").exists());
+}
 
-    #[cfg(unix)]
-    {
-        // A trusted checkout filter models an external authoring edit while Git
-        // materializes files: the candidate must not publish the older manifest.
-        fs::write(
-            repo.join(".gitattributes"),
-            "README filter=manifest-change\n",
-        )
-        .unwrap();
-        git(&repo, &["add", ".gitattributes"]);
-        git(
-            &repo,
-            &["commit", "--quiet", "-m", "Checkout filter fixture"],
-        );
-        success(&run(root, &["inspect", "ed-race", "--pkgname", "ed"]));
-        let race = root.join("work/ed-race");
-        let manifest = race.join("ed.toml");
-        let input = include_str!("../../examples/ed/ed.toml")
-            .replace("version = \"1.22.5\"", "version = \"1.22.6\"");
-        fs::write(&manifest, &input).unwrap();
-        let binding = fs::read(race.join(".config.toml")).unwrap();
-        let filter = root.join("change-manifest.sh");
-        let quoted_manifest = shell_words::quote(manifest.to_str().unwrap());
-        fs::write(&filter, format!(
-            "sed 's/version = \"1.22.6\"/version = \"2\"/' {quoted_manifest} > {quoted_manifest}.updated\n\
-             mv {quoted_manifest}.updated {quoted_manifest}\ncat\n"
-        )).unwrap();
-        let smudge = format!("sh {}", shell_words::quote(filter.to_str().unwrap()));
-        git(&repo, &["config", "filter.manifest-change.smudge", &smudge]);
-        git(&repo, &["config", "filter.manifest-change.clean", "cat"]);
-        git(
-            &repo,
-            &["config", "filter.manifest-change.required", "true"],
-        );
-        let changed = run(
-            root,
-            &["gen", "ed-race", "--offline", "--spec=auto", "--force"],
-        );
-        assert_eq!(changed.status.code(), Some(1), "{changed:?}");
-        assert!(
-            output_text(&changed.stderr).contains("changed"),
-            "{changed:?}"
-        );
-        assert!(changed.stdout.is_empty());
-        assert_file(
-            &manifest,
-            &input.replace("version = \"1.22.6\"", "version = \"2\""),
-        );
-        assert_eq!(fs::read(race.join(".config.toml")).unwrap(), binding);
-        assert_file(
-            race.join("checkout/SPECS/ed/ed.spec"),
-            include_str!("../fixtures/ed.spec"),
-        );
-    }
+#[cfg(unix)]
+#[test]
+fn checkout_filter_cannot_publish_a_stale_authoring_input() {
+    let directory = workspace();
+    let root = directory.path();
+    let repo = root.join("openruyi");
+    // A trusted checkout filter models an external authoring edit while Git
+    // materializes files: the candidate must not publish the older manifest.
+    fs::write(
+        repo.join(".gitattributes"),
+        "README filter=manifest-change\n",
+    )
+    .unwrap();
+    git(&repo, &["add", ".gitattributes"]);
+    git(
+        &repo,
+        &["commit", "--quiet", "-m", "Checkout filter fixture"],
+    );
+    success(&run(root, &["inspect", "ed-race", "--pkgname", "ed"]));
+    let race = root.join("work/ed-race");
+    let manifest = race.join("ed.toml");
+    let input = include_str!("../../examples/ed/ed.toml")
+        .replace("version = \"1.22.5\"", "version = \"1.22.6\"");
+    fs::write(&manifest, &input).unwrap();
+    let binding = fs::read(race.join(".config.toml")).unwrap();
+    let filter = root.join("change-manifest.sh");
+    let quoted_manifest = shell_words::quote(manifest.to_str().unwrap());
+    fs::write(&filter, format!(
+        "sed 's/version = \"1.22.6\"/version = \"2\"/' {quoted_manifest} > {quoted_manifest}.updated\n\
+         mv {quoted_manifest}.updated {quoted_manifest}\ncat\n"
+    )).unwrap();
+    let smudge = format!("sh {}", shell_words::quote(filter.to_str().unwrap()));
+    git(&repo, &["config", "filter.manifest-change.smudge", &smudge]);
+    git(&repo, &["config", "filter.manifest-change.clean", "cat"]);
+    git(
+        &repo,
+        &["config", "filter.manifest-change.required", "true"],
+    );
+    let changed = run(
+        root,
+        &["gen", "ed-race", "--offline", "--spec=auto", "--force"],
+    );
+    assert_eq!(changed.status.code(), Some(1), "{changed:?}");
+    assert!(
+        output_text(&changed.stderr).contains("changed"),
+        "{changed:?}"
+    );
+    assert!(changed.stdout.is_empty());
+    assert_file(
+        &manifest,
+        &input.replace("version = \"1.22.6\"", "version = \"2\""),
+    );
+    assert_eq!(fs::read(race.join(".config.toml")).unwrap(), binding);
+    assert_file(
+        race.join("checkout/SPECS/ed/ed.spec"),
+        include_str!("../fixtures/ed.spec"),
+    );
 }
 
 #[test]
@@ -958,6 +962,20 @@ fn edit_copy_output_cannot_replace_work_inputs_or_binding_state() {
         use std::os::unix::fs::MetadataExt;
         fs::metadata(area.join(".lock")).unwrap().ino()
     };
+    let assert_unchanged = || {
+        for (path, bytes) in &saved {
+            assert_eq!(fs::read(path).unwrap(), *bytes, "{}", path.display());
+        }
+        assert_eq!(binding(&area)["input"].as_str(), Some("authoring"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(
+                fs::metadata(area.join(".lock")).unwrap().ino(),
+                lock_identity
+            );
+        }
+    };
     let reject = |output: &Path| {
         let result = command(root)
             .args([
@@ -972,18 +990,7 @@ fn edit_copy_output_cannot_replace_work_inputs_or_binding_state() {
             .output()
             .unwrap();
         assert_eq!(result.status.code(), Some(1), "{result:?}");
-        for (path, bytes) in &saved {
-            assert_eq!(fs::read(path).unwrap(), *bytes, "{}", path.display());
-        }
-        assert_eq!(binding(&area)["input"].as_str(), Some("authoring"));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            assert_eq!(
-                fs::metadata(area.join(".lock")).unwrap().ino(),
-                lock_identity
-            );
-        }
+        assert_unchanged();
     };
     for path in &protected {
         reject(path);
@@ -1009,10 +1016,7 @@ fn edit_copy_output_cannot_replace_work_inputs_or_binding_state() {
         .unwrap();
     success(&result);
     assert_file(copy, &version_spec("1.22.6"));
-    for (path, bytes) in &saved {
-        assert_eq!(fs::read(path).unwrap(), *bytes, "{}", path.display());
-    }
-    assert_eq!(binding(&area)["input"].as_str(), Some("authoring"));
+    assert_unchanged();
 }
 
 #[test]
@@ -1105,13 +1109,16 @@ fn author_uses_git_precedence_and_never_invents_a_missing_identity() {
         "[user]\nname = Global Author\nemail = global@example.org\n",
     )
     .unwrap();
-    let local = command(root)
-        .env_remove("GIT_AUTHOR_NAME")
-        .env_remove("GIT_AUTHOR_EMAIL")
-        .env("GIT_CONFIG_GLOBAL", &global)
-        .args(["new", "demo", "--pkgname", "demo", "--stdout"])
-        .output()
-        .unwrap();
+    let from_config = || {
+        command(root)
+            .env_remove("GIT_AUTHOR_NAME")
+            .env_remove("GIT_AUTHOR_EMAIL")
+            .env("GIT_CONFIG_GLOBAL", &global)
+            .args(["new", "demo", "--pkgname", "demo", "--stdout"])
+            .output()
+            .unwrap()
+    };
+    let local = from_config();
     assert_eq!(
         document(&local)["spec"]["contributors"][0].as_str(),
         Some("Local Author <local@example.org>")
@@ -1131,13 +1138,7 @@ fn author_uses_git_precedence_and_never_invents_a_missing_identity() {
                 .success()
         );
     }
-    let from_global = command(root)
-        .env_remove("GIT_AUTHOR_NAME")
-        .env_remove("GIT_AUTHOR_EMAIL")
-        .env("GIT_CONFIG_GLOBAL", &global)
-        .args(["new", "demo", "--pkgname", "demo", "--stdout"])
-        .output()
-        .unwrap();
+    let from_global = from_config();
     assert_eq!(
         document(&from_global)["spec"]["contributors"][0].as_str(),
         Some("Global Author <global@example.org>")

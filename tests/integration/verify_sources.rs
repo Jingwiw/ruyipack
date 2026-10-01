@@ -20,22 +20,11 @@ use std::{
 fn verification_distinguishes_missing_mismatch_and_uncertainty_without_writing() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().to_owned();
-    let mode = Arc::new(Mutex::new("ok"));
-    let current = mode.clone();
-    let changed = root.join("input.spec");
-    let server = Server::new(true, move |path| {
-        let mode = *current.lock().unwrap();
-        if mode == "drift" {
-            fs::write(&changed, "# concurrent change\n").unwrap();
-        }
+    let server = Server::new(true, |path| {
         if path == "/fail" {
             b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec()
         } else {
-            response(if mode == "replaced" {
-                b"changed upstream"
-            } else {
-                b"archive"
-            })
+            response(b"archive")
         }
     });
     let hash = format!("{:x}", Sha256::digest(b"archive"));
@@ -108,32 +97,82 @@ fn verification_distinguishes_missing_mismatch_and_uncertainty_without_writing()
         *server.calls.lock().unwrap(),
         ["/match", "/mismatch", "/missing", "/fail", "/later"]
     );
-    let matched = source
-        .split("Source1:")
-        .next()
-        .unwrap()
-        .rsplit_once("#!RemoteAsset:")
-        .unwrap()
-        .0
-        .to_owned();
-    fs::write(&input, &matched).unwrap();
-    success(&run(&["--spec=input.spec"]));
+    fs::write(&input, "%include absent.inc\n").unwrap();
+    let incomplete = run(&["--spec=input.spec", "--format", "toml"]);
+    assert_eq!(incomplete.status.code(), Some(1));
+    assert_eq!(
+        machine_report(&incomplete)["error"]["code"].as_str(),
+        Some("source-resolution")
+    );
+}
+
+#[test]
+fn verification_rejects_changed_downloads_and_changed_input() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let input = root.join("input.spec");
+    let changed = input.clone();
+    let mode = Arc::new(Mutex::new("ok"));
+    let current = mode.clone();
+    let server = Server::new(true, move |_| {
+        let mode = *current.lock().unwrap();
+        if mode == "drift" {
+            fs::write(&changed, "# concurrent change\n").unwrap();
+        }
+        response(if mode == "replaced" {
+            b"changed upstream"
+        } else {
+            b"archive"
+        })
+    });
+    let source = format!(
+        "Name: probe\nVersion: 1\n#!RemoteAsset:  sha256:{:x}\nSource0: {}/match\n",
+        Sha256::digest(b"archive"),
+        server.url
+    );
+    fs::write(&input, &source).unwrap();
+    let run = |args: &[&str]| {
+        server
+            .command()
+            .current_dir(root)
+            .args(["source", "verify", "--spec=input.spec"])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    success(&run(&[]));
     *mode.lock().unwrap() = "replaced";
-    let changed = run(&["--spec=input.spec", "--format", "toml"]);
+    let changed = run(&["--format", "toml"]);
     assert_eq!(changed.status.code(), Some(1));
     assert_eq!(
         machine_report(&changed)["sources"][0]["status"].as_str(),
         Some("mismatch")
     );
-    assert_file(&input, &matched);
+    assert_file(&input, &source);
     *mode.lock().unwrap() = "drift";
-    let drift = run(&["--spec=input.spec", "--format", "toml"]);
+    let drift = run(&["--format", "toml"]);
     assert_eq!(
         machine_report(&drift)["error"]["code"].as_str(),
         Some("source-changed")
     );
     assert_file(&input, "# concurrent change\n");
-    *mode.lock().unwrap() = "ok";
+}
+
+#[test]
+fn manifest_verification_reports_missing_hashes_without_filling_them() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let server = Server::new(true, |_| response(b"archive"));
+    let hash = format!("{:x}", Sha256::digest(b"archive"));
+    let run = |args: &[&str]| {
+        server
+            .command()
+            .current_dir(root)
+            .args(["source", "verify"])
+            .args(args)
+            .output()
+            .unwrap()
+    };
     let mut manifest: toml::Value =
         toml::from_str(include_str!("../../examples/ed/ed.toml")).unwrap();
     manifest["sources"]["0"]["url"] = format!("{}/match", server.url).into();
@@ -168,11 +207,4 @@ fn verification_distinguishes_missing_mismatch_and_uncertainty_without_writing()
         Some("missing")
     );
     assert_file(root.join("ed.toml"), &missing);
-    fs::write(&input, "%include absent.inc\n").unwrap();
-    let incomplete = run(&["--spec=input.spec", "--format", "toml"]);
-    assert_eq!(incomplete.status.code(), Some(1));
-    assert_eq!(
-        machine_report(&incomplete)["error"]["code"].as_str(),
-        Some("source-resolution")
-    );
 }

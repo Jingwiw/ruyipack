@@ -182,6 +182,23 @@ impl Fixture {
         serde_json::from_slice(&fs::read(self.output.join("receipt.json")).unwrap()).unwrap()
     }
 
+    fn reported_receipt(&self, output: &Output) -> Value {
+        let outcome = support::machine_report(output);
+        assert_eq!(outcome["operation"].as_str(), Some("build"));
+        assert_eq!(outcome["success"].as_bool(), Some(true));
+        assert_eq!(
+            Path::new(outcome["receipt"].as_str().unwrap())
+                .canonicalize()
+                .unwrap(),
+            self.output.join("receipt.json").canonicalize().unwrap()
+        );
+        let receipt: Value =
+            serde_json::from_slice(&fs::read(outcome["receipt"].as_str().unwrap()).unwrap())
+                .unwrap();
+        assert_eq!(receipt, self.receipt());
+        receipt
+    }
+
     fn workspace(&self, specs: &str, package: &str, spec_name: &str) -> PathBuf {
         let workspace = self.root.path().join("workspace");
         support::success(
@@ -260,18 +277,7 @@ fn named_build_and_shell_share_binding_checkout_and_workspace_configuration() {
         .output()
         .unwrap();
     support::success(&output);
-    let outcome = support::machine_report(&output);
-    assert_eq!(outcome["operation"].as_str(), Some("build"));
-    assert_eq!(outcome["success"].as_bool(), Some(true));
-    assert_eq!(
-        Path::new(outcome["receipt"].as_str().unwrap())
-            .canonicalize()
-            .unwrap(),
-        fixture.output.join("receipt.json").canonicalize().unwrap()
-    );
-    let receipt: Value =
-        serde_json::from_slice(&fs::read(outcome["receipt"].as_str().unwrap()).unwrap()).unwrap();
-    assert_eq!(receipt, fixture.receipt());
+    let receipt = fixture.reported_receipt(&output);
     assert_eq!(receipt["package"], "fixture");
     assert!(receipt["context"].is_null());
     let area = workspace.join("areas/fixture-test");
@@ -436,18 +442,7 @@ fn build_copies_inputs_and_returns_a_receipt_without_context_mutation() {
     let output = fixture.run("", 10);
     support::success(&output);
     assert!(support::output_text(&output.stderr).contains("build: engine; stdout:"));
-    let outcome = support::machine_report(&output);
-    assert_eq!(outcome["operation"].as_str(), Some("build"));
-    assert_eq!(outcome["success"].as_bool(), Some(true));
-    assert_eq!(
-        Path::new(outcome["receipt"].as_str().unwrap())
-            .canonicalize()
-            .unwrap(),
-        fixture.output.join("receipt.json").canonicalize().unwrap()
-    );
-    let receipt: Value =
-        serde_json::from_slice(&fs::read(outcome["receipt"].as_str().unwrap()).unwrap()).unwrap();
-    assert_eq!(receipt, fixture.receipt());
+    let receipt = fixture.reported_receipt(&output);
     assert_eq!(receipt["execution"]["success"], true);
     assert_eq!(receipt["success"], true);
     assert!(receipt["engine_validation_error"].is_null());
@@ -847,18 +842,7 @@ fn non_utf8_paths_remain_native_for_io_and_display_only_in_receipts() {
         .join("fixture");
     let output = fixture.run("", 10);
     support::success(&output);
-    let outcome = support::machine_report(&output);
-    assert_eq!(outcome["operation"].as_str(), Some("build"));
-    assert_eq!(outcome["success"].as_bool(), Some(true));
-    assert_eq!(
-        Path::new(outcome["receipt"].as_str().unwrap())
-            .canonicalize()
-            .unwrap(),
-        fixture.output.join("receipt.json").canonicalize().unwrap()
-    );
-    let receipt: Value =
-        serde_json::from_slice(&fs::read(outcome["receipt"].as_str().unwrap()).unwrap()).unwrap();
-    assert_eq!(receipt, fixture.receipt());
+    let receipt = fixture.reported_receipt(&output);
     assert_eq!(receipt["success"], true);
     for field in ["config", "spec", "source_dir"] {
         assert!(receipt[field].as_str().unwrap().contains('\u{fffd}'));
@@ -908,27 +892,20 @@ fn clean_requires_confirmation_then_removes_only_receipt_owned_resources() {
     let output = clean(true);
     support::success(&output);
     let report = support::machine_report(&output);
-    assert_eq!(
-        report["removed"]["container"]
-            .clone()
-            .try_into::<Vec<String>>()
-            .unwrap(),
-        ["abcdef0123456789"]
-    );
-    assert_eq!(
-        report["removed"]["network"]
-            .clone()
-            .try_into::<Vec<String>>()
-            .unwrap(),
-        ["fedcba9876543210"]
-    );
-    assert_eq!(
-        report["removed"]["volume"]
-            .clone()
-            .try_into::<Vec<String>>()
-            .unwrap(),
-        ["owned-volume"]
-    );
+    for (kind, id) in [
+        ("container", "abcdef0123456789"),
+        ("network", "fedcba9876543210"),
+        ("volume", "owned-volume"),
+    ] {
+        assert_eq!(
+            report["removed"][kind]
+                .clone()
+                .try_into::<Vec<String>>()
+                .unwrap(),
+            [id],
+            "{kind}"
+        );
+    }
     assert_eq!(
         report["retained_volumes"]
             .clone()

@@ -8,12 +8,21 @@
 
 use super::support::{assert_file, authoring_workspace, quiet_success, rejected, run, success};
 
-use std::{fs, process::Output};
+use std::{fs, path::Path, process::Output};
 
 const MANIFEST: &str = include_str!("../../examples/ed/ed.toml");
 const SPEC: &str = include_str!("../fixtures/ed.spec");
 const URL: &str = "https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz";
 const HASH: &str = "56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc";
+
+fn editable_view(directory: &Path) -> toml::Table {
+    let view = run(
+        directory,
+        &["inspect", "--spec=ed.spec", "--editable", "--all"],
+    );
+    quiet_success(&view);
+    toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap()
+}
 
 fn reviewed(output: &Output, field: &str) {
     assert!(output.status.success(), "{output:?}");
@@ -49,13 +58,7 @@ fn generated_sources_are_viewable_and_round_trip_without_changing_a_byte() {
         quiet_success(&generated);
         assert_eq!(generated.stdout, SPEC.replace(URL, url).as_bytes());
         fs::write(directory.path().join("ed.spec"), &generated.stdout).unwrap();
-        let view = run(
-            directory.path(),
-            &["inspect", "--spec=ed.spec", "--editable", "--all"],
-        );
-        quiet_success(&view);
-        let document: toml::Table =
-            toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
+        let document = editable_view(directory.path());
         assert_eq!(document["sources"]["0"]["url"].as_str(), Some(url));
         let unchanged = run(
             directory.path(),
@@ -119,13 +122,7 @@ fn invalid_or_unsupported_sources_can_be_viewed_but_not_published() {
         let spec = SPEC.replace(URL, url);
         let _ = fs::remove_dir_all(directory.path().join(".ruyipack-stage"));
         fs::write(directory.path().join("ed.spec"), &spec).unwrap();
-        let view = run(
-            directory.path(),
-            &["inspect", "--spec=ed.spec", "--editable", "--all"],
-        );
-        quiet_success(&view);
-        let document: toml::Table =
-            toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
+        let document = editable_view(directory.path());
         assert_eq!(document["sources"]["0"]["url"].as_str(), Some(url));
         assert_file(directory.path().join("ed.spec"), &spec);
         fs::write(directory.path().join("ed.spec"), SPEC).unwrap();
@@ -288,7 +285,12 @@ fn generated_bare_sources_remain_editable_without_inventing_a_digest() {
         .success()
     );
     assert_file(directory.path().join("ed.spec"), SPEC);
-    fs::remove_dir_all(directory.path().join(".ruyipack-stage")).unwrap();
+}
+
+#[test]
+fn editing_a_bare_source_url_preserves_its_missing_digest() {
+    let directory = tempfile::tempdir().unwrap();
+    let spec = SPEC.replace(&format!("#!RemoteAsset:  sha256:{HASH}"), "#!RemoteAsset");
     fs::write(directory.path().join("ed.spec"), &spec).unwrap();
     let replacement = "https://example.org/replacement.tar.lz";
     let assignment = format!("sources.0.url={replacement}");
@@ -316,6 +318,12 @@ fn generated_bare_sources_remain_editable_without_inventing_a_digest() {
         directory.path().join("ed.spec"),
         &(spec.replace(URL, replacement)),
     );
+}
+
+#[test]
+fn malformed_remote_markers_do_not_acquire_editable_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let spec = SPEC.replace(&format!("#!RemoteAsset:  sha256:{HASH}"), "#!RemoteAsset");
     for (malformed, error) in [
         (
             spec.replace("#!RemoteAsset\n", "#!RemoteAsset extra\n"),
@@ -365,10 +373,7 @@ fn existing_http_sources_remain_editable_but_new_generation_requires_https() {
     );
     let spec = SPEC.replace(URL, url);
     fs::write(directory.path().join("ed.spec"), &spec).unwrap();
-    quiet_success(&run(
-        directory.path(),
-        &["inspect", "--spec=ed.spec", "--editable", "--all"],
-    ));
+    editable_view(directory.path());
     let edited = run(
         directory.path(),
         &[
@@ -388,7 +393,7 @@ fn existing_http_sources_remain_editable_but_new_generation_requires_https() {
 }
 
 #[test]
-fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
+fn sha256_case_is_preserved_across_generation_view_and_unchanged_edit() {
     for digest in [HASH.to_uppercase(), "aB".repeat(32), "0".repeat(64)] {
         let directory = tempfile::tempdir().unwrap();
         authoring_workspace(
@@ -404,13 +409,7 @@ fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
         quiet_success(&generated);
         assert_eq!(generated.stdout, SPEC.replace(HASH, &digest).as_bytes());
         fs::write(directory.path().join("ed.spec"), &generated.stdout).unwrap();
-        let view = run(
-            directory.path(),
-            &["inspect", "--spec=ed.spec", "--editable", "--all"],
-        );
-        quiet_success(&view);
-        let document: toml::Table =
-            toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
+        let document = editable_view(directory.path());
         assert_eq!(
             document["sources"]["0"]["sha256"].as_str(),
             Some(digest.as_str())
@@ -428,6 +427,10 @@ fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
         success(&unchanged);
         assert_eq!(unchanged.stdout, generated.stdout);
     }
+}
+
+#[test]
+fn invalid_digests_can_be_inspected_but_not_published() {
     for digest in ["g".repeat(64), "a".repeat(63), "a".repeat(65)] {
         let directory = tempfile::tempdir().unwrap();
         authoring_workspace(
@@ -462,13 +465,7 @@ fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
                 .unwrap()
                 .contains("invalid sha256")
         );
-        let view = run(
-            directory.path(),
-            &["inspect", "--spec=ed.spec", "--editable", "--all"],
-        );
-        quiet_success(&view);
-        let document: toml::Table =
-            toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
+        let document = editable_view(directory.path());
         assert_eq!(
             document["sources"]["0"]["sha256"].as_str(),
             Some(digest.as_str())
@@ -499,6 +496,10 @@ fn sha256_case_is_preserved_and_non_hex_values_are_rejected() {
         );
         assert_file(directory.path().join("ed.spec"), SPEC);
     }
+}
+
+#[test]
+fn check_preserves_crlf_source_bytes() {
     let directory = tempfile::tempdir().unwrap();
     let source = SPEC.replace('\n', "\r\n");
     fs::write(directory.path().join("ed.spec"), &source).unwrap();
@@ -515,15 +516,9 @@ fn views_preserve_raw_context_and_updates_require_available_values() {
         .replace(URL, "%{url}/%{name}-%{version}.tar.lz");
     let later = spec.replace("%description", &format!("{line}\n%description"));
     fs::write(directory.path().join("ed.spec"), &later).unwrap();
-    quiet_success(&run(
-        directory.path(),
-        &["inspect", "--spec=ed.spec", "--editable", "--all"],
-    ));
+    editable_view(directory.path());
     fs::write(directory.path().join("ed.spec"), &spec).unwrap();
-    quiet_success(&run(
-        directory.path(),
-        &["inspect", "--spec=ed.spec", "--editable", "--all"],
-    ));
+    editable_view(directory.path());
     rejected(
         &run(
             directory.path(),
@@ -542,10 +537,7 @@ fn views_preserve_raw_context_and_updates_require_available_values() {
         "https://example.org/file.tar.lz",
     );
     fs::write(directory.path().join("ed.spec"), &explicit).unwrap();
-    quiet_success(&run(
-        directory.path(),
-        &["inspect", "--spec=ed.spec", "--editable", "--all"],
-    ));
+    editable_view(directory.path());
 }
 
 #[test]
@@ -593,12 +585,7 @@ fn remote_asset_digests_stay_bound_to_the_adjacent_source_identity() {
     );
     quiet_success(&generated);
     fs::write(directory.path().join("ed.spec"), &generated.stdout).unwrap();
-    let view = run(
-        directory.path(),
-        &["inspect", "--spec=ed.spec", "--editable", "--all"],
-    );
-    quiet_success(&view);
-    let document: toml::Table = toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
+    let document = editable_view(directory.path());
     assert_eq!(document["sources"]["0"]["sha256"].as_str(), Some(HASH));
     assert_eq!(
         document["sources"]["2"]["sha256"].as_str(),

@@ -532,13 +532,8 @@ fn failed_rebase_index_retains_loadable_original_and_reports_published_spec() {
     let receipt = machine_report(&applied);
     let source = directory.path().join("ed.spec").canonicalize().unwrap();
     assert_eq!(
-        receipt["written"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|path| path.as_str().unwrap())
-            .collect::<Vec<_>>(),
-        [source.to_str().unwrap()]
+        receipt["written"],
+        toml::Value::Array(vec![source.to_str().unwrap().into()])
     );
     assert_eq!(receipt["success"].as_bool(), Some(false));
     assert_eq!(receipt["valid"].as_bool(), Some(true));

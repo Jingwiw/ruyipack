@@ -19,13 +19,7 @@ fn inconsistent_conditional_location_does_not_hide_the_error() {
     let source = "%endif\nx\n";
     fs::write(&path, source).unwrap();
     for (command, exit) in [("check", 1), ("inspect", 0)] {
-        let output = support::command()
-            .arg(command)
-            .arg("--spec")
-            .arg(&path)
-            .args(["--format", "toml"])
-            .output()
-            .unwrap();
+        let output = support::spec_report(command, &path);
         assert_eq!(output.status.code(), Some(exit), "{output:?}");
         assert!(output.stderr.is_empty());
         let report = support::machine_report(&output);
@@ -64,13 +58,7 @@ fn consistent_conditional_location_is_not_removed_by_error_code() {
     let path = directory.path().join("endpoint.spec");
     fs::write(&path, "%endif").unwrap();
     for (command, exit) in [("check", 1), ("inspect", 0)] {
-        let output = support::command()
-            .arg(command)
-            .arg("--spec")
-            .arg(&path)
-            .args(["--format", "toml"])
-            .output()
-            .unwrap();
+        let output = support::spec_report(command, &path);
         assert_eq!(output.status.code(), Some(exit), "{output:?}");
         let report = support::machine_report(&output);
         assert_eq!(

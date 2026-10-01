@@ -7,7 +7,7 @@
 //! Candidate, baseline, and partial-publication reports.
 
 use super::{
-    SPEC, assert_file, change_version, command, fixture, prepare, success, unchanged,
+    SPEC, assert_file, change_version, command, fixture, prepare, resume, success, unchanged,
     version_source,
 };
 use std::fs;
@@ -18,9 +18,7 @@ fn invalid_toml_reports_its_file_line_and_column_in_check_toml() {
     let drafts = prepare(directory.path(), &["ed.spec"], &["package.version"]);
     let path = drafts.join("ed.toml");
     fs::write(&path, "[package]\nversion = \"unterminated\n").unwrap();
-    let output = command(directory.path())
-        .arg("--from")
-        .arg(&drafts)
+    let output = resume(directory.path(), &drafts)
         .args(["--check", "--format", "toml"])
         .output()
         .unwrap();
@@ -35,9 +33,7 @@ fn invalid_toml_reports_its_file_line_and_column_in_check_toml() {
     let error = report["files"][0]["error"]["message"].as_str().unwrap();
     assert!(error.contains("ed.toml:2:24"), "{error}");
     assert_file(path, "[package]\nversion = \"unterminated\n");
-    let preview = command(directory.path())
-        .arg("--from")
-        .arg(&drafts)
+    let preview = resume(directory.path(), &drafts)
         .arg("--diff")
         .output()
         .unwrap();
@@ -200,7 +196,7 @@ fn static_check_failure_blocks_even_forced_publication() {
 }
 
 #[test]
-fn toml_reports_cover_check_prepare_apply_retry_and_partial_failure() {
+fn toml_check_reports_distinguish_candidates_from_unreadable_inputs() {
     let directory = fixture(SPEC);
     for (file, exit) in [("ed.spec", 0), ("missing.spec", 1)] {
         let output = command(directory.path())
@@ -228,7 +224,10 @@ fn toml_reports_cover_check_prepare_apply_retry_and_partial_failure() {
         }
     }
     unchanged(directory.path());
+}
 
+#[test]
+fn toml_publication_failure_identifies_the_target_operation() {
     // A failed publication retains its stage, so use an independent transaction.
     let failed_directory = fixture(SPEC);
     fs::create_dir(failed_directory.path().join("directory-target")).unwrap();
@@ -253,7 +252,11 @@ fn toml_reports_cover_check_prepare_apply_retry_and_partial_failure() {
     assert_eq!(receipt["error"]["io_kind"].as_str(), Some("is-a-directory"));
     assert!(receipt["error"]["path"].is_str());
     unchanged(failed_directory.path());
+}
 
+#[test]
+fn applying_rebases_the_stage_but_later_source_changes_block_retry() {
+    let directory = fixture(SPEC);
     let drafts = prepare(directory.path(), &["ed.spec"], &["package.version"]);
     change_version(&drafts.join("ed.toml"), "2");
     let applied = command(directory.path())
@@ -284,94 +287,94 @@ fn toml_reports_cover_check_prepare_apply_retry_and_partial_failure() {
         Some("source-changed")
     );
     assert_file(directory.path().join("ed.spec"), &version_source("3"));
+}
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let directory = fixture(SPEC);
-        let locked = directory.path().join("locked");
-        fs::create_dir(&locked).unwrap();
-        fs::write(locked.join("second.spec"), SPEC).unwrap();
-        let drafts = prepare(
-            directory.path(),
-            &["ed.spec", "locked/second.spec"],
-            &["package.version"],
-        );
-        change_version(&drafts.join("ed.toml"), "3");
-        change_version(&drafts.join("second.toml"), "3");
-        // Prepare before locking the destination, isolating publication failure.
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
-        let partial = command(directory.path())
-            .args(["--from", "drafts", "--apply", "--format", "toml"])
-            .output()
-            .unwrap();
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(partial.status.code(), Some(1));
-        assert!(partial.stderr.is_empty());
-        let receipt = super::support::machine_report(&partial);
-        let written = fs::canonicalize(directory.path().join("ed.spec")).unwrap();
-        assert_eq!(
-            receipt["written"]
-                .as_array()
+#[cfg(unix)]
+#[test]
+fn partial_publication_reports_only_files_actually_written() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = fixture(SPEC);
+    let locked = directory.path().join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::write(locked.join("second.spec"), SPEC).unwrap();
+    let drafts = prepare(
+        directory.path(),
+        &["ed.spec", "locked/second.spec"],
+        &["package.version"],
+    );
+    change_version(&drafts.join("ed.toml"), "3");
+    change_version(&drafts.join("second.toml"), "3");
+    // Prepare before locking the destination, isolating publication failure.
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+    let partial = command(directory.path())
+        .args(["--from", "drafts", "--apply", "--format", "toml"])
+        .output()
+        .unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(partial.status.code(), Some(1));
+    assert!(partial.stderr.is_empty());
+    let receipt = super::support::machine_report(&partial);
+    let written = fs::canonicalize(directory.path().join("ed.spec")).unwrap();
+    assert_eq!(
+        receipt["written"],
+        toml::Value::Array(vec![written.to_str().unwrap().into()])
+    );
+    assert_eq!(receipt["success"].as_bool(), Some(false));
+    assert_eq!(receipt["valid"].as_bool(), Some(true));
+    assert_eq!(receipt["error"]["code"].as_str(), Some("operation-failed"));
+    assert_eq!(receipt["error"]["stage"].as_str(), Some("publication"));
+    assert_eq!(receipt["error"]["reason"].as_str(), Some("write-failed"));
+    assert_eq!(
+        receipt["error"]["io_kind"].as_str(),
+        Some("permission-denied")
+    );
+    assert_eq!(
+        receipt["error"]["path"].as_str(),
+        Some(
+            fs::canonicalize(locked.join("second.spec"))
                 .unwrap()
-                .iter()
-                .map(|path| path.as_str().unwrap())
-                .collect::<Vec<_>>(),
-            [written.to_str().unwrap()]
-        );
-        assert_eq!(receipt["success"].as_bool(), Some(false));
-        assert_eq!(receipt["valid"].as_bool(), Some(true));
-        assert_eq!(receipt["error"]["code"].as_str(), Some("operation-failed"));
-        assert_eq!(receipt["error"]["stage"].as_str(), Some("publication"));
-        assert_eq!(receipt["error"]["reason"].as_str(), Some("write-failed"));
-        assert_eq!(
-            receipt["error"]["io_kind"].as_str(),
-            Some("permission-denied")
-        );
-        assert_eq!(
-            receipt["error"]["path"].as_str(),
-            Some(
-                fs::canonicalize(locked.join("second.spec"))
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-            )
-        );
-        assert_file(written, &version_source("3"));
-        assert_file(locked.join("second.spec"), SPEC);
+                .to_str()
+                .unwrap()
+        )
+    );
+    assert_file(written, &version_source("3"));
+    assert_file(locked.join("second.spec"), SPEC);
+}
 
-        use std::os::unix::ffi::OsStringExt;
-        let directory = fixture(SPEC);
-        let missing = directory
-            .path()
-            .join(std::ffi::OsString::from_vec(b"missing-\xff".to_vec()));
-        let failed = command(directory.path())
-            .args([
-                "--spec=ed.spec",
-                "--set",
-                "package.version=4",
-                "--apply",
-                "--format",
-                "toml",
-                "--output",
-            ])
-            .arg(missing.join("out.spec"))
-            .output()
-            .unwrap();
-        assert_eq!(failed.status.code(), Some(1));
-        assert!(failed.stderr.is_empty());
-        let report = super::support::machine_report(&failed);
-        assert_eq!(
-            report["error"]["reason"].as_str(),
-            Some("read-failed"),
-            "{report}"
-        );
-        assert_eq!(
-            report["error"]["path"].as_str(),
-            Some(missing.to_string_lossy().as_ref())
-        );
-        unchanged(directory.path());
-    }
+#[cfg(unix)]
+#[test]
+fn publication_errors_preserve_non_utf8_target_paths() {
+    use std::os::unix::ffi::OsStringExt;
+    let directory = fixture(SPEC);
+    let missing = directory
+        .path()
+        .join(std::ffi::OsString::from_vec(b"missing-\xff".to_vec()));
+    let failed = command(directory.path())
+        .args([
+            "--spec=ed.spec",
+            "--set",
+            "package.version=4",
+            "--apply",
+            "--format",
+            "toml",
+            "--output",
+        ])
+        .arg(missing.join("out.spec"))
+        .output()
+        .unwrap();
+    assert_eq!(failed.status.code(), Some(1));
+    assert!(failed.stderr.is_empty());
+    let report = super::support::machine_report(&failed);
+    assert_eq!(
+        report["error"]["reason"].as_str(),
+        Some("read-failed"),
+        "{report}"
+    );
+    assert_eq!(
+        report["error"]["path"].as_str(),
+        Some(missing.to_string_lossy().as_ref())
+    );
+    unchanged(directory.path());
 }
 
 #[test]

@@ -9,24 +9,10 @@
 use super::support::{assert_file, success};
 
 use sha2::{Digest, Sha256};
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Output},
-};
+use std::{fs, process::Output};
 use toml::Value;
 
 use super::support;
-
-fn command(path: &Path) -> Command {
-    let mut command = support::command();
-    command
-        .arg("inspect")
-        .arg("--spec")
-        .arg(path)
-        .args(["--format", "toml"]);
-    command
-}
 
 fn report(output: &Output) -> Value {
     assert!(output.status.success(), "{output:?}");
@@ -40,7 +26,7 @@ fn ed_inspection_preserves_syntax_locations_and_input_identity() {
     let path = directory.path().join("ed.spec");
     let source = include_str!("../fixtures/ed.spec");
     fs::write(&path, source).unwrap();
-    let first = command(&path).output().unwrap();
+    let first = support::spec_report("inspect", &path);
     let result = report(&first);
     assert_eq!(
         result["input"]["display_path"].as_str(),
@@ -98,7 +84,7 @@ fn conditions_and_repeated_tags_are_not_resolved_or_collapsed() {
     let path = directory.path().join("conditional.spec");
     let source = "Name: demo\nSummary(fr): Démonstration à 100%%\n%if 0\nVersion: 1\n%elif 1\n# filter this branch too\nVersion: 2\n%else\n# and the otherwise branch\nVersion: %{upstream_version}\n%endif\n%if 0\n# empty after filtering\n%else\n%if 1\nRelease: 1\n%else\n# nested empty branch\n%endif\n%endif\n%if 0\n# entirely tagless\n%endif\nVersion: 3\n%build\ncat <<EOF\nName: not-a-tag\nEOF\n";
     fs::write(&path, source).unwrap();
-    let output = command(&path).output().unwrap();
+    let output = support::spec_report("inspect", &path);
     let result = report(&output);
     let items = result["preamble"].as_array().unwrap();
     assert_eq!(items.len(), 5);
@@ -148,14 +134,8 @@ fn inspection_and_check_share_complete_parser_diagnostics() {
         ("Name: demo\n%package\n", "error"),
     ] {
         fs::write(&path, source).unwrap();
-        let inspected = report(&command(&path).output().unwrap());
-        let checked = support::command()
-            .arg("check")
-            .arg("--spec")
-            .arg(&path)
-            .args(["--format", "toml"])
-            .output()
-            .unwrap();
+        let inspected = report(&support::spec_report("inspect", &path));
+        let checked = support::spec_report("check", &path);
         assert_eq!(checked.status.code(), Some(1));
         assert!(checked.stderr.is_empty());
         let checked = super::support::machine_report(&checked);
@@ -182,14 +162,8 @@ fn text_diagnostics_do_not_present_body_local_offsets_as_source_locations() {
             "Summary:        Démo \\\n  %{unfinished\nGroup:          100% %{} %{shrink\nAutoReq:        invalid",
         );
     fs::write(&path, &source).unwrap();
-    let inspected = report(&command(&path).output().unwrap());
-    let checked = support::command()
-        .arg("check")
-        .arg("--spec")
-        .arg(&path)
-        .args(["--format", "toml"])
-        .output()
-        .unwrap();
+    let inspected = report(&support::spec_report("inspect", &path));
+    let checked = support::spec_report("check", &path);
     assert!(checked.status.success(), "{checked:?}");
     assert!(checked.stderr.is_empty());
     let checked = support::machine_report(&checked);
@@ -265,7 +239,7 @@ fn empty_input_has_no_inspect_facts() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("input.spec");
     fs::write(&path, "# no tags\n").unwrap();
-    let result = report(&command(&path).output().unwrap());
+    let result = report(&support::spec_report("inspect", &path));
     assert_eq!(result["preamble"], toml::Value::Array(vec![]));
     assert_eq!(result["parser_diagnostics"], toml::Value::Array(vec![]));
     assert_file(&path, "# no tags\n");
@@ -278,11 +252,10 @@ const SPEC: &str = include_str!("../fixtures/ed.spec");
 fn full_view_exposes_existing_fields_without_writing_files() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("ed.spec"), SPEC).unwrap();
-    let first = support::command()
-        .current_dir(directory.path())
-        .args(["inspect", "--spec=ed.spec", "--all", "--editable"])
-        .output()
-        .unwrap();
+    let first = support::run(
+        directory.path(),
+        &["inspect", "--spec=ed.spec", "--all", "--editable"],
+    );
     success(&first);
     assert!(first.stderr.is_empty());
     let document: toml::Table =
@@ -297,33 +270,31 @@ fn full_view_exposes_existing_fields_without_writing_files() {
 fn selected_view_and_schema_have_the_same_narrow_shape() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("ed.spec"), SPEC).unwrap();
-    let output = support::command()
-        .current_dir(directory.path())
-        .args([
+    let output = support::run(
+        directory.path(),
+        &[
             "inspect",
             "--spec=ed.spec",
             "--editable",
             "--field",
             "package.version",
-        ])
-        .output()
-        .unwrap();
+        ],
+    );
     success(&output);
     let document: toml::Table =
         toml::from_str(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
     assert_eq!(document.len(), 1);
     assert_eq!(document["package"].as_table().unwrap().len(), 1);
-    let output = support::command()
-        .current_dir(directory.path())
-        .args([
+    let output = support::run(
+        directory.path(),
+        &[
             "schema",
             "edit",
             "--spec=ed.spec",
             "--field",
             "package.version",
-        ])
-        .output()
-        .unwrap();
+        ],
+    );
     success(&output);
     let schema: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(schema["additionalProperties"], false);
@@ -347,9 +318,9 @@ fn selected_view_and_schema_have_the_same_narrow_shape() {
 fn group_selection_keeps_descendants_without_duplicating_overlaps() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("ed.spec"), SPEC).unwrap();
-    let output = support::command()
-        .current_dir(directory.path())
-        .args([
+    let output = support::run(
+        directory.path(),
+        &[
             "inspect",
             "--spec=ed.spec",
             "--editable",
@@ -357,9 +328,8 @@ fn group_selection_keeps_descendants_without_duplicating_overlaps() {
             "package.files",
             "--field",
             "package.files.doc",
-        ])
-        .output()
-        .unwrap();
+        ],
+    );
     success(&output);
     let document: toml::Table =
         toml::from_str(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
@@ -369,17 +339,16 @@ fn group_selection_keeps_descendants_without_duplicating_overlaps() {
     assert!(
         files.contains_key("doc") && files.contains_key("license") && files.contains_key("entries")
     );
-    let bad = support::command()
-        .current_dir(directory.path())
-        .args([
+    let bad = support::run(
+        directory.path(),
+        &[
             "inspect",
             "--spec=ed.spec",
             "--editable",
             "--field",
             "package.unknown",
-        ])
-        .output()
-        .unwrap();
+        ],
+    );
     assert_eq!(bad.status.code(), Some(1), "{bad:?}");
     assert!(bad.stdout.is_empty());
 }
@@ -390,7 +359,7 @@ fn inspection_distinguishes_implicit_and_explicit_source_patch_numbers_in_condit
     let path = directory.path().join("numbers.spec");
     let source = "Name: demo\nSource: https://example.invalid/implicit.tar\nSource0: https://example.invalid/zero.tar\nSource3: https://example.invalid/three.tar\nPatch: implicit.patch\nPatch0: zero.patch\n%if 0\nSource7: https://example.invalid/conditional.tar\n%else\nPatch9: conditional.patch\n%endif\n%build\nSource: body-not-a-tag\n";
     fs::write(&path, source).unwrap();
-    let result = report(&command(&path).output().unwrap());
+    let result = report(&support::spec_report("inspect", &path));
     assert_eq!(result["scope"].as_str(), Some("main-package-syntax"));
     assert_eq!(
         result["not_checked"]

@@ -657,22 +657,16 @@ fn static_policy_changes_admission_without_inventing_source_facts() {
             );
             assert_eq!(
                 evidence["incomplete_reasons"],
-                toml::Value::try_from(
-                    &(if blocks && unknown {
-                        toml::Value::Array(vec![toml::Value::from("unresolved-sources")])
-                    } else {
-                        toml::Value::Array(vec![])
-                    })
-                )
+                toml::Value::try_from(if blocks && unknown {
+                    vec!["unresolved-sources"]
+                } else {
+                    vec![]
+                })
                 .unwrap()
             );
             assert_eq!(
                 evidence["not_checked"],
-                toml::Value::Array(vec![
-                    toml::Value::from("source-content"),
-                    toml::Value::from("native-rpm"),
-                    toml::Value::from("build")
-                ])
+                toml::Value::try_from(["source-content", "native-rpm", "build"]).unwrap()
             );
             let findings = report["findings"].as_array().unwrap();
             assert_eq!(

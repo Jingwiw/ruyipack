@@ -38,6 +38,14 @@ fn repository() -> tempfile::TempDir {
     directory
 }
 
+#[track_caller]
+fn assert_clone_not_attempted(root: &Path) {
+    let output = run(root, &["init", "--clone", "unavailable-repository"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output_text(&output.stderr).contains("clone was not attempted"));
+    assert!(!root.join("openruyi").exists());
+}
+
 #[test]
 fn init_clone_materializes_a_local_repository_and_never_repeats_implicitly() {
     let source = repository();
@@ -274,22 +282,10 @@ fn init_never_overwrites_nonempty_or_interrupted_directories() {
     success(&output);
     assert!(output_text(&output.stderr).contains("already initialized"));
     assert_eq!(fs::read_dir(&marker).unwrap().count(), 0);
-    let output = run(
-        directory.path(),
-        &["init", "--clone", "unavailable-repository"],
-    );
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(output_text(&output.stderr).contains("clone was not attempted"));
-    assert!(!directory.path().join("openruyi").exists());
+    assert_clone_not_attempted(directory.path());
     fs::write(marker.join("config.toml"), "not [toml").unwrap();
     success(&run(directory.path(), &["init"]));
-    let output = run(
-        directory.path(),
-        &["init", "--clone", "unavailable-repository"],
-    );
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(output_text(&output.stderr).contains("clone was not attempted"));
-    assert!(!directory.path().join("openruyi").exists());
+    assert_clone_not_attempted(directory.path());
     assert_eq!(
         fs::read_to_string(marker.join("config.toml")).unwrap(),
         "not [toml"
@@ -335,12 +331,7 @@ fn init_does_not_follow_marker_or_managed_path_symlinks() {
     assert!(output_text(&output.stderr).contains("already initialized"));
     assert!(fs::symlink_metadata(&marker).unwrap().is_symlink());
     assert_eq!(fs::read_dir(external.path()).unwrap().count(), 0);
-    let output = run(
-        directory.path(),
-        &["init", "--clone", "unavailable-repository"],
-    );
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(output_text(&output.stderr).contains("clone was not attempted"));
+    assert_clone_not_attempted(directory.path());
     assert!(fs::symlink_metadata(&marker).unwrap().is_symlink());
     assert_eq!(fs::read_dir(external.path()).unwrap().count(), 0);
     assert!(!directory.path().join("openruyi").exists());

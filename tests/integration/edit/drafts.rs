@@ -7,10 +7,21 @@
 //! Saved-draft shape, identity, privacy, and publication protection.
 
 use super::{
-    SPEC, assert_file, change_version, command, fixture, prepare, success, unchanged,
+    SPEC, assert_file, change_version, command, fixture, prepare, resume, success, unchanged,
     version_source,
 };
 use std::fs;
+
+fn paired_version_drafts() -> (tempfile::TempDir, std::path::PathBuf) {
+    let directory = fixture(SPEC);
+    fs::write(directory.path().join("second.spec"), SPEC).unwrap();
+    let drafts = prepare(
+        directory.path(),
+        &["ed.spec", "second.spec"],
+        &["package.version"],
+    );
+    (directory, drafts)
+}
 
 #[test]
 fn prepared_drafts_round_trip_without_changes() {
@@ -19,9 +30,7 @@ fn prepared_drafts_round_trip_without_changes() {
     assert!(drafts.join("ed.toml").is_file());
     assert!(drafts.join(".state/index.toml").is_file());
     assert!(drafts.join(".state/schema/0.json").is_file());
-    let output = command(directory.path())
-        .arg("--from")
-        .arg(&drafts)
+    let output = resume(directory.path(), &drafts)
         .arg("--stdout")
         .output()
         .unwrap();
@@ -36,9 +45,7 @@ fn selected_draft_changes_only_its_selected_fields() {
     let drafts = prepare(directory.path(), &["ed.spec"], &["package.version"]);
     let path = drafts.join("ed.toml");
     change_version(&path, "1.22.6");
-    let output = command(directory.path())
-        .arg("--from")
-        .arg(&drafts)
+    let output = resume(directory.path(), &drafts)
         .arg("--stdout")
         .output()
         .unwrap();
@@ -49,9 +56,7 @@ fn selected_draft_changes_only_its_selected_fields() {
         "[package]\nversion = '1.22.6'\nsummary = 'Outside selected fields'\n",
     )
     .unwrap();
-    let output = command(directory.path())
-        .arg("--from")
-        .arg(&drafts)
+    let output = resume(directory.path(), &drafts)
         .arg("--apply")
         .output()
         .unwrap();
@@ -65,9 +70,7 @@ fn selected_draft_requires_every_selected_field() {
     let directory = fixture(SPEC);
     let drafts = prepare(directory.path(), &["ed.spec"], &["package.version"]);
     fs::write(drafts.join("ed.toml"), "[package]\n").unwrap();
-    let output = command(directory.path())
-        .arg("--from")
-        .arg(&drafts)
+    let output = resume(directory.path(), &drafts)
         .args(["--check", "--format", "toml"])
         .output()
         .unwrap();
@@ -92,18 +95,10 @@ fn selected_draft_requires_every_selected_field() {
 
 #[test]
 fn all_prepared_files_are_checked_before_any_source_is_written() {
-    let directory = fixture(SPEC);
-    fs::write(directory.path().join("second.spec"), SPEC).unwrap();
-    let drafts = prepare(
-        directory.path(),
-        &["ed.spec", "second.spec"],
-        &["package.version"],
-    );
+    let (directory, drafts) = paired_version_drafts();
     change_version(&drafts.join("ed.toml"), "1.22.6");
     fs::write(drafts.join("second.toml"), "[package]\nversion = 2\n").unwrap();
-    let checked = command(directory.path())
-        .arg("--from")
-        .arg(&drafts)
+    let checked = resume(directory.path(), &drafts)
         .args(["--check", "--format", "toml"])
         .output()
         .unwrap();
@@ -119,9 +114,7 @@ fn all_prepared_files_are_checked_before_any_source_is_written() {
     let error = report["files"][1]["error"]["message"].as_str().unwrap();
     assert!(error.contains("package.version"), "{error}");
     assert!(error.contains("expected a string"), "{error}");
-    let output = command(directory.path())
-        .arg("--from")
-        .arg(&drafts)
+    let output = resume(directory.path(), &drafts)
         .arg("--apply")
         .output()
         .unwrap();
@@ -140,9 +133,7 @@ fn prepared_dependency_edit_changes_only_its_source_value() {
     assert_eq!(dependencies[4].as_str(), Some("lzip"));
     dependencies[4] = "xz".into();
     fs::write(path, toml::to_string_pretty(&document).unwrap()).unwrap();
-    let output = command(directory.path())
-        .arg("--from")
-        .arg(drafts)
+    let output = resume(directory.path(), &drafts)
         .arg("--stdout")
         .output()
         .unwrap();
@@ -155,18 +146,10 @@ fn prepared_dependency_edit_changes_only_its_source_value() {
 
 #[test]
 fn saved_drafts_apply_without_reopening_an_editor() {
-    let directory = fixture(SPEC);
-    fs::write(directory.path().join("second.spec"), SPEC).unwrap();
-    let drafts = prepare(
-        directory.path(),
-        &["ed.spec", "second.spec"],
-        &["package.version"],
-    );
+    let (directory, drafts) = paired_version_drafts();
     change_version(&drafts.join("ed.toml"), "1.22.6");
     change_version(&drafts.join("second.toml"), "1.22.7");
-    let output = command(directory.path())
-        .arg("--from")
-        .arg(&drafts)
+    let output = resume(directory.path(), &drafts)
         .arg("--apply")
         .output()
         .unwrap();
@@ -202,18 +185,10 @@ fn stale_prepared_source_is_not_overwritten() {
 
 #[test]
 fn stale_draft_does_not_hide_other_files_check_results() {
-    let directory = fixture(SPEC);
-    fs::write(directory.path().join("second.spec"), SPEC).unwrap();
-    let drafts = prepare(
-        directory.path(),
-        &["ed.spec", "second.spec"],
-        &["package.version"],
-    );
+    let (directory, drafts) = paired_version_drafts();
     let external = format!("{SPEC}# Concurrent change\n");
     fs::write(directory.path().join("ed.spec"), &external).unwrap();
-    let output = command(directory.path())
-        .arg("--from")
-        .arg(&drafts)
+    let output = resume(directory.path(), &drafts)
         .args(["--check", "--format", "toml"])
         .output()
         .unwrap();

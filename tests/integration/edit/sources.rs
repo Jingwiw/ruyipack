@@ -7,7 +7,7 @@
 //! Source context and field selection compose without broadening the edit boundary.
 
 use super::super::support::{assert_file, rejected, success};
-use super::{SPEC, command, fixture, inspect};
+use super::{SPEC, command, fixture, inspect, preview};
 use std::{fmt::Write as _, fs, path::Path, process::Output};
 
 const URL: &str = "https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz";
@@ -164,17 +164,11 @@ fn an_unambiguous_package_context_is_used_without_entering_the_selected_document
     let directory = fixture(SPEC);
     only_source_url(&selected_view(directory.path(), "sources.0.url"), URL);
     let replacement = "%{url}/%{name}-%{version}.tar.lz";
-    let output = run(
+    preview(
         directory.path(),
-        &[
-            "--spec=ed.spec",
-            "--set",
-            &format!("sources.0.url={replacement}"),
-            "--stdout",
-        ],
+        &format!("sources.0.url={replacement}"),
+        &SPEC.replace(URL, replacement),
     );
-    success(&output);
-    assert_eq!(output.stdout, SPEC.replace(URL, replacement).as_bytes());
     assert_file(directory.path().join("ed.spec"), SPEC);
 }
 
@@ -231,17 +225,11 @@ fn selecting_one_source_url_preserves_an_unmapped_sibling_source_and_its_digest(
     );
     let directory = fixture(&source);
     let replacement = "https://example.org/archive.tar.lz";
-    let output = run(
+    preview(
         directory.path(),
-        &[
-            "--spec=ed.spec",
-            "--set",
-            &format!("sources.0.url={replacement}"),
-            "--stdout",
-        ],
+        &format!("sources.0.url={replacement}"),
+        &source.replace(URL, replacement),
     );
-    success(&output);
-    assert_eq!(output.stdout, source.replace(URL, replacement).as_bytes());
     assert_file(directory.path().join("ed.spec"), &source);
 }
 
@@ -431,17 +419,11 @@ fn a_source_url_edit_preserves_its_unselected_damaged_digest() {
     let source = SPEC.replace(HASH, "INVALID");
     let directory = fixture(&source);
     let replacement = "https://example.org/replacement.tar.lz";
-    let output = run(
+    let output = preview(
         directory.path(),
-        &[
-            "--spec=ed.spec",
-            "--set",
-            &format!("sources.0.url={replacement}"),
-            "--stdout",
-        ],
+        &format!("sources.0.url={replacement}"),
+        &source.replace(URL, replacement),
     );
-    success(&output);
-    assert_eq!(output.stdout, source.replace(URL, replacement).as_bytes());
     assert!(String::from_utf8_lossy(&output.stderr).contains("review required"));
     assert_file(directory.path().join("ed.spec"), &source);
 }

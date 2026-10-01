@@ -43,6 +43,23 @@ fn command(directory: &Path) -> Command {
     command
 }
 
+fn resume(directory: &Path, drafts: &Path) -> Command {
+    let mut command = command(directory);
+    command.arg("--from").arg(drafts);
+    command
+}
+
+#[track_caller]
+fn preview(directory: &Path, assignment: &str, expected: &str) -> std::process::Output {
+    let output = command(directory)
+        .args(["--spec=ed.spec", "--set", assignment, "--stdout"])
+        .output()
+        .unwrap();
+    success(&output);
+    assert_eq!(output.stdout, expected.as_bytes());
+    output
+}
+
 fn inspect(directory: &Path) -> Command {
     let mut command = super::support::command();
     command

@@ -7,6 +7,7 @@
 //! Small process and output helpers shared by CLI integration tests.
 
 use std::{
+    ffi::OsStr,
     fs,
     path::Path,
     process::{Command, Output},
@@ -53,6 +54,16 @@ pub fn git(directory: &Path, args: &[&str]) -> Output {
     output
 }
 
+pub fn spec_report(operation: &str, path: &Path) -> Output {
+    command()
+        .arg(operation)
+        .arg("--spec")
+        .arg(path)
+        .args(["--format", "toml"])
+        .output()
+        .expect("run SPEC report")
+}
+
 pub fn output_text(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).expect("command output is UTF-8")
 }
@@ -64,7 +75,7 @@ pub fn machine_report(output: &Output) -> Value {
     toml::from_str(stdout).expect("machine report is one complete TOML document")
 }
 
-pub fn run(directory: &Path, args: &[&str]) -> Output {
+pub fn run(directory: &Path, args: &[impl AsRef<OsStr>]) -> Output {
     command()
         .current_dir(directory)
         .args(args)

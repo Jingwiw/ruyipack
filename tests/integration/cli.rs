@@ -43,17 +43,16 @@ where
 }
 
 fn run_toml_check(current_dir: &Path, spec: &OsStr) -> Output {
-    command()
-        .current_dir(current_dir)
-        .args([
+    support::run(
+        current_dir,
+        &[
             OsStr::new("check"),
             OsStr::new("--spec"),
             spec,
             OsStr::new("--format"),
             OsStr::new("toml"),
-        ])
-        .output()
-        .expect("run ruyipack TOML check")
+        ],
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -236,22 +235,16 @@ RPM001 = \"deny\"
     let before_contents = fs::read(&spec).expect("read SPEC before check");
     let before_entries = entries(temp.path());
 
-    let output = command()
-        .current_dir(temp.path())
-        .args([
+    let output = support::run(
+        temp.path(),
+        &[
             OsStr::new("check"),
             OsStr::new("--spec"),
             OsStr::new("demo.spec"),
-        ])
-        .output()
-        .expect("run ruyipack");
-
-    assert!(
-        output.status.success(),
-        "status={:?}, stderr={}",
-        output.status,
-        output_text(&output.stderr)
+        ],
     );
+
+    support::success(&output);
     assert!(output.stdout.is_empty(), "{}", output_text(&output.stdout));
     assert!(output.stderr.is_empty(), "{}", output_text(&output.stderr));
     assert_eq!(
@@ -280,15 +273,14 @@ RPM015 = \"allow\"
     );
     let before_entries = entries(temp.path());
 
-    let output = command()
-        .current_dir(temp.path())
-        .args([
+    let output = support::run(
+        temp.path(),
+        &[
             OsStr::new("check"),
             OsStr::new("--spec"),
             OsStr::new("empty.spec"),
-        ])
-        .output()
-        .expect("run ruyipack");
+        ],
+    );
 
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty(), "{}", output_text(&output.stdout));
@@ -315,22 +307,16 @@ fn check_continues_after_a_parser_warning() {
         "complete-warning.spec",
         format!("{COMPLETE_REQUIRED_TAGS}%unknown value\n"),
     );
-    let complete_output = command()
-        .current_dir(temp.path())
-        .args([
+    let complete_output = support::run(
+        temp.path(),
+        &[
             OsStr::new("check"),
             OsStr::new("--spec"),
             complete_spec.as_os_str(),
-        ])
-        .output()
-        .unwrap();
-
-    assert!(
-        complete_output.status.success(),
-        "status={:?}, stderr={}",
-        complete_output.status,
-        output_text(&complete_output.stderr)
+        ],
     );
+
+    support::success(&complete_output);
     assert!(
         complete_output.stdout.is_empty(),
         "{}",
@@ -357,11 +343,10 @@ License: MIT
 ",
     );
 
-    let output = command()
-        .current_dir(temp.path())
-        .args([OsStr::new("check"), OsStr::new("--spec"), spec.as_os_str()])
-        .output()
-        .unwrap();
+    let output = support::run(
+        temp.path(),
+        &[OsStr::new("check"), OsStr::new("--spec"), spec.as_os_str()],
+    );
 
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty(), "{}", output_text(&output.stdout));
@@ -383,11 +368,10 @@ fn check_stops_tag_checks_when_the_parser_reports_an_error() {
     let temp = tempfile::tempdir().expect("create temporary directory");
     let spec = write_file(temp.path(), "parser-error.spec", PARSER_ERROR_SPEC);
 
-    let output = command()
-        .current_dir(temp.path())
-        .args([OsStr::new("check"), OsStr::new("--spec"), spec.as_os_str()])
-        .output()
-        .unwrap();
+    let output = support::run(
+        temp.path(),
+        &[OsStr::new("check"), OsStr::new("--spec"), spec.as_os_str()],
+    );
 
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty(), "{}", output_text(&output.stdout));
@@ -595,7 +579,10 @@ fn input_failures_share_machine_error_shape_across_commands() {
     }
     assert_eq!(fs::read(&invalid).unwrap(), [0xff]);
     assert_eq!(entries(temp.path()), [invalid]);
+}
 
+#[test]
+fn generation_input_errors_keep_manifest_identity_without_derived_files() {
     for exists in [true, false] {
         let directory = tempfile::tempdir().unwrap();
         let work = support::authoring_workspace(
@@ -685,22 +672,16 @@ BODY
     let before_contents = fs::read(&spec).expect("read SPEC before inspection");
     let before_entries = entries(temp.path());
 
-    let output = command()
-        .current_dir(temp.path())
-        .args([
+    let output = support::run(
+        temp.path(),
+        &[
             OsStr::new("inspect"),
             OsStr::new("--spec"),
             OsStr::new("demo.spec"),
-        ])
-        .output()
-        .expect("run ruyipack");
-
-    assert!(
-        output.status.success(),
-        "status={:?}, stderr={}",
-        output.status,
-        output_text(&output.stderr)
+        ],
     );
+
+    support::success(&output);
     assert_eq!(
         output_text(&output.stdout),
         "\
@@ -742,22 +723,16 @@ Summary: Broken subpackage
 ",
     );
 
-    let output = command()
-        .current_dir(temp.path())
-        .args([
+    let output = support::run(
+        temp.path(),
+        &[
             OsStr::new("inspect"),
             OsStr::new("--spec"),
             spec.as_os_str(),
-        ])
-        .output()
-        .unwrap();
-
-    assert!(
-        output.status.success(),
-        "status={:?}, stderr={}",
-        output.status,
-        output_text(&output.stderr)
+        ],
     );
+
+    support::success(&output);
     assert_eq!(output_text(&output.stdout), "Name: demo\nVersion: 1\n");
     assert_eq!(
         output_text(&output.stderr),

@@ -123,24 +123,20 @@ fn terminal_prefix_color_respects_no_color_and_dumb_term() {
     }
 }
 
+fn closed_pipe() -> std::process::Stdio {
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    writer.into()
+}
+
 #[test]
-fn disconnected_standard_streams_return_errors_without_panicking() {
-    use std::{io, process::Stdio};
-
-    fn closed_pipe() -> Stdio {
-        let (reader, writer) = io::pipe().unwrap();
-        drop(reader);
-        writer.into()
-    }
-
+fn disconnected_stdout_returns_an_error_without_panicking() {
     let directory = workspace();
     fs::write(
         directory.path().join("ed.spec"),
         include_str!("fixtures/ed.spec"),
     )
     .unwrap();
-    fs::write(directory.path().join("missing-tags.spec"), "Name: demo\n").unwrap();
-    fs::write(directory.path().join("warning.spec"), "%unknown value\n").unwrap();
 
     for args in [
         ["check", "--spec=ed.spec", "--format", "toml"].as_slice(),
@@ -207,7 +203,13 @@ fn disconnected_standard_streams_return_errors_without_panicking() {
         );
         assert!(lines.next().is_none(), "{stderr}");
     }
+}
 
+#[test]
+fn disconnected_stderr_and_both_streams_return_errors() {
+    let directory = workspace();
+    fs::write(directory.path().join("missing-tags.spec"), "Name: demo\n").unwrap();
+    fs::write(directory.path().join("warning.spec"), "%unknown value\n").unwrap();
     for args in [
         ["check", "--spec=missing-tags.spec"].as_slice(),
         &["inspect", "--spec=warning.spec"],
@@ -230,7 +232,16 @@ fn disconnected_standard_streams_return_errors_without_panicking() {
         .output()
         .unwrap();
     assert_eq!(result.status.code(), Some(1), "{result:?}");
+}
 
+#[test]
+fn failed_publication_acknowledgement_does_not_allow_blind_retry() {
+    let directory = workspace();
+    fs::write(
+        directory.path().join("ed.spec"),
+        include_str!("fixtures/ed.spec"),
+    )
+    .unwrap();
     // Publishing succeeded even if its acknowledgement cannot reach the caller.
     // An exit code alone must not invite a blind replay against the old input.
     let original = fs::read(directory.path().join("ed.spec")).unwrap();
@@ -291,7 +302,11 @@ fn disconnected_standard_streams_return_errors_without_panicking() {
     let report: toml::Value = toml::from_str(&String::from_utf8_lossy(&retry.stdout)).unwrap();
     assert_eq!(report["error"]["code"].as_str(), Some("source-changed"));
     assert_eq!(fs::read(directory.path().join("ed.spec")).unwrap(), changed);
+}
 
+#[test]
+fn failed_skip_acknowledgement_preserves_the_existing_target() {
+    let directory = workspace();
     fs::write(directory.path().join("ed.spec"), "hand edited\n").unwrap();
     let result = gen_command(directory.path())
         .arg("--skip-existing")

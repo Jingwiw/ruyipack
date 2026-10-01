@@ -7,7 +7,7 @@
 //! Selection is a source projection, not a requirement to map the whole SPEC.
 
 use super::super::support::{assert_file, success};
-use super::{SPEC, command, fixture, inspect};
+use super::{SPEC, command, fixture, inspect, preview};
 use std::{fs, path::Path};
 
 fn extended() -> String {
@@ -45,21 +45,10 @@ fn selected_version_preserves_unmapped_tags_macros_and_unselected_conditional_by
     let source = extended();
     assert!(source.contains("VCS:"));
     let directory = fixture(&source);
-    let output = command(directory.path())
-        .args([
-            "--spec=ed.spec",
-            "--set",
-            "package.version=1.22.6",
-            "--stdout",
-        ])
-        .output()
-        .unwrap();
-    success(&output);
-    assert_eq!(
-        output.stdout,
-        source
-            .replace("Version:        1.22.5", "Version:        1.22.6")
-            .as_bytes()
+    preview(
+        directory.path(),
+        "package.version=1.22.6",
+        &source.replace("Version:        1.22.5", "Version:        1.22.6"),
     );
     assert_file(directory.path().join("ed.spec"), &source);
     assert!(!directory.path().join("macro-was-executed").exists());
@@ -89,21 +78,10 @@ fn selected_version_ignores_unselected_duplicate_fields_and_unresolved_source_ma
         );
     assert!(source.contains("Second summary") && source.contains("%{unresolved_source}"));
     let directory = fixture(&source);
-    let output = command(directory.path())
-        .args([
-            "--spec=ed.spec",
-            "--set",
-            "package.version=1.22.6",
-            "--stdout",
-        ])
-        .output()
-        .unwrap();
-    success(&output);
-    assert_eq!(
-        output.stdout,
-        source
-            .replace("Version:        1.22.5", "Version:        1.22.6")
-            .as_bytes()
+    preview(
+        directory.path(),
+        "package.version=1.22.6",
+        &source.replace("Version:        1.22.5", "Version:        1.22.6"),
     );
 }
 
@@ -244,19 +222,10 @@ fn selecting_one_copyright_leaf_keeps_its_companion_out_of_draft() {
     let directory = fixture(&source);
     let document = view(directory.path(), "spec.copyright-years");
     assert_eq!(document["spec"].as_table().unwrap().len(), 1);
-    let output = command(directory.path())
-        .args([
-            "--spec=ed.spec",
-            "--set",
-            "spec.copyright-years=2026",
-            "--stdout",
-        ])
-        .output()
-        .unwrap();
-    success(&output);
-    assert_eq!(
-        output.stdout,
-        source.replace("(C) 2025 ", "(C) 2026 ").as_bytes()
+    preview(
+        directory.path(),
+        "spec.copyright-years=2026",
+        &source.replace("(C) 2025 ", "(C) 2026 "),
     );
 }
 

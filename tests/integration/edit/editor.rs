@@ -22,6 +22,16 @@ fn script(directory: &Path, body: &str) -> String {
 #[test]
 fn persistent_stage_paths_resume_from_a_changed_directory_with_shell_characters() {
     let root = tempfile::tempdir().unwrap();
+    let run_shell = |shell: &str| {
+        success(
+            &Command::new("/bin/sh")
+                .args(["-c", shell])
+                .current_dir(root.path())
+                .stdin(Stdio::null())
+                .output()
+                .unwrap(),
+        );
+    };
     let directory = root.path().join("author's $workspace");
     fs::create_dir(&directory).unwrap();
     fs::write(directory.join("ed.spec"), SPEC).unwrap();
@@ -43,14 +53,7 @@ fn persistent_stage_paths_resume_from_a_changed_directory_with_shell_characters(
             shell_words::quote(&saved.to_string_lossy()),
             action
         );
-        success(
-            &Command::new("/bin/sh")
-                .args(["-c", &shell])
-                .current_dir(root.path())
-                .stdin(Stdio::null())
-                .output()
-                .unwrap(),
-        );
+        run_shell(&shell);
     }
     unchanged(&directory);
     for editor_fails in [false, true] {
@@ -86,14 +89,7 @@ fn persistent_stage_paths_resume_from_a_changed_directory_with_shell_characters(
             shell_words::quote(env!("CARGO_BIN_EXE_ruyipack")),
             shell_words::quote(&saved.to_string_lossy())
         );
-        success(
-            &Command::new("/bin/sh")
-                .args(["-c", &shell])
-                .current_dir(root.path())
-                .stdin(Stdio::null())
-                .output()
-                .unwrap(),
-        );
+        run_shell(&shell);
         assert_file(directory.join("ed.spec"), &version_source("1.22.6"));
     }
 }
