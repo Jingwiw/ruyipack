@@ -179,13 +179,13 @@ fn assert_machine_envelope(
                 "name": "rpm-spec",
                 "version": "0.4.1",
                 "repository": "https://github.com/openRuyi-Project/rpm-spec",
-                "revision": "c0497cdf1cde3d8edf3782c969b2dbae0c684bfe",
+                "revision": "964da4de8713babad153044dc1a7f0f48b2ae707",
             },
             {
                 "name": "rpm-spec-analyzer",
                 "version": "0.1.3",
                 "repository": "https://github.com/openRuyi-Project/rpm-spec-tool",
-                "revision": "fd0b2c07e499ac7625b26c3978ea9992a4b73996",
+                "revision": "b4aef927655256bef12608af665711245abcc4c0",
             },
         ])
     );

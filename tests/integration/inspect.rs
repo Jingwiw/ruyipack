@@ -49,7 +49,7 @@ fn ed_inspection_preserves_syntax_locations_and_input_identity() {
     assert_eq!(result["format_version"], 1);
     assert_eq!(
         result["parser"],
-        json!({"version": "0.4.1", "revision": "c0497cdf1cde3d8edf3782c969b2dbae0c684bfe"})
+        json!({"version": "0.4.1", "revision": "964da4de8713babad153044dc1a7f0f48b2ae707"})
     );
     assert_eq!(result["parser_diagnostics"], json!([]));
     let items = result["preamble"].as_array().unwrap();
