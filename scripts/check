@@ -25,8 +25,7 @@ python3 -c 'import jsonschema' 2>/dev/null || {
     exit 2
 }
 
-./scripts/lint
-cargo test --workspace --all-targets --all-features --locked -- --format terse
+./scripts/check-rust
 python3 scripts/check-manifest-schema "${CARGO_TARGET_DIR:-target}/debug/ruyipack"
 reuse lint
 cargo deny --locked check

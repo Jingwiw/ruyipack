@@ -105,13 +105,14 @@ See [local material checks](docs/reference.md#local-build-materials) for scope a
 
 ```sh
 git config --local core.hooksPath .githooks
-./scripts/lint
+./scripts/check-rust
 ./scripts/check
 ./scripts/smoke-test "${CARGO_HOME:-$HOME/.cargo}/bin/ruyipack"
 ```
 
-`scripts/lint` is the shared pre-commit and CI Rust gate: formatting and Clippy
-across the workspace, all targets and all features, with warnings denied. The
+`scripts/check-rust` is the shared pre-commit and CI Rust gate: formatting, Clippy
+with warnings denied, and behavioral tests across the workspace, all targets and
+all features. The
 hook checks a fixed snapshot of the staged files, so partial staging and unrelated
 working changes are allowed. It never stashes or rewrites your files or index;
 if staged contents change during checks, it refuses the commit and asks you to
@@ -129,7 +130,7 @@ cargo clippy --workspace --all-targets --all-features --locked -- -W clippy::ped
 
 Fix the cause before suppressing a lint; any necessary exception should be local
 and explain the invariant. Keep the pinned toolchain for the commit gate.
-`scripts/check` additionally runs locked tests, schema/gen comparisons, REUSE, and cargo-deny.
+`scripts/check` additionally runs schema/gen comparisons, REUSE, and cargo-deny.
 Install Python 3.11+ with `reuse==6.2.0` and `jsonschema==4.26.0`, plus
 `cargo-deny` 0.20.2 separately. The smoke test exercises the
 installed binary in temporary files.

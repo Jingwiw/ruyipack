@@ -38,7 +38,7 @@ local_git_env=$(git rev-parse --local-env-vars)
     fi
     export CARGO_TARGET_DIR="$target"
     cd "$scratch/source"
-    ./scripts/lint
+    ./scripts/check-rust
 )
 if [ "$tree" != "$(git write-tree)" ]; then
     echo "pre-commit: staged contents changed during checks; review the index and retry." >&2
