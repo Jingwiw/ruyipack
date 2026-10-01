@@ -122,7 +122,10 @@ first).
 
 `Cargo.toml` owns the lint policy: default Clippy rules plus selected checks for
 unnecessary ownership/cloning, avoidable string allocations, and lossy integer
-conversions. Broad `pedantic` is an advisory review, not a zero-warning target:
+conversions. `clippy.toml` lists process-output methods forbidden in `file_output`,
+where printing/debug macros are also forbidden: callers supply the writer, while
+CLI modules may acquire stdout/stderr. Broad `pedantic` is an advisory review,
+not a zero-warning target:
 
 ```sh
 cargo clippy --workspace --all-targets --all-features --locked -- -W clippy::pedantic

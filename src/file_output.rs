@@ -6,6 +6,14 @@
 
 //! File publication and conflict-time source and destination checks.
 
+// Process output belongs to CLI callers, not the file publication kernel.
+#![forbid(
+    clippy::disallowed_methods,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::dbg_macro
+)]
+
 use std::{
     fs,
     io::{self, Write},

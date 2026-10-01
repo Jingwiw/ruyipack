@@ -62,6 +62,8 @@ dead_code_pub_in_binary = "warn"
 
 # Focused ownership, conversion and readability rules shared by local and CI gates.
 [lints.clippy]
+# Method restrictions are opt-in per module; CLI boundaries may own stdio.
+disallowed_methods = "allow"
 assigning_clones = "warn"
 format_collect = "warn"
 format_push_string = "warn"
