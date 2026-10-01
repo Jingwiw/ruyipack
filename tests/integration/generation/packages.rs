@@ -20,7 +20,7 @@ fn main_package_requires_provides_and_noarch_render_and_round_trip() {
          noarch = true\n\n[package.vcs]",
     );
     let directory = workspace(&manifest);
-    let output = run(directory.path(), &["gen", "ed", "--stdout"]);
+    let output = run(directory.path(), &["gen", "authoring", "--stdout"]);
     // gen succeeding means the render/verify round trip accepted the new tags.
     quiet_success(&output);
     let spec = String::from_utf8_lossy(&output.stdout);
@@ -88,7 +88,7 @@ replace = ""
 "#;
     let source = format!("{source}{extra}");
     let directory = workspace(&source);
-    let stdout = run(directory.path(), &["gen", "ed", "--stdout"]);
+    let stdout = run(directory.path(), &["gen", "authoring", "--stdout"]);
     quiet_success(&stdout);
     assert!(!directory.path().join("ed.spec").exists());
     let generated = String::from_utf8(stdout.stdout.clone()).unwrap();
@@ -145,12 +145,15 @@ replace = ""
     );
     assert!(generated.find("%description    meta").unwrap() < generated.find("%prep -p").unwrap());
     assert!(generated.find("%check\n").unwrap() < generated.find("%files\n").unwrap());
-    quiet_success(&run(directory.path(), &["gen", "ed"]));
+    quiet_success(&run(
+        directory.path(),
+        &["gen", "authoring", "--spec=ed.spec"],
+    ));
     assert_eq!(
         fs::read(directory.path().join("ed.spec")).unwrap(),
         stdout.stdout
     );
-    assert_file(directory.path().join("ed.toml"), &source);
+    assert_file(directory.path().join("work/authoring/ed.toml"), &source);
 }
 
 #[test]
@@ -239,12 +242,20 @@ fn malformed_subpackage_dependencies_cannot_overwrite_even_with_force() {
             let directory = workspace(&source);
             let destination = directory.path().join("ed.spec");
             fs::write(&destination, "# maintained by hand\n").unwrap();
-            let output = run(directory.path(), &["gen", "ed", "--force"]);
+            let output = run(
+                directory.path(),
+                &["gen", "authoring", "--spec=ed.spec", "--force"],
+            );
             assert_eq!(output.status.code(), Some(1), "{field}: {output:?}");
             assert!(output.stdout.is_empty());
             assert!(!output.stderr.is_empty());
             assert_file(&destination, "# maintained by hand\n");
-            assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
+            assert!(
+                !directory
+                    .path()
+                    .join("work/authoring/ed.resolved.toml")
+                    .exists()
+            );
         }
     }
 }

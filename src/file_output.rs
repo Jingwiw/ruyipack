@@ -15,7 +15,10 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-use crate::utf8_file;
+use crate::{
+    output_cli::{self, HumanLevel},
+    utf8_file,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) enum ConflictAction {
@@ -60,62 +63,23 @@ pub(crate) fn run(
         };
     }
 
-    loop {
-        match fs::read(path) {
-            Ok(existing) if existing == contents.as_bytes() => return Ok(()),
-            Ok(existing) => {
-                loop {
-                    let selected = choose(path)?;
-                    // Every selection still refers to the bytes seen before the first menu.
-                    if matches!(selected, ConflictAction::Overwrite | ConflictAction::Diff)
-                        && read_target(path)? != existing
-                    {
-                        return Err(OutputError::Changed(path.to_path_buf()));
-                    }
-                    if matches!(selected, ConflictAction::Diff) {
-                        show_diff(path, Some(&existing), contents)?;
-                        continue;
-                    }
-                    return match selected {
-                        ConflictAction::Overwrite => publish(path, contents.as_bytes(), true)
-                            .map_err(|source| OutputError::Write {
-                                path: path.to_path_buf(),
-                                source,
-                            }),
-                        ConflictAction::Diff => unreachable!("diff returns to the menu"),
-                        ConflictAction::Copy => write_copy(path, contents.as_bytes()),
-                        ConflictAction::Skip => {
-                            writeln!(io::stderr().lock(), "Kept {}", path.display())
-                                .map_err(OutputError::Stderr)?;
-                            Ok(())
-                        }
-                    };
-                }
-            }
-            Err(source) if source.kind() == io::ErrorKind::NotFound => {
-                match publish(path, contents.as_bytes(), false) {
-                    Ok(()) => return Ok(()),
-                    // A competing creator is handled by the same conflict policy.
-                    Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-                        // A dangling link is an occupied destination, not a missing file.
-                        read_target(path)?;
-                    }
-                    Err(source) => {
-                        return Err(OutputError::Write {
-                            path: path.to_path_buf(),
-                            source,
-                        });
-                    }
-                }
-            }
-            Err(source) => {
-                return Err(OutputError::Read {
-                    path: path.to_path_buf(),
-                    source,
-                });
-            }
-        }
+    let existing = read_optional_target(path)?;
+    let outcome = publish_one(
+        path,
+        contents,
+        existing.as_deref(),
+        None,
+        &mut choose,
+        || Ok(()),
+    )?;
+    if matches!(outcome, EditOutcome::Skipped(_))
+        || matches!(&outcome, EditOutcome::Written(copy) if copy != path)
+    {
+        outcome
+            .write_human(&mut io::stderr().lock())
+            .map_err(OutputError::Stderr)?;
     }
+    Ok(())
 }
 
 /// One validated candidate and the exact source bytes from which it was prepared.
@@ -123,14 +87,6 @@ pub(crate) struct EditFile<'a> {
     pub(crate) source_path: &'a Path,
     pub(crate) original: &'a str,
     pub(crate) contents: &'a str,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum EditMode {
-    Write,
-    Diff,
-    Stdout,
-    Overwrite,
 }
 
 /// Observed result for one edit destination.
@@ -148,7 +104,12 @@ impl EditOutcome {
             Self::Unchanged(path) => ("Unchanged", path),
             Self::Skipped(path) => ("Kept", path),
         };
-        writeln!(writer, "{action} {}", path.display())
+        output_cli::human(
+            writer,
+            HumanLevel::Info,
+            None,
+            format_args!("{action} {}", output_cli::human_path(path).display()),
+        )
     }
 }
 
@@ -156,11 +117,10 @@ impl EditOutcome {
 pub(crate) fn run_edits(
     files: &[EditFile<'_>],
     output: Option<&Path>,
-    mode: EditMode,
     mut choose: impl FnMut(&Path) -> Result<ConflictAction, OutputError>,
 ) -> Result<Vec<EditOutcome>, OutputError> {
     let mut outcomes = Vec::new();
-    match run_edit_batch(files, output, mode, &mut choose, &mut outcomes) {
+    match run_edit_batch(files, output, &mut choose, &mut outcomes) {
         Ok(()) => Ok(outcomes),
         Err(source) => {
             let written = outcomes
@@ -185,27 +145,10 @@ pub(crate) fn run_edits(
 fn run_edit_batch(
     files: &[EditFile<'_>],
     output: Option<&Path>,
-    mode: EditMode,
     choose: &mut impl FnMut(&Path) -> Result<ConflictAction, OutputError>,
     outcomes: &mut Vec<EditOutcome>,
 ) -> Result<(), OutputError> {
-    let mut overwritten = vec![false; files.len()];
-    check_sources(files, &overwritten)?;
-    match mode {
-        EditMode::Stdout => {
-            let [file] = files else {
-                return Err(OutputError::EditLayout(
-                    "--stdout requires exactly one file".into(),
-                ));
-            };
-            return io::stdout()
-                .lock()
-                .write_all(file.contents.as_bytes())
-                .map_err(OutputError::Stdout);
-        }
-        EditMode::Diff => return show_edit_diffs(files),
-        _ => {}
-    }
+    check_sources(files, outcomes)?;
     if files.is_empty() {
         return Ok(());
     }
@@ -214,109 +157,30 @@ fn run_edit_batch(
         .iter()
         .map(|path| read_optional_target(path))
         .collect::<Result<Vec<_>, _>>()?;
-    if files
-        .iter()
-        .zip(&targets)
-        .all(|(file, target)| target == file.source_path && file.contents == file.original)
-    {
-        outcomes.extend(targets.into_iter().map(EditOutcome::Unchanged));
-        return Ok(());
-    }
-    // Writing back to the source is the edit action, not an output conflict.
-    let no_conflicts =
-        files
-            .iter()
-            .zip(&targets)
-            .zip(&existing)
-            .all(|((file, target), existing)| {
-                target == file.source_path
-                    || existing
-                        .as_deref()
-                        .is_none_or(|bytes| bytes == file.contents.as_bytes())
-            });
-    let action = match mode {
-        _ if no_conflicts => ConflictAction::Overwrite,
-        EditMode::Overwrite => ConflictAction::Overwrite,
-        EditMode::Write => loop {
-            check_sources(files, &overwritten)?;
-            // Only a single explicit output can conflict; in-place writes need no menu.
-            let selected = choose(&targets[0])?;
-            check_sources(files, &overwritten)?;
-            if matches!(selected, ConflictAction::Diff) {
-                for ((file, target), existing) in files.iter().zip(&targets).zip(&existing) {
-                    if read_optional_target(target)? != *existing {
-                        return Err(OutputError::Changed(target.clone()));
-                    }
-                    show_diff(target, existing.as_deref(), file.contents)?;
+    for ((file, target), existing) in files.iter().zip(&targets).zip(&existing) {
+        let outcome = publish_one(
+            target,
+            file.contents,
+            existing.as_deref(),
+            Some(file.source_path),
+            &mut |path| {
+                // Writing back to the source is the edit action, not a conflict.
+                if target == file.source_path {
+                    Ok(ConflictAction::Overwrite)
+                } else {
+                    choose(path)
                 }
-            } else {
-                break selected;
-            }
-        },
-        _ => unreachable!("read-only edit modes already returned"),
-    };
-    if matches!(action, ConflictAction::Skip) {
-        outcomes.extend(targets.into_iter().map(EditOutcome::Skipped));
-        return Ok(());
-    }
-    for (index, (file, target)) in files.iter().zip(&targets).enumerate() {
-        check_sources(files, &overwritten)?;
-        let path = if matches!(action, ConflictAction::Copy) {
-            let permissions = access_permissions(file.source_path)?;
-            let mut number = 0_u64;
-            loop {
-                // An occupied copy name may have appeared after the menu.
-                check_sources(files, &overwritten)?;
-                let copy = copy_path(target, number);
-                match publish_with_permissions(
-                    &copy,
-                    file.contents.as_bytes(),
-                    false,
-                    Some(permissions.clone()),
-                ) {
-                    Ok(()) => break copy,
-                    Err(source) if source.kind() == io::ErrorKind::AlreadyExists => number += 1,
-                    Err(source) => return Err(OutputError::Write { path: copy, source }),
-                }
-            }
-        } else {
-            if read_optional_target(target)? != existing[index] {
-                return Err(OutputError::Changed(target.clone()));
-            }
-            if existing[index].as_deref() == Some(file.contents.as_bytes()) {
-                outcomes.push(EditOutcome::Unchanged(target.clone()));
-                continue;
-            }
-            let permissions = access_permissions(if existing[index].is_some() {
-                target
-            } else {
-                file.source_path
-            })?;
-            // Do not let --force bypass a stale source, including another batch member.
-            check_sources(files, &overwritten)?;
-            publish_with_permissions(
-                target,
-                file.contents.as_bytes(),
-                existing[index].is_some(),
-                Some(permissions),
-            )
-            .map_err(|source| OutputError::Write {
-                path: target.clone(),
-                source,
-            })?;
-            if target == file.source_path {
-                overwritten[index] = true;
-            }
-            target.clone()
-        };
-        outcomes.push(EditOutcome::Written(path));
+            },
+            || check_sources(files, outcomes),
+        )?;
+        outcomes.push(outcome);
     }
     Ok(())
 }
 
-fn check_sources(files: &[EditFile<'_>], overwritten: &[bool]) -> Result<(), OutputError> {
-    for (file, overwritten) in files.iter().zip(overwritten) {
-        if !overwritten
+fn check_sources(files: &[EditFile<'_>], outcomes: &[EditOutcome]) -> Result<(), OutputError> {
+    for (index, file) in files.iter().enumerate() {
+        if !matches!(outcomes.get(index), Some(EditOutcome::Written(path)) if path == file.source_path)
             && !utf8_file::is_unchanged(file.source_path, file.original).map_err(|source| {
                 OutputError::Read {
                     path: file.source_path.to_path_buf(),
@@ -326,17 +190,6 @@ fn check_sources(files: &[EditFile<'_>], overwritten: &[bool]) -> Result<(), Out
         {
             return Err(OutputError::SourceChanged(file.source_path.to_path_buf()));
         }
-    }
-    Ok(())
-}
-
-fn show_edit_diffs(files: &[EditFile<'_>]) -> Result<(), OutputError> {
-    for file in files {
-        show_diff(
-            file.source_path,
-            Some(file.original.as_bytes()),
-            file.contents,
-        )?;
     }
     Ok(())
 }
@@ -375,18 +228,10 @@ fn edit_targets(
             "--output requires exactly one file".into(),
         ));
     };
-    let parent = output
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let parent = fs::canonicalize(parent).map_err(|source| OutputError::Read {
-        path: parent.to_path_buf(),
+    let path = output_path(output).map_err(|source| OutputError::Read {
+        path: output.to_path_buf(),
         source,
     })?;
-    let name = output
-        .file_name()
-        .ok_or_else(|| OutputError::EditLayout("target must name a file".into()))?;
-    let path = parent.join(name);
     let metadata = target_metadata(&path)?;
     if path != *source && paths_alias(&path, metadata.as_ref(), source, Some(data)) {
         return Err(OutputError::EditLayout(format!(
@@ -396,6 +241,27 @@ fn edit_targets(
         )));
     }
     Ok(vec![path])
+}
+
+/// Resolve the parent, not the final entry: a destination may not exist yet.
+pub(crate) fn output_path(path: &Path) -> io::Result<PathBuf> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::other("output must name a file"))?;
+    Ok(fs::canonicalize(parent)?.join(name))
+}
+
+pub(crate) fn aliases(left: &Path, right: &Path) -> bool {
+    paths_alias(
+        left,
+        fs::metadata(left).ok().as_ref(),
+        right,
+        fs::metadata(right).ok().as_ref(),
+    )
 }
 
 fn paths_alias(
@@ -458,6 +324,17 @@ fn read_target(path: &Path) -> Result<Vec<u8>, OutputError> {
 }
 
 fn show_diff(path: &Path, existing: Option<&[u8]>, contents: &str) -> Result<(), OutputError> {
+    io::stdout()
+        .lock()
+        .write_all(diff_text(path, existing, contents)?.as_bytes())
+        .map_err(OutputError::Stdout)
+}
+
+pub(crate) fn diff_text(
+    path: &Path,
+    existing: Option<&[u8]>,
+    contents: &str,
+) -> Result<String, OutputError> {
     let name = path
         .to_str()
         .filter(|name| !name.contains(['\t', '\r', '\n']))
@@ -474,26 +351,82 @@ fn show_diff(path: &Path, existing: Option<&[u8]>, contents: &str) -> Result<(),
             source,
         }
     })?;
-    similar::TextDiff::from_lines(existing, contents)
+    Ok(similar::TextDiff::from_lines(existing, contents)
         .unified_diff()
         .header(&from, &format!("{name}\t"))
-        .to_writer(io::stdout().lock())
-        .map_err(OutputError::Stdout)
+        .to_string())
 }
 
-/// Creates a candidate sidecar without adding another active file extension.
-fn write_copy(path: &Path, contents: &[u8]) -> Result<(), OutputError> {
-    let mut number = 0_u64;
+/// One conflict/write loop for generated files and source-bound edits. The caller
+/// supplies its live input guard; every menu and publication attempt rechecks it.
+fn publish_one(
+    path: &Path,
+    contents: &str,
+    existing: Option<&[u8]>,
+    permission_source: Option<&Path>,
+    choose: &mut impl FnMut(&Path) -> Result<ConflictAction, OutputError>,
+    mut check: impl FnMut() -> Result<(), OutputError>,
+) -> Result<EditOutcome, OutputError> {
     loop {
-        let copy = copy_path(path, number);
-        match publish(&copy, contents, false) {
-            Ok(()) => {
-                writeln!(io::stderr().lock(), "Wrote {}", copy.display())
-                    .map_err(OutputError::Stderr)?;
-                return Ok(());
+        check()?;
+        if read_optional_target(path)?.as_deref() != existing {
+            return Err(OutputError::Changed(path.to_path_buf()));
+        }
+        if existing == Some(contents.as_bytes()) {
+            return Ok(EditOutcome::Unchanged(path.to_path_buf()));
+        }
+        let action = if existing.is_none() {
+            ConflictAction::Overwrite
+        } else {
+            choose(path)?
+        };
+        check()?;
+        match action {
+            ConflictAction::Skip => return Ok(EditOutcome::Skipped(path.to_path_buf())),
+            ConflictAction::Copy => {
+                let permissions = permission_source.map(access_permissions).transpose()?;
+                let mut number = 0;
+                loop {
+                    check()?;
+                    let copy = copy_path(path, number);
+                    match publish_with_permissions(
+                        &copy,
+                        contents.as_bytes(),
+                        false,
+                        permissions.clone(),
+                    ) {
+                        Ok(()) => return Ok(EditOutcome::Written(copy)),
+                        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => number += 1,
+                        Err(source) => return Err(OutputError::Write { path: copy, source }),
+                    }
+                }
             }
-            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => number += 1,
-            Err(source) => return Err(OutputError::Write { path: copy, source }),
+            ConflictAction::Diff | ConflictAction::Overwrite => {
+                if read_optional_target(path)?.as_deref() != existing {
+                    return Err(OutputError::Changed(path.to_path_buf()));
+                }
+                if matches!(action, ConflictAction::Diff) {
+                    show_diff(path, existing, contents)?;
+                    continue;
+                }
+                let permissions = existing
+                    .map(|_| path)
+                    .or(permission_source)
+                    .map(access_permissions)
+                    .transpose()?;
+                check()?;
+                publish_with_permissions(
+                    path,
+                    contents.as_bytes(),
+                    existing.is_some(),
+                    permissions,
+                )
+                .map_err(|source| OutputError::Write {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+                return Ok(EditOutcome::Written(path.to_path_buf()));
+            }
         }
     }
 }
@@ -506,18 +439,39 @@ fn copy_path(path: &Path, number: u64) -> PathBuf {
     }
 }
 
-/// Publishes staged bytes with explicit overwrite permission.
-fn publish(path: &Path, contents: &[u8], replace: bool) -> io::Result<()> {
-    let permissions = if replace {
-        let permissions = fs::metadata(path)?.permissions();
-        // Preserve access permissions without transferring special mode bits to new content.
-        #[cfg(unix)]
-        let permissions = fs::Permissions::from_mode(permissions.mode() & 0o777);
-        Some(permissions)
-    } else {
-        None
+/// Atomically publishes a generated stage artifact, not an arbitrary user file.
+/// Callers retain their source guards; this boundary refuses aliases and directories.
+pub(crate) fn write_artifact(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let permissions = match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "artifact {} must be a regular file, not a symlink",
+                        path.display()
+                    ),
+                ));
+            }
+            #[cfg(unix)]
+            if metadata.nlink() != 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "artifact {} must not have multiple hard links",
+                        path.display()
+                    ),
+                ));
+            }
+            let permissions = metadata.permissions();
+            #[cfg(unix)]
+            let permissions = fs::Permissions::from_mode(permissions.mode() & 0o777);
+            Some(permissions)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
     };
-    publish_with_permissions(path, contents, replace, permissions)
+    publish_with_permissions(path, contents, permissions.is_some(), permissions)
 }
 
 fn publish_with_permissions(
@@ -565,7 +519,7 @@ pub(crate) enum OutputError {
     Selection(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("{} changed while awaiting confirmation; run the command again", .0.display())]
     Changed(PathBuf),
-    #[error("source {} changed since the edit draft was prepared; no further files were written", .0.display())]
+    #[error("source {} changed since the candidate was prepared; no further files were written", .0.display())]
     SourceChanged(PathBuf),
     #[error("cannot publish edit batch: {0}")]
     EditLayout(String),

@@ -6,7 +6,8 @@
 
 //! Parsed SPEC source and private integrations with the RPM syntax libraries.
 
-mod analyzer;
+pub(crate) mod analyzer;
+pub(crate) mod candidate;
 mod checks;
 mod diagnostic;
 pub(crate) mod document;
@@ -16,37 +17,35 @@ pub(crate) mod inspection;
 pub(crate) mod sources;
 pub(crate) mod verify;
 
-use crate::{
-    check::RuleResult,
-    check_report::{Finding, SelectedRule},
-    parser_diagnostic::Diagnostic,
-};
+use crate::{check::RuleResult, parser_diagnostic::Diagnostic};
+use std::{borrow::Cow, cell::OnceCell};
+
 use rpm_spec::{ast::Span, parse_result::ParseResult, parser::parse_str_with_spans};
 
 /// Keeps parser ranges tied to the exact source that produced them.
 pub(crate) struct ParsedSpec<'src> {
-    source: &'src str,
+    source: Cow<'src, str>,
     parsed: ParseResult<Span>,
+    sources: OnceCell<Result<sources::Resolution, String>>,
 }
 
 impl<'src> ParsedSpec<'src> {
-    pub(crate) fn parse(source: &'src str) -> Self {
+    pub(crate) fn parse(source: impl Into<Cow<'src, str>>) -> Self {
+        let source = source.into();
+        let parsed = parse_str_with_spans(&source);
         Self {
             source,
-            parsed: parse_str_with_spans(source),
+            parsed,
+            sources: OnceCell::new(),
         }
     }
 
     pub(crate) fn source(&self) -> &str {
-        self.source
+        &self.source
     }
 
     pub(crate) fn diagnostics(&self) -> Vec<Diagnostic> {
-        diagnostic::diagnostics(self.source, self.parsed.diagnostics.clone())
-    }
-
-    pub(crate) fn analyzer_findings(&self, rules: &[SelectedRule]) -> Vec<Finding> {
-        analyzer::run(self.source, &self.parsed.spec, rules)
+        diagnostic::diagnostics(&self.source, self.parsed.diagnostics.clone())
     }
 
     pub(crate) fn policy_checks(&self, defines: &[String]) -> RuleResult {

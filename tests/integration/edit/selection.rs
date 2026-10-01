@@ -7,7 +7,7 @@
 //! Selection is a source projection, not a requirement to map the whole SPEC.
 
 use super::super::support::{assert_file, success};
-use super::{SPEC, command, fixture};
+use super::{SPEC, command, fixture, inspect};
 use std::{fs, path::Path};
 
 fn extended() -> String {
@@ -32,8 +32,8 @@ fn extended() -> String {
 }
 
 fn view(directory: &Path, field: &str) -> toml::Table {
-    let output = command(directory)
-        .args(["ed.spec", "--field", field, "--view"])
+    let output = inspect(directory)
+        .args(["--spec=ed.spec", "--field", field])
         .output()
         .unwrap();
     success(&output);
@@ -46,7 +46,12 @@ fn selected_version_preserves_unmapped_tags_macros_and_unselected_conditional_by
     assert!(source.contains("VCS:"));
     let directory = fixture(&source);
     let output = command(directory.path())
-        .args(["ed.spec", "--set", "package.version=1.22.6", "--stdout"])
+        .args([
+            "--spec=ed.spec",
+            "--set",
+            "package.version=1.22.6",
+            "--stdout",
+        ])
         .output()
         .unwrap();
     success(&output);
@@ -63,8 +68,8 @@ fn selected_version_preserves_unmapped_tags_macros_and_unselected_conditional_by
         document,
         toml::from_str::<toml::Table>("[package]\nversion = '1.22.5'\n").unwrap()
     );
-    let full = command(directory.path())
-        .args(["ed.spec", "--all", "--view"])
+    let full = inspect(directory.path())
+        .args(["--spec=ed.spec", "--all"])
         .output()
         .unwrap();
     assert!(!full.status.success(), "{full:?}");
@@ -85,7 +90,12 @@ fn selected_version_ignores_unselected_duplicate_fields_and_unresolved_source_ma
     assert!(source.contains("Second summary") && source.contains("%{unresolved_source}"));
     let directory = fixture(&source);
     let output = command(directory.path())
-        .args(["ed.spec", "--set", "package.version=1.22.6", "--stdout"])
+        .args([
+            "--spec=ed.spec",
+            "--set",
+            "package.version=1.22.6",
+            "--stdout",
+        ])
         .output()
         .unwrap();
     success(&output);
@@ -107,15 +117,19 @@ fn duplicate_and_conditional_selected_versions_are_rejected_without_output() {
     ] {
         let source = SPEC.replace("Version:        1.22.5", version);
         let directory = fixture(&source);
-        for mode in [
-            vec!["--set", "package.version=1.23", "--stdout"],
-            vec!["--field", "package.version", "--view"],
-        ] {
-            let output = command(directory.path())
-                .arg("ed.spec")
-                .args(mode)
-                .output()
-                .unwrap();
+        for editing in [true, false] {
+            let mut request = if editing {
+                command(directory.path())
+            } else {
+                inspect(directory.path())
+            };
+            request.args(["--spec=ed.spec"]);
+            if editing {
+                request.args(["--set", "package.version=1.23", "--stdout"]);
+            } else {
+                request.args(["--field", "package.version"]);
+            }
+            let output = request.output().unwrap();
             assert!(!output.status.success(), "{output:?}");
             assert!(output.stdout.is_empty());
             let error = String::from_utf8(output.stderr).unwrap();
@@ -132,8 +146,8 @@ fn duplicate_and_conditional_selected_versions_are_rejected_without_output() {
 fn parser_errors_anywhere_still_block_a_selected_view() {
     let source = format!("%endif\n{SPEC}");
     let directory = fixture(&source);
-    let output = command(directory.path())
-        .args(["ed.spec", "--field", "package.version", "--view"])
+    let output = inspect(directory.path())
+        .args(["--spec=ed.spec", "--field", "package.version"])
         .output()
         .unwrap();
     assert!(!output.status.success(), "{output:?}");
@@ -152,7 +166,7 @@ fn selected_draft_schema_and_resume_keep_selection_and_reject_shape_changes() {
     success(
         &command(directory.path())
             .args([
-                "ed.spec",
+                "--spec=ed.spec",
                 "--field",
                 "package.version",
                 "--prepare",
@@ -182,13 +196,13 @@ fn selected_draft_schema_and_resume_keep_selection_and_reject_shape_changes() {
         schema["properties"]["package"]["additionalProperties"],
         false
     );
-    let index: serde_json::Value = serde_json::from_slice(
-        &fs::read(directory.path().join("drafts/.state/index.json")).unwrap(),
+    let index: toml::Value = toml::from_str(
+        &fs::read_to_string(directory.path().join("drafts/.state/index.toml")).unwrap(),
     )
     .unwrap();
     assert_eq!(
-        index["drafts"][0]["fields"],
-        serde_json::json!(["package.version"])
+        index["drafts"][0]["fields"].as_array().unwrap(),
+        &[toml::Value::String("package.version".into())]
     );
     for changed in [
         "[package]\nversion = '1.23'\nname = 'surprise'\n",
@@ -196,12 +210,12 @@ fn selected_draft_schema_and_resume_keep_selection_and_reject_shape_changes() {
     ] {
         fs::write(&draft, changed).unwrap();
         let output = command(directory.path())
-            .args(["--from", "drafts", "--check", "--format", "json"])
+            .args(["--from", "drafts", "--check", "--format", "toml"])
             .output()
             .unwrap();
         assert!(!output.status.success(), "{output:?}");
-        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(report["valid"], false);
+        let report = super::support::machine_report(&output);
+        assert!(report.get("valid").is_none());
         assert_file(directory.path().join("ed.spec"), &source);
     }
     fs::write(&draft, "[package]\nversion = '1.22.6'\n").unwrap();
@@ -231,7 +245,12 @@ fn selecting_one_copyright_leaf_keeps_its_companion_out_of_draft() {
     let document = view(directory.path(), "spec.copyright-years");
     assert_eq!(document["spec"].as_table().unwrap().len(), 1);
     let output = command(directory.path())
-        .args(["ed.spec", "--set", "spec.copyright-years=2026", "--stdout"])
+        .args([
+            "--spec=ed.spec",
+            "--set",
+            "spec.copyright-years=2026",
+            "--stdout",
+        ])
         .output()
         .unwrap();
     success(&output);
@@ -248,7 +267,7 @@ fn selected_file_array_preserves_unselected_directives_when_cleared() {
     success(
         &command(directory.path())
             .args([
-                "ed.spec",
+                "--spec=ed.spec",
                 "--field",
                 "package.files.doc",
                 "--prepare",

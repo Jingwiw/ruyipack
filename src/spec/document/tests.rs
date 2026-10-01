@@ -8,7 +8,7 @@
 
 use crate::spec::ParsedSpec;
 use proptest::prelude::*;
-use toml::Value;
+use toml::{Table, Value};
 
 use super::Snapshot;
 
@@ -16,8 +16,20 @@ const DEPENDENCIES: &str =
     "Name: demo\nBuildRequires:\tfirst\nBuildRequires:  second\n\n%description\nA demo.\n";
 const SPEC: &str = include_str!("../../../tests/fixtures/ed.spec");
 
-fn capture(source: &str) -> Snapshot<'_> {
-    Snapshot::capture_selected(&ParsedSpec::parse(source), &[]).unwrap()
+fn selected(source: &str, fields: &[String]) -> Snapshot<'static> {
+    Snapshot::capture_selected(&ParsedSpec::parse(source), fields)
+        .unwrap()
+        .into_owned()
+}
+
+fn capture(source: &str) -> Snapshot<'static> {
+    selected(source, &[])
+}
+
+fn render(snapshot: &Snapshot<'_>, edited: &Table) -> Result<String, String> {
+    snapshot
+        .render(edited, &[])
+        .map(|parsed| parsed.source().to_owned())
 }
 
 fn dependencies(values: &[&str]) -> String {
@@ -25,7 +37,7 @@ fn dependencies(values: &[&str]) -> String {
     let mut edited = snapshot.document().clone();
     edited["build-requires"]["rpm"] =
         Value::Array(values.iter().map(|value| (*value).into()).collect());
-    snapshot.render(&edited, &[]).unwrap()
+    render(&snapshot, &edited).unwrap()
 }
 
 #[test]
@@ -66,14 +78,14 @@ fn annotated_dependency_groups_allow_append_but_not_ambiguous_regrouping() {
         "# 分组原因保留\nBuildRequires:  second",
     );
     let snapshot = capture(&source);
-    assert_eq!(snapshot.render(snapshot.document(), &[]).unwrap(), source);
+    assert_eq!(render(&snapshot, snapshot.document()).unwrap(), source);
     let mut edited = snapshot.document().clone();
     edited["build-requires"]["rpm"]
         .as_array_mut()
         .unwrap()
         .push("third".into());
     assert_eq!(
-        snapshot.render(&edited, &[]).unwrap(),
+        render(&snapshot, &edited).unwrap(),
         source.replace(
             "BuildRequires:  second\n",
             "BuildRequires:  second\nBuildRequires:  third\n"
@@ -88,8 +100,7 @@ fn annotated_dependency_groups_allow_append_but_not_ambiguous_regrouping() {
         .unwrap()
         .remove(0);
     assert!(
-        snapshot
-            .render(&edited, &[])
+        render(&snapshot, &edited)
             .unwrap_err()
             .contains("across separate source groups")
     );
@@ -107,9 +118,9 @@ fn copyright_years_and_holders_change_without_overlapping_replacements() {
             format!("{prefix}{years} {first}\n{prefix}{years} Second Holder\nName: demo\n");
         let snapshot = capture(&source);
         if years == "INVALID" || first.is_empty() {
-            assert!(snapshot.render(snapshot.document(), &[]).is_err());
+            assert!(render(&snapshot, snapshot.document()).is_err());
         } else {
-            assert_eq!(snapshot.render(snapshot.document(), &[]).unwrap(), source);
+            assert_eq!(render(&snapshot, snapshot.document()).unwrap(), source);
         }
         for (holders, expected) in [
             (
@@ -127,7 +138,7 @@ fn copyright_years_and_holders_change_without_overlapping_replacements() {
             edited["spec"]["copyright-years"] = "2026-2027".into();
             edited["spec"]["copyright-holders"] =
                 Value::Array(holders.into_iter().map(Value::from).collect());
-            assert_eq!(snapshot.render(&edited, &[]).unwrap(), expected);
+            assert_eq!(render(&snapshot, &edited).unwrap(), expected);
         }
     }
 }
@@ -139,7 +150,7 @@ fn multiline_description_keeps_the_following_section_unchanged() {
     let mut edited = snapshot.document().clone();
     edited["package"]["description"] = "A text editor.\n\nIt keeps its source.\n\n".into();
     assert_eq!(
-        snapshot.render(&edited, &[]).unwrap(),
+        render(&snapshot, &edited).unwrap(),
         "Name: demo\n%description\nA text editor.\n\nIt keeps its source.\n\n%files\n/usr/bin/demo\n"
     );
 }
@@ -152,7 +163,7 @@ fn comment_growth_preserves_surrounding_bytes() {
         "# VCS: No VCS link available\n# Check upstream before changing the archive".into(),
     ]);
     assert_eq!(
-        snapshot.render(&edited, &[]).unwrap(),
+        render(&snapshot, &edited).unwrap(),
         SPEC.replace(
             "# VCS: No VCS link available",
             "# VCS: No VCS link available\n# Check upstream before changing the archive"
@@ -167,11 +178,11 @@ fn digest_edits_preserve_bare_markers_until_explicitly_filled() {
     for original in [marker, "#!RemoteAsset"] {
         let source = SPEC.replace(marker, original);
         let snapshot = capture(&source);
-        assert_eq!(snapshot.render(snapshot.document(), &[]).unwrap(), source);
+        assert_eq!(render(&snapshot, snapshot.document()).unwrap(), source);
         let mut edited = snapshot.document().clone();
         edited["sources"]["0"]["sha256"] = "a".repeat(64).into();
         assert_eq!(
-            snapshot.render(&edited, &[]).unwrap(),
+            render(&snapshot, &edited).unwrap(),
             source.replace(
                 original,
                 &format!("#!RemoteAsset:  sha256:{}", "a".repeat(64))
@@ -183,8 +194,7 @@ fn digest_edits_preserve_bare_markers_until_explicitly_filled() {
             }
             edited["sources"]["0"]["sha256"] = invalid.into();
             assert!(
-                snapshot
-                    .render(&edited, &[])
+                render(&snapshot, &edited)
                     .unwrap_err()
                     .contains("64 hexadecimal digits")
             );
@@ -199,7 +209,7 @@ fn clearing_doc_paths_removes_their_shared_line_once() {
     let mut edited = snapshot.document().clone();
     edited["package"]["files"]["doc"] = Value::Array(Vec::new());
     assert_eq!(
-        snapshot.render(&edited, &[]).unwrap(),
+        render(&snapshot, &edited).unwrap(),
         "Name: demo\n%files\n/usr/bin/demo\n"
     );
 }
@@ -207,14 +217,12 @@ fn clearing_doc_paths_removes_their_shared_line_once() {
 #[test]
 fn repeated_utf8_paths_keep_their_own_ranges() {
     let source = "Name: demo\n%files\n\t%doc\t说明\t说明\n# 保留\n/usr/bin/demo\n";
-    let snapshot =
-        Snapshot::capture_selected(&ParsedSpec::parse(source), &["package.files.doc".into()])
-            .unwrap();
-    assert_eq!(snapshot.render(snapshot.document(), &[]).unwrap(), source);
+    let snapshot = selected(source, &["package.files.doc".into()]);
+    assert_eq!(render(&snapshot, snapshot.document()).unwrap(), source);
     let mut edited = snapshot.document().clone();
     edited["package"]["files"]["doc"] = Value::Array(vec!["新说明".into(), "second".into()]);
     assert_eq!(
-        snapshot.render(&edited, &[]).unwrap(),
+        render(&snapshot, &edited).unwrap(),
         "Name: demo\n%files\n\t%doc\t新说明\tsecond\n# 保留\n/usr/bin/demo\n"
     );
 }
@@ -222,21 +230,20 @@ fn repeated_utf8_paths_keep_their_own_ranges() {
 #[test]
 fn multiple_resized_replacements_preserve_intervening_utf8_bytes() {
     let source = "Name: demo\n# 中间原文\nVersion: 1\nSummary: old\n\n%description\nunchanged\n";
-    let snapshot = Snapshot::capture_selected(
-        &ParsedSpec::parse(source),
+    let snapshot = selected(
+        source,
         &[
             "package.name".into(),
             "package.version".into(),
             "package.summary".into(),
         ],
-    )
-    .unwrap();
+    );
     let mut edited = snapshot.document().clone();
     edited["package"]["name"] = "longer-name".into();
     edited["package"]["version"] = "22.333".into();
     edited["package"]["summary"] = "新摘要".into();
     assert_eq!(
-        snapshot.render(&edited, &[]).unwrap(),
+        render(&snapshot, &edited).unwrap(),
         source
             .replace("Name: demo", "Name: longer-name")
             .replace("Version: 1", "Version: 22.333")
@@ -259,26 +266,23 @@ proptest! {
             "Name: demo\n# 保留 {comment}\nVersion:{spacing}{version}\nSummary:{spacing}{summary}\n\n%description\nunchanged\n"
         );
         let source = spec(&old_version, &old_summary);
-        let snapshot = Snapshot::capture_selected(
-            &ParsedSpec::parse(&source),
-            &["package.version".into(), "package.summary".into()],
-        ).unwrap();
-        prop_assert_eq!(snapshot.render(snapshot.document(), &[]).unwrap(), source.as_str());
+        let snapshot = selected(&source, &["package.version".into(), "package.summary".into()],
+        );
+        prop_assert_eq!(render(&snapshot, snapshot.document()).unwrap(), source.as_str());
         let mut edited = snapshot.document().clone();
         edited["package"]["version"] = new_version.clone().into();
         edited["package"]["summary"] = new_summary.clone().into();
-        let combined = snapshot.render(&edited, &[]).unwrap();
+        let combined = render(&snapshot, &edited).unwrap();
         prop_assert_eq!(&combined, &spec(&new_version, &new_summary));
 
         // Only independent literal fields commute. Each step must capture the
         // newly rendered source, whose byte offsets can differ from the original.
         let edit = |source: &str, field: &str, value: &str| {
-            let snapshot = Snapshot::capture_selected(
-                &ParsedSpec::parse(source), &[format!("package.{field}")],
-            ).unwrap();
+            let snapshot = selected(source, &[format!("package.{field}")],
+            );
             let mut document = snapshot.document().clone();
             document["package"][field] = value.into();
-            snapshot.render(&document, &[]).unwrap()
+            render(&snapshot, &document).unwrap()
         };
         let version_first = edit(&source, "version", &new_version);
         let summary_first = edit(&source, "summary", &new_summary);

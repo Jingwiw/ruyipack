@@ -4,29 +4,81 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! File and terminal boundary for main-package tag inspection.
+//! Read-only SPEC facts and source-mapped editable projections.
+
+use clap::Args;
+use std::io::{self, Write};
 
 use crate::{
-    output_cli::{ReportError, ReportFormat, read_source},
-    spec::{ParsedSpec, inspection::Inspection},
+    output_cli::{ReportError, ReportFormat, report_input},
+    spec::{ParsedSpec, document::Snapshot, inspection::Inspection},
+    workspace::SpecOptions,
 };
-use std::{io, path::Path};
 
-/// Reads one SPEC and prints its parser diagnostics and main-package tag view.
-pub(crate) fn run(path: &Path, format: ReportFormat) -> Result<bool, ReportError> {
-    let Some(source) = read_source(path, format)? else {
+#[derive(Args)]
+#[command(group(clap::ArgGroup::new("inspect-input").required(true).args(["work", "spec"])))]
+#[command(group(clap::ArgGroup::new("projection-scope").args(["fields", "all"])))]
+pub(crate) struct Options {
+    #[command(flatten)]
+    pub(crate) input: SpecOptions,
+    /// Show parser facts as human-readable text or a machine report.
+    #[arg(long, value_enum, default_value = "human")]
+    pub(crate) format: ReportFormat,
+    /// Print the editable TOML projection without editing or validating package policy.
+    #[arg(long, requires = "projection-scope", conflicts_with = "format")]
+    pub(crate) editable: bool,
+    /// Select an editable field or group; repeat to add fields.
+    #[arg(
+        long = "field",
+        value_name = "FIELD",
+        requires = "editable",
+        conflicts_with = "all"
+    )]
+    pub(crate) fields: Vec<String>,
+    /// Include all supported editable fields; unsupported constructs are rejected.
+    #[arg(long, requires = "editable")]
+    pub(crate) all: bool,
+}
+
+/// Read-only projection rejects ambiguous mappings; ordinary inspection retains diagnostics.
+pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
+    let Some(input) = report_input(
+        options.input.resolve(),
+        &options.input.display(),
+        options.format,
+    )?
+    else {
         return Ok(false);
     };
-    let view = Inspection::new(ParsedSpec::parse(&source));
+    let parsed = ParsedSpec::parse(&input.source);
     let mut output = io::stdout().lock();
-    match format {
-        ReportFormat::Human => {
-            view.write_diagnostics(path, &mut io::stderr().lock())
-                .map_err(ReportError::Stderr)?;
-            view.write_human(&mut output)
+    if options.editable {
+        let selection = if options.all {
+            &[][..]
+        } else {
+            &options.fields
+        };
+        let snapshot = Snapshot::capture_selected(&parsed, selection).map_err(|error| {
+            ReportError::Projection(format!("{}: {error}", input.path.display()))
+        })?;
+        let document = toml::to_string_pretty(snapshot.document())
+            .map_err(|error| ReportError::Projection(error.to_string()))?;
+        output
+            .write_all(document.as_bytes())
+            .map_err(ReportError::Stdout)?;
+    } else {
+        let view = Inspection::new(parsed);
+        match options.format {
+            ReportFormat::Human => {
+                view.write_diagnostics(&input.path, &mut io::stderr().lock())
+                    .map_err(ReportError::Stderr)?;
+                view.write_human(&mut output)
+            }
+            ReportFormat::Toml => {
+                view.write_toml(&input.path, input.revision.as_deref(), &mut output)
+            }
         }
-        ReportFormat::Json => view.write_json(path, &mut output),
+        .map_err(ReportError::Stdout)?;
     }
-    .map_err(ReportError::Stdout)?;
     Ok(true)
 }

@@ -17,7 +17,7 @@ fn prepared_drafts_round_trip_without_changes() {
     let directory = fixture(SPEC);
     let drafts = prepare(directory.path(), &["ed.spec"], &[]);
     assert!(drafts.join("ed.toml").is_file());
-    assert!(drafts.join(".state/index.json").is_file());
+    assert!(drafts.join(".state/index.toml").is_file());
     assert!(drafts.join(".state/schema/0.json").is_file());
     let output = command(directory.path())
         .arg("--from")
@@ -52,6 +52,7 @@ fn selected_draft_changes_only_its_selected_fields() {
     let output = command(directory.path())
         .arg("--from")
         .arg(&drafts)
+        .arg("--apply")
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -67,16 +68,19 @@ fn selected_draft_requires_every_selected_field() {
     let output = command(directory.path())
         .arg("--from")
         .arg(&drafts)
-        .args(["--check", "--format", "json"])
+        .args(["--check", "--format", "toml"])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["format_version"], 2);
-    assert_eq!(report["scope"], "selected-edit-static");
-    assert_eq!(report["valid"], false);
-    assert_eq!(report["files"][0]["valid"], false);
-    assert_eq!(report["files"][0]["error"]["code"], "invalid-candidate");
+    let report = super::support::machine_report(&output);
+    assert_eq!(report["format_version"].as_integer(), Some(4));
+    assert_eq!(report["scope"].as_str(), Some("edit-stage"));
+    assert!(report.get("valid").is_none());
+    assert!(report["files"][0].get("valid").is_none());
+    assert_eq!(
+        report["files"][0]["error"]["code"].as_str(),
+        Some("invalid-candidate")
+    );
     assert!(
         report["files"][0]["error"]["message"]
             .as_str()
@@ -100,21 +104,25 @@ fn all_prepared_files_are_checked_before_any_source_is_written() {
     let checked = command(directory.path())
         .arg("--from")
         .arg(&drafts)
-        .args(["--check", "--format", "json"])
+        .args(["--check", "--format", "toml"])
         .output()
         .unwrap();
     assert_eq!(checked.status.code(), Some(1), "{checked:?}");
-    let report: serde_json::Value = serde_json::from_slice(&checked.stdout).unwrap();
+    let report = super::support::machine_report(&checked);
     assert_eq!(report["files"].as_array().unwrap().len(), 2);
-    assert_eq!(report["files"][0]["valid"], true);
-    assert_eq!(report["files"][1]["valid"], false);
-    assert_eq!(report["files"][1]["error"]["code"], "invalid-candidate");
+    assert_eq!(report["files"][0]["valid"].as_bool(), Some(true));
+    assert!(report["files"][1].get("valid").is_none());
+    assert_eq!(
+        report["files"][1]["error"]["code"].as_str(),
+        Some("invalid-candidate")
+    );
     let error = report["files"][1]["error"]["message"].as_str().unwrap();
     assert!(error.contains("package.version"), "{error}");
     assert!(error.contains("expected a string"), "{error}");
     let output = command(directory.path())
         .arg("--from")
         .arg(&drafts)
+        .arg("--apply")
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -159,6 +167,7 @@ fn saved_drafts_apply_without_reopening_an_editor() {
     let output = command(directory.path())
         .arg("--from")
         .arg(&drafts)
+        .arg("--apply")
         .output()
         .unwrap();
     success(&output);
@@ -180,6 +189,7 @@ fn stale_prepared_source_is_not_overwritten() {
         let output = command(directory.path())
             .arg("--from")
             .arg(&drafts)
+            .arg("--apply")
             .args(extra)
             .output()
             .unwrap();
@@ -204,22 +214,25 @@ fn stale_draft_does_not_hide_other_files_check_results() {
     let output = command(directory.path())
         .arg("--from")
         .arg(&drafts)
-        .args(["--check", "--format", "json"])
+        .args(["--check", "--format", "toml"])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(output.stderr.is_empty());
-    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let report = super::support::machine_report(&output);
     assert_eq!(report["files"].as_array().unwrap().len(), 2);
-    assert_eq!(report["files"][0]["valid"], false);
-    assert_eq!(report["files"][0]["error"]["code"], "source-changed");
+    assert!(report["files"][0].get("valid").is_none());
+    assert_eq!(
+        report["files"][0]["error"]["code"].as_str(),
+        Some("source-changed")
+    );
     assert!(
         report["files"][0]["error"]["message"]
             .as_str()
             .unwrap()
             .contains("changed")
     );
-    assert_eq!(report["files"][1]["valid"], true);
+    assert_eq!(report["files"][1]["valid"].as_bool(), Some(true));
     assert_file(directory.path().join("ed.spec"), &external);
     assert_file(directory.path().join("second.spec"), SPEC);
 }
@@ -231,8 +244,13 @@ fn explicit_output_cannot_overwrite_its_draft_or_saved_state() {
     change_version(&drafts.join("ed.toml"), "1.22.6");
     let mut targets = vec![
         drafts.join("ed.toml"),
-        drafts.join(".state/index.json"),
-        drafts.join(".state/originals/0.spec"),
+        drafts.join(".state/index.toml"),
+        fs::read_dir(drafts.join(".state/originals"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path(),
         drafts.join(".state/schema/0.json"),
     ];
     #[cfg(unix)]
@@ -246,6 +264,7 @@ fn explicit_output_cannot_overwrite_its_draft_or_saved_state() {
         let output = command(directory.path())
             .arg("--from")
             .arg(&drafts)
+            .arg("--apply")
             .arg("--force")
             .arg("--output")
             .arg(&target)
@@ -264,16 +283,22 @@ fn draft_files_and_saved_originals_are_private() {
 
     let directory = fixture(SPEC);
     let drafts = prepare(directory.path(), &["ed.spec"], &[]);
-    for path in [
-        "ed.toml",
-        ".state/index.json",
-        ".state/originals/0.spec",
-        ".state/schema/0.json",
-    ] {
-        let permissions = fs::metadata(drafts.join(path))
+    let mut paths = ["ed.toml", ".state/index.toml", ".state/schema/0.json"]
+        .into_iter()
+        .map(|path| drafts.join(path))
+        .collect::<Vec<_>>();
+    paths.extend(
+        fs::read_dir(drafts.join(".state/originals"))
             .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(permissions & 0o077, 0, "{path}: {permissions:o}");
+            .map(|entry| entry.unwrap().path()),
+    );
+    for path in paths {
+        let permissions = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            permissions & 0o077,
+            0,
+            "{}: {permissions:o}",
+            path.display()
+        );
     }
 }

@@ -6,18 +6,18 @@
 
 //! CLI boundaries share one executable; each domain remains independently filterable.
 
-mod build_identity;
 mod checks;
 mod cli;
 mod diagnostic_locations;
 mod edit;
 mod generation;
 mod http;
-mod init;
 mod inspect;
 mod materials;
+mod new;
 mod output;
 mod source_hash;
 mod source_validation;
 mod support;
 mod verify_sources;
+mod workspace;

@@ -7,9 +7,7 @@
 //! Compare downloaded bytes with declarations, never replace the declarations.
 
 use crate::{
-    output_cli::{self, ReportFormat},
-    render::manifest,
-    source, spec, utf8_file,
+    output_cli::ReportFormat, render::manifest, source, spec, utf8_file, workspace::SpecOptions,
 };
 use clap::Args;
 use fs_err as fs;
@@ -21,16 +19,13 @@ use std::{
 };
 
 #[derive(Args)]
+#[command(group(clap::ArgGroup::new("verify-input").args(["work", "spec", "manifest"]).required(true)))]
 pub(crate) struct Options {
-    /// SPEC whose Source expressions can be resolved statically.
-    #[arg(
-        value_name = "SPEC",
-        required_unless_present = "manifest",
-        conflicts_with = "manifest"
-    )]
-    spec: Option<PathBuf>,
+    #[command(flatten)]
+    input: SpecOptions,
     /// Verify a handwritten manifest instead.
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", required_unless_present_any = ["work", "spec"],
+        conflicts_with_all = ["work", "spec", "pkgname"])]
     manifest: Option<PathBuf>,
     /// Define a static macro before reading the SPEC, in order.
     #[arg(
@@ -40,7 +35,7 @@ pub(crate) struct Options {
         conflicts_with = "manifest"
     )]
     defines: Vec<String>,
-    /// Print per-Source comparisons or a JSON report. No output writes back to the input.
+    /// Print per-Source comparisons or a TOML report. No output writes back to the input.
     #[arg(long, value_enum, default_value_t = ReportFormat::Human)]
     format: ReportFormat,
 }
@@ -120,21 +115,47 @@ impl Comparison {
 }
 
 pub(crate) fn run(options: &Options) -> Result<bool, String> {
-    let input = options
-        .manifest
-        .as_ref()
-        .or(options.spec.as_ref())
-        .expect("required CLI input");
+    let mut display_path = options.manifest.as_ref().map_or_else(
+        || options.input.display(),
+        |path| path.to_string_lossy().into_owned(),
+    );
+    let mut revision = None;
     let mut input_sha256 = None;
     let mut sources = BTreeMap::new();
     let mut incomplete = None;
     let result = (|| {
-        let path = fs::canonicalize(input).map_err(|e| ("input-read", e.to_string()))?;
-        let original = utf8_file::read(&path).map_err(|e| ("input-read", e.to_string()))?;
-        input_sha256 = Some(utf8_file::sha256(&original));
+        let manifest_input = options
+            .manifest
+            .as_ref()
+            .map(|path| {
+                let path = fs::canonicalize(path).map_err(|e| ("input-read", e.to_string()))?;
+                let source = utf8_file::read(&path).map_err(|e| ("input-read", e.to_string()))?;
+                Ok::<_, (&str, String)>((path, source))
+            })
+            .transpose()?;
+        let spec_input = if manifest_input.is_none() {
+            Some(
+                options
+                    .input
+                    .resolve()
+                    .map_err(|e| ("input-read", e.to_string()))?,
+            )
+        } else {
+            None
+        };
+        let original = if let Some((path, source)) = &manifest_input {
+            display_path = path.to_string_lossy().into_owned();
+            source
+        } else {
+            let input = spec_input.as_ref().expect("SPEC or manifest input");
+            display_path = input.path.to_string_lossy().into_owned();
+            revision.clone_from(&input.revision);
+            &input.source
+        };
+        input_sha256 = Some(utf8_file::sha256(original));
         if options.manifest.is_some() {
             let manifest =
-                manifest::parse(&original).map_err(|e| ("invalid-manifest", e.to_string()))?;
+                manifest::parse(original).map_err(|e| ("invalid-manifest", e.to_string()))?;
             let package = &manifest.package;
             for (number, material) in manifest.sources {
                 let comparison = match material {
@@ -158,18 +179,28 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
                 sources.insert(number, comparison);
             }
         } else {
-            let parsed = spec::ParsedSpec::parse(&original);
+            let parsed = spec::ParsedSpec::parse(original);
             let resolved = spec::sources::resolve(&parsed, &options.defines)
                 .map_err(|e| ("source-resolution", e))?;
-            incomplete = resolved.incomplete;
-            for (number, source) in resolved.sources {
+            incomplete.clone_from(&resolved.incomplete);
+            for (&number, source) in &resolved.sources {
                 sources.insert(
                     number,
-                    Comparison::compare(source.expression, source.url, source.digest),
+                    Comparison::compare(
+                        source.expression.clone(),
+                        source.url.clone(),
+                        source.digest.clone(),
+                    ),
                 );
             }
         }
-        if !utf8_file::is_unchanged(&path, &original).map_err(|e| ("input-read", e.to_string()))? {
+        let unchanged = if let Some((path, source)) = &manifest_input {
+            utf8_file::is_unchanged(path, source)
+        } else {
+            spec_input.as_ref().expect("SPEC input").is_unchanged()
+        }
+        .map_err(|e| ("input-read", e.to_string()))?;
+        if !unchanged {
             return Err(("source-changed", "input changed during verification; results describe the recorded input, not the current file".into()));
         }
         if let Some(reason) = incomplete {
@@ -185,18 +216,34 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
             )
         });
     let mut stdout = io::stdout().lock();
-    if matches!(options.format, ReportFormat::Json) {
-        let report = serde_json::json!({
-            "tool": crate::tool::identity(),
-            "format_version": 1, "scope": "remote-source-content", "valid": valid,
-            "input": {"display_path": input.to_string_lossy(), "sha256": input_sha256},
-            "defines": options.defines, "sources": sources,
-            "error": result.as_ref().err().map(|(code, message)| if *code == "source-resolution" {
-                source::Error::resolution(message).report(code)
-            } else { output_cli::failure(code, message) }),
-        });
-        serde_json::to_writer(&mut stdout, &report).map_err(|e| e.to_string())?;
-        writeln!(stdout).map_err(|e| e.to_string())?;
+    if matches!(options.format, ReportFormat::Toml) {
+        let resolution_error = result
+            .as_ref()
+            .err()
+            .filter(|(code, _)| *code == "source-resolution")
+            .map(|(_, message)| source::Error::resolution(message));
+        let error = result
+            .as_ref()
+            .err()
+            .map(|(code, message)| match &resolution_error {
+                Some(error) => error.report(code),
+                None => source::Failure::General(crate::report::failure(code, message)),
+            });
+        let report = VerifyReport {
+            tool: crate::tool::identity(),
+            format_version: 1,
+            scope: "remote-source-content",
+            valid,
+            input: crate::report::Input {
+                display_path: display_path.as_str().into(),
+                sha256: input_sha256.as_deref(),
+                revision: revision.as_deref(),
+            },
+            defines: &options.defines,
+            sources: crate::report::Numbered(&sources),
+            error,
+        };
+        crate::report::write(&mut stdout, &report).map_err(|e| e.to_string())?;
     } else {
         for (number, item) in &sources {
             let detail = match &item.outcome {
@@ -219,4 +266,16 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         writeln!(stdout, "Input unchanged; no digests written. Matching bytes do not prove upstream authenticity.").map_err(|e| e.to_string())?;
     }
     Ok(valid)
+}
+
+#[derive(Serialize)]
+struct VerifyReport<'a> {
+    format_version: u32,
+    tool: crate::tool::Identity,
+    scope: &'static str,
+    valid: bool,
+    input: crate::report::Input<'a>,
+    defines: &'a [String],
+    sources: crate::report::Numbered<'a, Comparison>,
+    error: Option<source::Failure<'a>>,
 }

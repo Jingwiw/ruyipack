@@ -8,7 +8,7 @@
 
 use super::{
     http::{Server, response},
-    support::{assert_file, json_line, success},
+    support::{assert_file, machine_report, success},
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -52,17 +52,17 @@ fn verification_distinguishes_missing_mismatch_and_uncertainty_without_writing()
         server
             .command()
             .current_dir(&root)
-            .arg("verify-sources")
+            .args(["source", "verify"])
             .args(args)
             .output()
             .unwrap()
     };
-    let output = run(&["input.spec", "--format", "json"]);
+    let output = run(&["--spec=input.spec", "--format", "toml"]);
     assert_eq!(output.status.code(), Some(1));
-    let report = json_line(&output);
+    let report = machine_report(&output);
     assert_eq!(
-        report["input"]["sha256"],
-        format!("{:x}", Sha256::digest(source.as_bytes()))
+        report["input"]["sha256"].as_str(),
+        Some((format!("{:x}", Sha256::digest(source.as_bytes()))).as_str())
     );
     for (n, expected) in [
         "match",
@@ -76,23 +76,30 @@ fn verification_distinguishes_missing_mismatch_and_uncertainty_without_writing()
     .iter()
     .enumerate()
     {
+        assert_eq!(report["sources"][n]["number"].as_integer(), Some(n as i64));
         assert_eq!(
-            report["sources"][n.to_string()]["status"],
-            *expected,
+            report["sources"][n]["status"].as_str(),
+            Some(*expected),
             "{report}"
         );
     }
     assert_eq!(
-        report["sources"]["0"]["declared_sha256"],
-        hash.to_uppercase()
+        report["sources"][0]["declared_sha256"].as_str(),
+        Some(hash.to_uppercase().as_str())
     );
-    assert_eq!(report["sources"]["1"]["download"]["sha256"], hash);
-    assert_eq!(report["sources"]["2"]["download"]["sha256"], hash);
-    assert!(report["sources"]["4"]["download"].is_null());
-    assert_eq!(report["sources"]["4"]["reason"], "http-status");
-    assert_eq!(report["sources"]["4"]["http_status"], 404);
-    assert_eq!(report["sources"]["6"]["reason"], "resolution");
-    assert_eq!(report["sources"]["6"]["retryable"], false);
+    assert_eq!(
+        report["sources"][1]["download"]["sha256"].as_str(),
+        Some(hash.as_ref())
+    );
+    assert_eq!(
+        report["sources"][2]["download"]["sha256"].as_str(),
+        Some(hash.as_ref())
+    );
+    assert!(report["sources"][4].get("download").is_none());
+    assert_eq!(report["sources"][4]["reason"].as_str(), Some("http-status"));
+    assert_eq!(report["sources"][4]["http_status"].as_integer(), Some(404));
+    assert_eq!(report["sources"][6]["reason"].as_str(), Some("resolution"));
+    assert_eq!(report["sources"][6]["retryable"].as_bool(), Some(false));
     assert_file(&input, &source);
     assert_eq!(
         *server.calls.lock().unwrap(),
@@ -107,15 +114,21 @@ fn verification_distinguishes_missing_mismatch_and_uncertainty_without_writing()
         .0
         .to_owned();
     fs::write(&input, &matched).unwrap();
-    success(&run(&["input.spec"]));
+    success(&run(&["--spec=input.spec"]));
     *mode.lock().unwrap() = "replaced";
-    let changed = run(&["input.spec", "--format", "json"]);
+    let changed = run(&["--spec=input.spec", "--format", "toml"]);
     assert_eq!(changed.status.code(), Some(1));
-    assert_eq!(json_line(&changed)["sources"]["0"]["status"], "mismatch");
+    assert_eq!(
+        machine_report(&changed)["sources"][0]["status"].as_str(),
+        Some("mismatch")
+    );
     assert_file(&input, &matched);
     *mode.lock().unwrap() = "drift";
-    let drift = run(&["input.spec", "--format", "json"]);
-    assert_eq!(json_line(&drift)["error"]["code"], "source-changed");
+    let drift = run(&["--spec=input.spec", "--format", "toml"]);
+    assert_eq!(
+        machine_report(&drift)["error"]["code"].as_str(),
+        Some("source-changed")
+    );
     assert_file(&input, "# concurrent change\n");
     *mode.lock().unwrap() = "ok";
     let mut manifest: toml::Value =
@@ -128,12 +141,15 @@ fn verification_distinguishes_missing_mismatch_and_uncertainty_without_writing()
         .insert("1".into(), toml::toml! { path = "local:1.tar.gz" }.into());
     let original = toml::to_string(&manifest).unwrap();
     fs::write(root.join("ed.toml"), &original).unwrap();
-    let output = run(&["--manifest", "ed.toml", "--format", "json"]);
+    let output = run(&["--manifest=ed.toml", "--format", "toml"]);
     success(&output);
-    assert_eq!(json_line(&output)["sources"]["0"]["status"], "match");
     assert_eq!(
-        json_line(&output)["sources"]["1"]["status"],
-        "not-applicable"
+        machine_report(&output)["sources"][0]["status"].as_str(),
+        Some("match")
+    );
+    assert_eq!(
+        machine_report(&output)["sources"][1]["status"].as_str(),
+        Some("not-applicable")
     );
     assert_file(root.join("ed.toml"), &original);
     manifest["sources"]["0"]
@@ -142,12 +158,18 @@ fn verification_distinguishes_missing_mismatch_and_uncertainty_without_writing()
         .remove("sha256");
     let missing = toml::to_string(&manifest).unwrap();
     fs::write(root.join("ed.toml"), &missing).unwrap();
-    let output = run(&["--manifest", "ed.toml", "--format", "json"]);
+    let output = run(&["--manifest=ed.toml", "--format", "toml"]);
     assert_eq!(output.status.code(), Some(1));
-    assert_eq!(json_line(&output)["sources"]["0"]["status"], "missing");
+    assert_eq!(
+        machine_report(&output)["sources"][0]["status"].as_str(),
+        Some("missing")
+    );
     assert_file(root.join("ed.toml"), &missing);
     fs::write(&input, "%include absent.inc\n").unwrap();
-    let incomplete = run(&["input.spec", "--format", "json"]);
+    let incomplete = run(&["--spec=input.spec", "--format", "toml"]);
     assert_eq!(incomplete.status.code(), Some(1));
-    assert_eq!(json_line(&incomplete)["error"]["code"], "source-resolution");
+    assert_eq!(
+        machine_report(&incomplete)["error"]["code"].as_str(),
+        Some("source-resolution")
+    );
 }

@@ -82,7 +82,8 @@ impl Field {
 
     pub(crate) fn finding(&self, literal: Option<&str>, span: SourceLocation) -> Option<Finding> {
         // Static lexical checks make no claim about unevaluated expressions.
-        let error = self.validate(literal?.trim()).err()?;
+        let literal = literal?.trim();
+        let error = self.validate(literal).err()?;
         let rule = if matches!(self, Self::Url) {
             URL_RULE
         } else {
@@ -94,6 +95,7 @@ impl Field {
             severity: rule.severity,
             message: error,
             span,
+            rule_inputs: Some(vec![self.name().to_owned(), literal.to_owned()]),
         })
     }
 }

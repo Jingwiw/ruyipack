@@ -7,7 +7,10 @@
 //! Stable categories for failures that change how an edit can proceed.
 
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::{
+    borrow::Cow,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -24,7 +27,7 @@ pub(super) enum Kind {
 }
 
 #[derive(Debug, thiserror::Error, Serialize)]
-#[error("{message}")]
+#[error("{}", self.display_message())]
 pub(crate) struct EditError {
     code: Kind,
     pub(super) message: String,
@@ -46,6 +49,24 @@ enum Cause {
 }
 
 impl EditError {
+    // Presentation only: keep serialized evidence and typed causes unchanged.
+    fn display_message(&self) -> Cow<'_, str> {
+        let Some(path) = &self.path else {
+            return Cow::Borrowed(&self.message);
+        };
+        let Some(suffix) = self
+            .message
+            .strip_prefix(path)
+            .filter(|suffix| suffix.starts_with(':'))
+        else {
+            return Cow::Borrowed(&self.message);
+        };
+        Cow::Owned(format!(
+            "{}{suffix}",
+            crate::output_cli::human_path(Path::new(path)).display()
+        ))
+    }
+
     pub(super) fn at(code: Kind, path: &Path, fields: &[String], message: String) -> Self {
         Self {
             code,
@@ -76,22 +97,6 @@ impl EditError {
             _ => &[],
         }
     }
-
-    /// Publication facts take precedence over rereading files that may have changed again.
-    pub(super) fn invalidates_drafts(&self, sources: &[&Path]) -> bool {
-        fn invalidates(error: &crate::file_output::OutputError, sources: &[&Path]) -> bool {
-            use crate::file_output::OutputError;
-            match error {
-                OutputError::Partial { written, source } => {
-                    written.iter().any(|path| sources.contains(&path.as_path()))
-                        || invalidates(source, sources)
-                }
-                OutputError::SourceChanged(_) => true,
-                _ => false,
-            }
-        }
-        matches!(self.cause.as_deref(), Some(Cause::Publication(error)) if invalidates(error, sources))
-    }
 }
 
 impl From<String> for EditError {
@@ -117,17 +122,10 @@ fn cause_details<S: serde::Serializer>(
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     use crate::file_output::OutputError as E;
-    use serde_json::json;
+    use serde::ser::SerializeMap;
     let mut error = match cause.as_deref() {
-        None => return json!({}).serialize(serializer),
-        Some(Cause::SourceHash(error)) => {
-            let mut value = serde_json::to_value(error).expect("serializable source error");
-            value
-                .as_object_mut()
-                .expect("error object")
-                .remove("message");
-            return value.serialize(serializer);
-        }
+        None => return serializer.serialize_map(Some(0))?.end(),
+        Some(Cause::SourceHash(error)) => return error.details().serialize(serializer),
         Some(Cause::Publication(error)) => error,
     };
     while let E::Partial { source, .. } = error {
@@ -146,13 +144,18 @@ fn cause_details<S: serde::Serializer>(
         E::DiffEncoding { path, .. } => ("invalid-diff-encoding", Some(path), None),
         E::Partial { .. } => unreachable!("unwrapped above"),
     };
-    let mut details = json!({"stage": "publication", "reason": reason});
-    if let Some(path) = path {
-        details["path"] = json!(path.to_string_lossy());
+    #[derive(Serialize)]
+    struct Publication<'a> {
+        stage: &'static str,
+        reason: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<Cow<'a, str>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        io_kind: Option<&'static str>,
     }
-    if let Some(io) = io {
+    let io_kind = io.map(|io| {
         use std::io::ErrorKind;
-        details["io_kind"] = json!(match io.kind() {
+        match io.kind() {
             ErrorKind::PermissionDenied => "permission-denied",
             ErrorKind::NotFound => "not-found",
             ErrorKind::AlreadyExists => "already-exists",
@@ -161,13 +164,37 @@ fn cause_details<S: serde::Serializer>(
             ErrorKind::ReadOnlyFilesystem => "read-only-filesystem",
             ErrorKind::StorageFull => "storage-full",
             _ => "other",
-        });
+        }
+    });
+    Publication {
+        stage: "publication",
+        reason,
+        path: path.map(|path| path.to_string_lossy()),
+        io_kind,
     }
-    details.serialize(serializer)
+    .serialize(serializer)
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn human_paths_are_relative_without_rewriting_report_evidence() {
+        let path = std::env::current_dir().unwrap().join("example.spec");
+        let message = format!("{}: candidate failed static checks", path.display());
+        let error =
+            super::EditError::at(super::Kind::StaticCheckFailed, &path, &[], message.clone());
+        assert_eq!(
+            error.to_string(),
+            "example.spec: candidate failed static checks"
+        );
+        let report: toml::Table = toml::from_str(&toml::to_string(&error).unwrap()).unwrap();
+        assert_eq!(report["message"].as_str(), Some(message.as_str()));
+        assert_eq!(
+            report["path"].as_str(),
+            Some(path.to_string_lossy().as_ref())
+        );
+    }
+
     #[test]
     fn source_hash_failure_retains_its_typed_cause() {
         let error = super::EditError::source_hash(

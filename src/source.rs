@@ -100,21 +100,21 @@ pub(crate) struct Download {
 pub(crate) struct SourceHashes {
     pub(crate) input_sha256: String,
     pub(crate) defines: Vec<String>,
+    #[serde(serialize_with = "crate::report::numbered")]
     pub(crate) sources: std::collections::BTreeMap<u32, Download>,
 }
 
 /// Resolve the complete selection before starting any downloads.
 pub(crate) fn calculate(
-    contents: &str,
+    parsed: &spec::ParsedSpec<'_>,
     numbers: &[u32],
     defines: &[String],
 ) -> Result<SourceHashes, Error> {
-    let parsed = spec::ParsedSpec::parse(contents);
-    let resolved = spec::sources::resolve(&parsed, defines).map_err(Error::resolution)?;
-    if let Some(reason) = resolved.incomplete {
+    let resolved = spec::sources::resolve(parsed, defines).map_err(Error::resolution)?;
+    if let Some(reason) = &resolved.incomplete {
         return Err(Error::resolution(reason));
     }
-    let sources = resolved.sources;
+    let sources = &resolved.sources;
     let urls = numbers
         .iter()
         .map(|number| {
@@ -139,10 +139,43 @@ pub(crate) fn calculate(
         })
         .collect::<Result<_, _>>()?;
     Ok(SourceHashes {
-        input_sha256: utf8_file::sha256(contents),
+        input_sha256: utf8_file::sha256(parsed.source()),
         defines: defines.to_vec(),
         sources,
     })
+}
+
+/// Classifies normalized URL schemes; uppercase HTTP(S) is still remote.
+pub(crate) fn is_remote_url(value: &str) -> bool {
+    url::Url::parse(value).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+}
+
+/// Resolve the complete Source set before attempting any download; local files are excluded.
+pub(crate) fn remote_numbers(
+    parsed: &spec::ParsedSpec<'_>,
+    defines: &[String],
+) -> Result<Vec<u32>, Error> {
+    let resolved = spec::sources::resolve(parsed, defines).map_err(Error::resolution)?;
+    if let Some(reason) = &resolved.incomplete {
+        return Err(Error::resolution(reason));
+    }
+    let mut numbers = Vec::new();
+    for (number, source) in &resolved.sources {
+        let url = source
+            .url
+            .as_ref()
+            .map_err(|e| Error::resolution(e).at(*number))?;
+        if is_remote_url(url) {
+            RemoteSource::parse(url).map_err(|e| e.at(*number))?;
+            numbers.push(*number);
+        } else if url.contains("://") || url.contains('%') {
+            return Err(
+                Error::resolution("remote Source scheme or expression cannot be resolved")
+                    .at(*number),
+            );
+        }
+    }
+    Ok(numbers)
 }
 
 /// A checked remote URL retains its original spelling for evidence.
@@ -345,26 +378,50 @@ impl Reason {
     }
 }
 
-#[derive(Debug, thiserror::Error, Serialize)]
+#[derive(Debug, thiserror::Error)]
 #[error("{message}")]
 pub(crate) struct Error {
     message: String,
-    #[serde(flatten, serialize_with = "reason_details")]
     reason: Reason,
+    source_number: Option<u32>,
+}
+
+/// Source evidence without a message, for callers that supply their own context.
+#[derive(Serialize)]
+pub(crate) struct Details<'a> {
+    #[serde(flatten)]
+    reason: &'a Reason,
+    stage: &'static str,
+    retryable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_number: Option<u32>,
 }
 
-fn reason_details<S: serde::Serializer>(reason: &Reason, serializer: S) -> Result<S::Ok, S::Error> {
-    let mut value = serde_json::to_value(reason).expect("serializable failure reason");
-    value["stage"] = match reason {
-        Reason::Resolution => "source-resolution",
-        Reason::InvalidDigest | Reason::UrlPolicy => "source-validation",
-        _ => "download",
+#[derive(Serialize)]
+#[serde(untagged)]
+pub(crate) enum Failure<'a> {
+    Source {
+        code: &'a str,
+        #[serde(flatten)]
+        error: &'a Error,
+    },
+    General(crate::report::Failure),
+}
+
+impl Serialize for Error {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Report<'a> {
+            message: &'a str,
+            #[serde(flatten)]
+            details: Details<'a>,
+        }
+        Report {
+            message: &self.message,
+            details: self.details(),
+        }
+        .serialize(serializer)
     }
-    .into();
-    value["retryable"] = reason.retryable().into();
-    value.serialize(serializer)
 }
 
 impl Error {
@@ -384,16 +441,27 @@ impl Error {
         Self::new(Reason::InvalidDigest, message)
     }
 
-    fn at(mut self, number: u32) -> Self {
+    pub(crate) fn at(mut self, number: u32) -> Self {
         self.message = format!("Source{number}: {}", self.message);
         self.source_number = Some(number);
         self
     }
 
-    pub(crate) fn report(&self, code: &str) -> serde_json::Value {
-        let mut value = serde_json::to_value(self).expect("serializable source error");
-        value["code"] = code.into();
-        value
+    pub(crate) fn report<'a>(&'a self, code: &'a str) -> Failure<'a> {
+        Failure::Source { code, error: self }
+    }
+
+    pub(crate) fn details(&self) -> Details<'_> {
+        Details {
+            reason: &self.reason,
+            stage: match self.reason {
+                Reason::Resolution => "source-resolution",
+                Reason::InvalidDigest | Reason::UrlPolicy => "source-validation",
+                _ => "download",
+            },
+            retryable: self.reason.retryable(),
+            source_number: self.source_number,
+        }
     }
 
     fn request(error: ureq::Error) -> Self {
@@ -422,6 +490,39 @@ mod tests {
         net::TcpListener,
         thread,
     };
+
+    #[test]
+    fn failure_reports_and_embedded_details_preserve_source_evidence() {
+        for (reason, stage, retryable, status) in [
+            (Reason::Resolution, "source-resolution", false, None),
+            (Reason::InvalidDigest, "source-validation", false, None),
+            (Reason::HttpStatus(503), "download", true, Some(503)),
+        ] {
+            let error = Error::new(reason, "下载失败\nretry only the source").at(2);
+            let mut output = Vec::new();
+            crate::report::write(&mut output, &error.report("source-hash-failed")).unwrap();
+            let mut report: toml::Table =
+                toml::from_str(std::str::from_utf8(&output).unwrap()).unwrap();
+            assert_eq!(
+                report.remove("code").unwrap().as_str(),
+                Some("source-hash-failed")
+            );
+            assert_eq!(
+                report.remove("message").unwrap().as_str(),
+                Some(error.to_string().as_str())
+            );
+            let details: toml::Table =
+                toml::from_str(&toml::to_string(&error.details()).unwrap()).unwrap();
+            assert_eq!(report, details);
+            assert_eq!(details["stage"].as_str(), Some(stage));
+            assert_eq!(details["retryable"].as_bool(), Some(retryable));
+            assert_eq!(details["source_number"].as_integer(), Some(2));
+            assert_eq!(
+                details.get("http_status").and_then(toml::Value::as_integer),
+                status
+            );
+        }
+    }
 
     #[test]
     fn slow_headers_and_bodies_share_a_deadline_without_partial_hashes() {

@@ -6,7 +6,7 @@
 
 //! Entry-point checks for shared package validation.
 
-use super::support::{assert_file, run};
+use super::support::{assert_file, authoring_workspace, run, success};
 
 use std::{fs, process::Command};
 
@@ -21,11 +21,17 @@ fn spec_license_uses_spdx_checks_without_changing_the_package_license() {
     let invalid = SPEC.replace("MulanPSL-2.0", "not-a-real-license");
     fs::write(dir.path().join("invalid.spec"), &invalid).unwrap();
     fs::write(dir.path().join("ed.spec"), SPEC).unwrap();
-    let output = run(dir.path(), &["check", "invalid.spec", "--format", "json"]);
+    let output = run(
+        dir.path(),
+        &["check", "--spec=invalid.spec", "--format", "toml"],
+    );
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let report = super::support::machine_report(&output);
     let findings = report["findings"].as_array().unwrap();
-    let finding = findings.iter().find(|f| f["code"] == "RPK001").unwrap();
+    let finding = findings
+        .iter()
+        .find(|f| f["code"].as_str() == Some("RPK001"))
+        .unwrap();
     assert!(
         finding["message"]
             .as_str()
@@ -33,8 +39,8 @@ fn spec_license_uses_spdx_checks_without_changing_the_package_license() {
             .contains("spec.license")
     );
     let span = &finding["span"];
-    let start = span["start_byte"].as_u64().unwrap() as usize;
-    let end = span["end_byte"].as_u64().unwrap() as usize;
+    let start = span["start_byte"].as_integer().unwrap() as usize;
+    let end = span["end_byte"].as_integer().unwrap() as usize;
     assert_eq!(
         &invalid[start..end],
         SPEC_LICENSE.replace("MulanPSL-2.0", "not-a-real-license")
@@ -43,7 +49,8 @@ fn spec_license_uses_spdx_checks_without_changing_the_package_license() {
         dir.path(),
         &[
             "edit",
-            "ed.spec",
+            "--spec=ed.spec",
+            "--apply",
             "--set",
             "spec.license=not-a-real-license",
         ],
@@ -59,13 +66,20 @@ fn spec_license_uses_spdx_checks_without_changing_the_package_license() {
 
     let expression = "MIT AND (Apache-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0)";
     let assignment = format!("spec.license={expression}");
-    let output = run(dir.path(), &["edit", "ed.spec", "--set", &assignment]);
+    let output = run(
+        dir.path(),
+        &["edit", "--spec=ed.spec", "--set", &assignment, "--apply"],
+    );
     assert!(output.status.success(), "{output:?}");
     assert_file(
         dir.path().join("ed.spec"),
         &(SPEC.replace("MulanPSL-2.0", expression)),
     );
-    assert!(run(dir.path(), &["check", "ed.spec"]).status.success());
+    assert!(
+        run(dir.path(), &["check", "--spec=ed.spec"])
+            .status
+            .success()
+    );
 }
 
 #[test]
@@ -76,12 +90,13 @@ fn spec_license_header_scope_keeps_missing_and_duplicate_edit_policy() {
         SPEC.replace(SPEC_LICENSE, ""),
         SPEC.replace(SPEC_LICENSE, &format!("{SPEC_LICENSE}{second_header}")),
     ] {
+        let _ = fs::remove_dir_all(dir.path().join(".ruyipack-stage"));
         fs::write(dir.path().join("ed.spec"), &source).unwrap();
-        let checked = run(dir.path(), &["check", "ed.spec"]);
+        let checked = run(dir.path(), &["check", "--spec=ed.spec"]);
         assert!(checked.status.success(), "{checked:?}");
         let edited = run(
             dir.path(),
-            &["edit", "ed.spec", "--set", "spec.license=MIT"],
+            &["edit", "--spec=ed.spec", "--set", "spec.license=MIT"],
         );
         assert_eq!(edited.status.code(), Some(1), "{edited:?}");
         assert_file(dir.path().join("ed.spec"), &source);
@@ -94,7 +109,7 @@ fn spec_license_header_scope_keeps_missing_and_duplicate_edit_policy() {
         ),
     );
     fs::write(dir.path().join("ed.spec"), source).unwrap();
-    let output = run(dir.path(), &["check", "ed.spec"]);
+    let output = run(dir.path(), &["check", "--spec=ed.spec"]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("spec.license"));
 
@@ -107,13 +122,14 @@ fn spec_license_header_scope_keeps_missing_and_duplicate_edit_policy() {
         SPEC.replace("%files\n", &script),
     )
     .unwrap();
-    let output = run(dir.path(), &["check", "ed.spec"]);
+    let output = run(dir.path(), &["check", "--spec=ed.spec"]);
     assert!(output.status.success(), "{output:?}");
 }
 
 #[test]
 fn invalid_license_is_rejected_by_check_gen_and_edit_without_writes() {
     let dir = tempfile::tempdir().unwrap();
+    success(&run(dir.path(), &["init"]));
     let invalid = "Definitely-Not-A-License";
     fs::write(dir.path().join("ed.spec"), SPEC).unwrap();
     fs::write(
@@ -126,12 +142,19 @@ fn invalid_license_is_rejected_by_check_gen_and_edit_without_writes() {
         MANIFEST.replace(LICENSE, invalid),
     )
     .unwrap();
+    authoring_workspace(
+        dir.path(),
+        "review",
+        "ed",
+        &fs::read_to_string(dir.path().join("ed.toml")).unwrap(),
+    );
     for args in [
-        vec!["check", "invalid.spec"],
-        vec!["gen", "ed", "--force"],
+        vec!["check", "--spec=invalid.spec"],
+        vec!["gen", "review", "--offline", "--spec=auto", "--force"],
         vec![
             "edit",
-            "ed.spec",
+            "--spec=ed.spec",
+            "--apply",
             "--set",
             "package.license=Definitely-Not-A-License",
         ],
@@ -187,34 +210,39 @@ fn license_checks_visit_subpackages_and_conditions_without_expanding_macros() {
         } else {
             format!("{head}{extra}%description{sections}")
         };
+        let _ = fs::remove_dir_all(dir.path().join(".ruyipack-stage"));
         fs::write(dir.path().join("ed.spec"), &source).unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_ruyipack"))
             .current_dir(dir.path())
-            .args(["check", "ed.spec", "--format", "json"])
+            .args(["check", "--spec=ed.spec", "--format", "toml"])
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(1), "{extra}: {output:?}");
         assert!(output.stderr.is_empty());
-        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(report["evidence"]["status"], status, "{report}");
+        let report = super::support::machine_report(&output);
+        assert_eq!(
+            report["evidence"]["status"].as_str(),
+            Some(status),
+            "{report}"
+        );
         assert_eq!(
             report["evidence"]["incomplete_reasons"],
-            serde_json::json!(reasons),
+            toml::Value::try_from(reasons).unwrap(),
             "{report}"
         );
         let findings: Vec<_> = report["findings"]
             .as_array()
             .unwrap()
             .iter()
-            .filter(|finding| finding["code"] == "RPK001")
+            .filter(|finding| finding["code"].as_str() == Some("RPK001"))
             .collect();
         assert_eq!(findings.len(), severities.len(), "{report}");
         for (finding, severity) in findings.iter().zip(severities) {
-            assert_eq!(finding["producer"], "ruyipack");
-            assert_eq!(finding["severity"], *severity);
+            assert_eq!(finding["producer"].as_str(), Some("ruyipack"));
+            assert_eq!(finding["severity"].as_str(), Some(*severity));
             let span = &finding["span"];
-            let start = usize::try_from(span["start_byte"].as_u64().unwrap()).unwrap();
-            let end = usize::try_from(span["end_byte"].as_u64().unwrap()).unwrap();
+            let start = usize::try_from(span["start_byte"].as_integer().unwrap()).unwrap();
+            let end = usize::try_from(span["end_byte"].as_integer().unwrap()).unwrap();
             assert!(source[start..end].starts_with("License:"));
         }
         assert_file(dir.path().join("ed.spec"), &source);
@@ -246,8 +274,8 @@ fn literal_metadata_checks_reject_invalid_edits_and_keep_sources_unchanged() {
         fs::write(directory.path().join("invalid.spec"), &invalid).unwrap();
         let assignment = format!("{field}={value}");
         for args in [
-            vec!["check", "invalid.spec"],
-            vec!["edit", "ed.spec", "--set", &assignment],
+            vec!["check", "--spec=invalid.spec"],
+            vec!["edit", "--spec=ed.spec", "--set", &assignment, "--apply"],
         ] {
             let output = run(directory.path(), &args);
             assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
@@ -271,7 +299,7 @@ fn editor_and_saved_drafts_share_metadata_checks() {
             directory.path(),
             &[
                 "edit",
-                "ed.spec",
+                "--spec=ed.spec",
                 "--field",
                 "package.version",
                 "--prepare",
@@ -286,7 +314,7 @@ fn editor_and_saved_drafts_share_metadata_checks() {
         "[package]\nversion = '1 2'\n",
     )
     .unwrap();
-    let output = run(directory.path(), &["edit", "--from", "drafts"]);
+    let output = run(directory.path(), &["edit", "--from", "drafts", "--apply"]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("RPK002"));
     assert_file(directory.path().join("ed.spec"), SPEC);
@@ -303,18 +331,19 @@ fn editor_and_saved_drafts_share_metadata_checks() {
             .env("TMPDIR", directory.path())
             .args([
                 "edit",
-                "ed.spec",
+                "--spec=ed.spec",
                 "--field",
                 "package.version",
                 "--editor",
                 "sh editor.sh",
+                "--apply",
             ])
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(1), "{output:?}");
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(
-            error.contains("RPK002") && error.contains("Drafts retained"),
+            error.contains("RPK002") && error.contains("stage"),
             "{error}"
         );
         assert_file(directory.path().join("ed.spec"), SPEC);
@@ -336,7 +365,7 @@ fn metadata_checks_preserve_literal_versions_http_and_unevaluated_macros() {
             directory.path(),
             &[
                 "edit",
-                "ed.spec",
+                "--spec=ed.spec",
                 "--set",
                 &format!("{field}={value}"),
                 "--stdout",
@@ -352,7 +381,7 @@ fn metadata_checks_preserve_literal_versions_http_and_unevaluated_macros() {
     )
     .unwrap();
     assert!(
-        run(directory.path(), &["check", "ed.spec"])
+        run(directory.path(), &["check", "--spec=ed.spec"])
             .status
             .success()
     );
@@ -361,6 +390,7 @@ fn metadata_checks_preserve_literal_versions_http_and_unevaluated_macros() {
 #[test]
 fn autotools_requirements_are_checked_by_check_gen_and_saved_edits() {
     let directory = tempfile::tempdir().unwrap();
+    success(&run(directory.path(), &["init"]));
     fs::write(directory.path().join("ed.spec"), SPEC).unwrap();
     fs::write(
         directory.path().join("invalid.spec"),
@@ -377,7 +407,7 @@ fn autotools_requirements_are_checked_by_check_gen_and_saved_edits() {
             directory.path(),
             &[
                 "edit",
-                "ed.spec",
+                "--spec=ed.spec",
                 "--field",
                 "build-requires",
                 "--prepare",
@@ -396,20 +426,29 @@ fn autotools_requirements_are_checked_by_check_gen_and_saved_edits() {
     fs::write(&draft, toml::to_string_pretty(&doc).unwrap()).unwrap();
     let checked = run(
         directory.path(),
-        &["edit", "--from", "drafts", "--check", "--format", "json"],
+        &["edit", "--from", "drafts", "--check", "--format", "toml"],
     );
     assert_eq!(checked.status.code(), Some(1));
     assert!(checked.stderr.is_empty());
-    let report: serde_json::Value = serde_json::from_slice(&checked.stdout).unwrap();
-    assert_eq!(report["files"][0]["introduced_static_blockers"], true);
+    let report = super::support::machine_report(&checked);
     assert_eq!(
-        report["files"][0]["baseline_report"]["evidence"]["status"],
-        "pass"
+        report["files"][0]["introduced_static_blockers"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        report["files"][0]["baseline_report"]["evidence"]["status"].as_str(),
+        Some("pass")
+    );
+    authoring_workspace(
+        directory.path(),
+        "review",
+        "ed",
+        &fs::read_to_string(directory.path().join("ed.toml")).unwrap(),
     );
     for args in [
-        vec!["check", "invalid.spec"],
-        vec!["gen", "ed", "--force"],
-        vec!["edit", "--from", "drafts"],
+        vec!["check", "--spec=invalid.spec"],
+        vec!["gen", "review", "--offline", "--spec=auto", "--force"],
+        vec!["edit", "--from", "drafts", "--apply"],
     ] {
         let output = run(directory.path(), &args);
         assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
@@ -435,14 +474,21 @@ fn build_requirements_do_not_guess_conditions_macros_or_unknown_systems() {
             SPEC.replace("BuildRequires:  autoconf", dependency),
         )
         .unwrap();
-        let output = run(directory.path(), &["check", "ed.spec", "--format", "json"]);
-        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(report["evidence"]["status"], "incomplete", "{report}");
+        let output = run(
+            directory.path(),
+            &["check", "--spec=ed.spec", "--format", "toml"],
+        );
+        let report = super::support::machine_report(&output);
+        assert_eq!(
+            report["evidence"]["status"].as_str(),
+            Some("incomplete"),
+            "{report}"
+        );
         assert_eq!(
             report["evidence"]["incomplete_reasons"],
-            serde_json::json!(["unresolved-build-requirements"])
+            toml::Value::Array(vec![toml::Value::from("unresolved-build-requirements")])
         );
-        assert_eq!(report["findings"][0]["severity"], "warn");
+        assert_eq!(report["findings"][0]["severity"].as_str(), Some("warn"));
         assert_eq!(output.status.code(), Some(1));
     }
     for system in ["meson", "custom-system", "%{build_system}"] {
@@ -453,12 +499,15 @@ fn build_requirements_do_not_guess_conditions_macros_or_unknown_systems() {
             )
             .replace("BuildRequires:  autoconf\n", "");
         fs::write(directory.path().join("ed.spec"), source).unwrap();
-        let output = run(directory.path(), &["check", "ed.spec", "--format", "json"]);
+        let output = run(
+            directory.path(),
+            &["check", "--spec=ed.spec", "--format", "toml"],
+        );
         assert!(output.status.success());
-        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let report = super::support::machine_report(&output);
         assert_eq!(
             report["evidence"]["incomplete_reasons"],
-            serde_json::json!([])
+            toml::Value::Array(vec![])
         );
     }
 }
@@ -488,29 +537,35 @@ fn independent_incomplete_reasons_survive_each_other_and_confirmed_failures() {
     ] {
         let path = directory.path().join("ed.spec");
         fs::write(&path, &source).unwrap();
-        let output = run(directory.path(), &["check", "ed.spec", "--format", "json"]);
+        let output = run(
+            directory.path(),
+            &["check", "--spec=ed.spec", "--format", "toml"],
+        );
         assert_eq!(output.status.code(), Some(1));
         assert!(output.stderr.is_empty());
-        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(report["format_version"], 2);
-        assert_eq!(report["evidence"]["status"], status);
+        let report = super::support::machine_report(&output);
+        assert_eq!(report["format_version"].as_integer(), Some(2));
+        assert_eq!(report["evidence"]["status"].as_str(), Some(status));
         assert_eq!(
             report["evidence"]["incomplete_reasons"],
-            serde_json::json!(["unresolved-license", "unresolved-build-requirements"])
+            toml::Value::Array(vec![
+                toml::Value::from("unresolved-license"),
+                toml::Value::from("unresolved-build-requirements")
+            ])
         );
         let findings = report["findings"].as_array().unwrap();
         for rule in ["RPK001", "RPK004"] {
-            assert!(
-                findings
-                    .iter()
-                    .any(|f| f["code"] == rule && f["severity"] == "warn")
-            );
+            assert!(findings.iter().any(
+                |f| f["code"].as_str() == Some(rule) && f["severity"].as_str() == Some("warn")
+            ));
         }
         assert_eq!(
-            findings.iter().any(|f| f["severity"] == "deny"),
+            findings
+                .iter()
+                .any(|f| f["severity"].as_str() == Some("deny")),
             status == "fail"
         );
-        let human = run(directory.path(), &["check", "ed.spec"]);
+        let human = run(directory.path(), &["check", "--spec=ed.spec"]);
         assert_eq!(human.status.code(), Some(1));
         let diagnostics = String::from_utf8(human.stderr).unwrap();
         assert!(diagnostics.contains("license expressions require RPM evaluation"));
@@ -563,13 +618,21 @@ fn static_policy_changes_admission_without_inventing_source_facts() {
         ("".into(), false, false),
     ] {
         let source = format!("{}{}{}", &SPEC[..start], declarations, &SPEC[end..]);
+        let _ = fs::remove_dir_all(dir.path().join(".ruyipack-stage"));
         fs::write(dir.path().join("ed.spec"), &source).unwrap();
         for policy in ["authoring", "submit"] {
             let output = run(
                 dir.path(),
-                &["check", "ed.spec", "--format", "json", "--policy", policy],
+                &[
+                    "check",
+                    "--spec=ed.spec",
+                    "--format",
+                    "toml",
+                    "--policy",
+                    policy,
+                ],
             );
-            let report = super::support::json_line(&output);
+            let report = super::support::machine_report(&output);
             let evidence = &report["evidence"];
             let blocks = policy == "submit";
             let expected_status = if blocks && violation {
@@ -584,20 +647,32 @@ fn static_policy_changes_admission_without_inventing_source_facts() {
                 Some(i32::from(blocks && (violation || unknown))),
                 "{declarations}: {report}"
             );
-            assert_eq!(evidence["status"], expected_status);
-            assert_eq!(evidence["policy"], policy);
-            assert_eq!(evidence["source_uncertainty"].is_string(), unknown);
+            assert_eq!(evidence["status"].as_str(), Some(expected_status));
+            assert_eq!(evidence["policy"].as_str(), Some(policy));
+            assert_eq!(
+                evidence
+                    .get("source_uncertainty")
+                    .is_some_and(toml::Value::is_str),
+                unknown
+            );
             assert_eq!(
                 evidence["incomplete_reasons"],
-                if blocks && unknown {
-                    serde_json::json!(["unresolved-sources"])
-                } else {
-                    serde_json::json!([])
-                }
+                toml::Value::try_from(
+                    &(if blocks && unknown {
+                        toml::Value::Array(vec![toml::Value::from("unresolved-sources")])
+                    } else {
+                        toml::Value::Array(vec![])
+                    })
+                )
+                .unwrap()
             );
             assert_eq!(
                 evidence["not_checked"],
-                serde_json::json!(["source-content", "native-rpm", "build"])
+                toml::Value::Array(vec![
+                    toml::Value::from("source-content"),
+                    toml::Value::from("native-rpm"),
+                    toml::Value::from("build")
+                ])
             );
             let findings = report["findings"].as_array().unwrap();
             assert_eq!(
@@ -606,22 +681,28 @@ fn static_policy_changes_admission_without_inventing_source_facts() {
                 "{declarations}: {report}"
             );
             if violation {
-                assert_eq!(findings[0]["code"], "RPK005");
+                assert_eq!(findings[0]["code"].as_str(), Some("RPK005"));
                 assert_eq!(
-                    findings[0]["severity"],
-                    if blocks { "deny" } else { "warn" }
+                    findings[0]["severity"].as_str(),
+                    Some(if blocks { "deny" } else { "warn" })
                 );
                 let span = &findings[0]["span"];
                 assert!(
-                    source[span["start_byte"].as_u64().unwrap() as usize
-                        ..span["end_byte"].as_u64().unwrap() as usize]
+                    source[span["start_byte"].as_integer().unwrap() as usize
+                        ..span["end_byte"].as_integer().unwrap() as usize]
                         .starts_with("Source0:")
                 );
             }
         }
         let edited = run(
             dir.path(),
-            &["edit", "ed.spec", "--set", "package.version=2", "--diff"],
+            &[
+                "edit",
+                "--spec=ed.spec",
+                "--set",
+                "package.version=2",
+                "--diff",
+            ],
         );
         assert!(edited.status.success(), "{declarations}: {edited:?}");
         assert!(String::from_utf8_lossy(&edited.stdout).contains("+Version:        2"));
@@ -641,25 +722,43 @@ fn source_definitions_are_recorded_without_claiming_native_evaluation() {
     let output = run(
         dir.path(),
         &[
-            "check", "ed.spec", "--policy", "submit", "--format", "json", "-D", definition,
+            "check",
+            "--spec=ed.spec",
+            "--policy",
+            "submit",
+            "--format",
+            "toml",
+            "-D",
+            definition,
         ],
     );
     assert!(output.status.success(), "{output:?}");
-    let report = super::support::json_line(&output);
+    let report = super::support::machine_report(&output);
     assert_eq!(
         report["evidence"]["defines"],
-        serde_json::json!([definition])
+        toml::Value::Array(vec![toml::Value::from(definition)])
     );
-    assert!(report["evidence"]["source_uncertainty"].is_null());
+    assert!(report["evidence"].get("source_uncertainty").is_none());
     assert_file(dir.path().join("ed.spec"), &source);
     let output = run(
         dir.path(),
         &[
-            "check", "ed.spec", "--policy", "submit", "--format", "json", "-D", "broken(",
+            "check",
+            "--spec=ed.spec",
+            "--policy",
+            "submit",
+            "--format",
+            "toml",
+            "-D",
+            "broken(",
         ],
     );
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let report = super::support::json_line(&output);
-    assert_eq!(report["evidence"]["status"], "incomplete");
-    assert!(report["evidence"]["source_uncertainty"].is_string());
+    let report = super::support::machine_report(&output);
+    assert_eq!(report["evidence"]["status"].as_str(), Some("incomplete"));
+    assert!(
+        report["evidence"]
+            .get("source_uncertainty")
+            .is_some_and(toml::Value::is_str)
+    );
 }

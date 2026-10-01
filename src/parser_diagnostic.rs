@@ -6,14 +6,14 @@
 
 //! First-party parser diagnostic results and their human-readable output.
 
-use std::{
-    io::{self, Write},
-    path::Path,
-};
+use std::io::{self, Write};
 
 use serde::Serialize;
 
-use crate::source_location::SourceLocation;
+use crate::{
+    output_cli::{self, HumanLevel},
+    source_location::SourceLocation,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -27,41 +27,60 @@ pub(crate) enum Severity {
 #[derive(Serialize)]
 pub(crate) struct Diagnostic {
     pub(crate) severity: Severity,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) span: Option<SourceLocation>,
     pub(crate) message: String,
     pub(crate) notes: Vec<String>,
 }
 
 /// Writes every recoverable issue reported by the parser.
-pub(crate) fn write(
-    path: &Path,
-    diagnostics: &[Diagnostic],
-    writer: &mut impl Write,
-) -> io::Result<()> {
+pub(crate) fn write(diagnostics: &[Diagnostic], writer: &mut impl Write) -> io::Result<()> {
     for diagnostic in diagnostics {
-        let severity = match diagnostic.severity {
-            Severity::Warning => "warning",
-            Severity::Error => "error",
-            Severity::Unknown => "diagnostic",
+        let level = match diagnostic.severity {
+            Severity::Warning => HumanLevel::Warn,
+            Severity::Error => HumanLevel::Error,
+            Severity::Unknown => HumanLevel::Info,
         };
-        let code = diagnostic
-            .code
-            .as_deref()
-            .map_or_else(String::new, |code| format!("[{code}]"));
-        let location = diagnostic.span.as_ref().map_or_else(String::new, |span| {
-            format!(":{}:{}", span.start.0, span.start.1)
-        });
-
-        writeln!(
+        output_cli::diagnostic(
             writer,
-            "{}{location}: {severity}{code}: {}",
-            path.display(),
-            diagnostic.message
+            level,
+            diagnostic.span.as_ref().map(|span| span.start),
+            diagnostic.code.as_deref(),
+            format_args!("{}", diagnostic.message),
         )?;
         for note in &diagnostic.notes {
             writeln!(writer, "  note: {note}")?;
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parser_errors_are_errors_not_warnings_and_notes_stay_plain() {
+        let diagnostics =
+            [Severity::Warning, Severity::Error, Severity::Unknown].map(|severity| Diagnostic {
+                severity,
+                code: Some("rpmspec/TEST".into()),
+                span: None,
+                message: "parser message".into(),
+                notes: vec!["detail".into()],
+            });
+        let mut output = Vec::new();
+        write(&diagnostics, &mut output).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        // Unit-test runners may inherit a terminal; the process tests separately
+        // assert the exact ANSI/no-ANSI bytes on both output streams.
+        assert_eq!(
+            dialoguer::console::strip_ansi_codes(&output),
+            "[WARN] spec [rpmspec/TEST]: parser message\n  note: detail\n\
+             [ERROR] spec [rpmspec/TEST]: parser message\n  note: detail\n\
+             [INFO] spec [rpmspec/TEST]: parser message\n  note: detail\n"
+        );
+    }
 }

@@ -6,15 +6,9 @@
 
 //! Command-line syntax and help.
 
-use std::path::PathBuf;
-
 use clap::{Parser, Subcommand};
 
-use crate::{
-    edit, init,
-    output_cli::{self, ReportFormat},
-    source_hash, verify_sources,
-};
+use crate::{edit, new, source_hash, verify_sources};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -26,56 +20,32 @@ pub(crate) struct Cli {
 #[derive(Subcommand)]
 #[command(defer = true)]
 pub(crate) enum Command {
-    /// Creates a package manifest template in an existing directory.
-    Init(init::Options),
-    /// Prints the authoring manifest JSON Schema for offline editor completion and structural checks.
-    Schema,
+    /// Initializes workspace configuration, optionally cloning a recipe Git repository.
+    Init(crate::workspace::Options),
+    /// Creates a named package development checkout and authoring scaffold.
+    New(new::Options),
+    /// Prints editor schemas for manifests or selected editable SPEC fields.
+    #[command(subcommand)]
+    Schema(crate::schema::Options),
     /// Edits SPEC fields through TOML or command-line assignments.
     Edit(edit::Options),
-    /// Resolves a Source statically and reports the SHA-256 of its downloaded bytes.
-    SourceHash(source_hash::Options),
-    /// Downloads remote Sources and compares declared digests without changing input files.
-    VerifySources(verify_sources::Options),
+    /// Calculates or verifies remote Source digests without changing recipes.
+    #[command(subcommand)]
+    Source(SourceCommand),
     /// Checks package metadata and optionally staged Source/Patch files, without downloading.
     Check(crate::check::Options),
-    /// Prints the normalized main-package tags from an RPM SPEC file.
-    Inspect {
-        /// RPM SPEC file to inspect.
-        #[arg(value_name = "SPEC")]
-        spec: PathBuf,
-        /// Selects human or JSON output.
-        #[arg(long, value_enum, default_value_t = ReportFormat::Human)]
-        format: ReportFormat,
-    },
-    /// Generates an openRuyi SPEC from a package manifest.
-    #[command(
-        after_help = "The default output is NAME.spec beside the manifest. Its parent directory must exist.\n\
-For different existing content, select an output option or use the terminal menu.\n\
-Without a usable terminal or an explicit action, conflicting output is an error.\n\
-Sources with missing digests are downloaded automatically by the built-in HTTP client.\n\
-Failures warn and leave that digest missing; use --offline to disable downloads."
-    )]
-    Gen {
-        /// Package to generate.
-        #[arg(value_name = "NAME")]
-        name: String,
-        /// Manifest to read; defaults to NAME.toml in the current directory.
-        #[arg(long, value_name = "PATH")]
-        manifest: Option<PathBuf>,
-        /// Skip automatic downloads for missing Source SHA-256 digests.
-        /// Missing digests remain warnings; existing digests and the TOML are never changed.
-        #[arg(long)]
-        offline: bool,
-        /// Checks generation without writing SPEC files or consulting output conflicts.
-        #[arg(long, conflicts_with_all = ["path", "stdout", "diff", "force", "skip_existing"])]
-        check: bool,
-        /// Selects the generation check report format.
-        // Conflicts can waive `requires`, so reject non-check modes on this option too.
-        #[arg(long, value_enum, requires = "check", conflicts_with_all = ["path", "stdout", "diff", "force", "skip_existing"])]
-        format: Option<ReportFormat>,
-        #[command(flatten, next_help_heading = "Output options")]
-        output: output_cli::OutputOptions,
-    },
+    /// Inspects SPEC facts or prints selected editable fields.
+    Inspect(crate::inspect::Options),
+    /// Completes a bound WORK and optionally publishes its checked SPEC.
+    Gen(crate::generate::Options),
+}
+
+#[derive(Subcommand)]
+pub(crate) enum SourceCommand {
+    /// Resolve one Source and calculate its downloaded SHA-256.
+    Hash(source_hash::Options),
+    /// Compare downloaded Sources with declared digests; never write them back.
+    Verify(verify_sources::Options),
 }
 
 #[cfg(test)]
@@ -85,21 +55,14 @@ mod tests {
 
     #[test]
     fn report_format_does_not_mix_with_payload_outputs() {
-        let edit_modes: &[&[&str]] = &[
-            &["--view"],
-            &["--schema"],
-            &["--diff"],
-            &["--stdout"],
-            &["--editor", "vim"],
-        ];
+        let edit_modes: &[&[&str]] = &[&["--stdout"], &["--editor", "vim"]];
         let gen_modes: &[&[&str]] = &[
-            &["--output", "other.spec"],
             &["--stdout"],
             &["--diff"],
             &["--force"],
             &["--skip-existing"],
         ];
-        for (command, input, modes) in [("edit", "ed.spec", edit_modes), ("gen", "ed", gen_modes)] {
+        for (command, input, modes) in [("edit", "ed", edit_modes), ("gen", "ed", gen_modes)] {
             let parse = |args: &[&str]| {
                 Cli::try_parse_from(
                     ["ruyipack", command, input]
@@ -107,7 +70,7 @@ mod tests {
                         .chain(args.iter().copied()),
                 )
             };
-            for format in ["human", "json"] {
+            for format in ["human", "toml"] {
                 assert!(parse(&["--check", "--format", format]).is_ok());
                 if command == "gen" {
                     assert_eq!(
@@ -115,10 +78,11 @@ mod tests {
                         Some(ErrorKind::MissingRequiredArgument)
                     );
                 } else {
+                    assert!(parse(&["--diff", "--format", format]).is_ok());
                     for action in [
                         vec!["--prepare", "drafts"],
                         vec!["--set", "package.version=2"],
-                        vec!["--output", "other.spec", "--force"],
+                        vec!["--apply", "--output", "other.spec", "--force"],
                     ] {
                         let mut args = vec!["--format", format];
                         args.extend(action);
@@ -153,12 +117,11 @@ mod tests {
             ["--stdout", "--diff"],
             ["--stdout", "--force"],
             ["--stdout", "--skip-existing"],
-            ["--stdout", "--output=other.spec"],
             ["--check", "--stdout"],
             ["--check", "--diff"],
             ["--check", "--force"],
             ["--check", "--skip-existing"],
-            ["--check", "--output=other.spec"],
+            ["--hash", "--offline"],
         ] {
             assert_eq!(
                 Cli::try_parse_from(["ruyipack", "gen", "ed"].into_iter().chain(args))

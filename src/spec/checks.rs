@@ -18,6 +18,8 @@ pub(super) fn run(parsed: &super::ParsedSpec<'_>, defines: &[String]) -> RuleRes
         result: RuleResult::default(),
         build: BuildRequirements::default(),
         conditional: false,
+        subpackage: false,
+        build_unproven: false,
     };
     visitor.visit_spec(spec);
     // Match the top-level comments exposed as spec.license by header editing,
@@ -36,7 +38,12 @@ pub(super) fn run(parsed: &super::ParsedSpec<'_>, defines: &[String]) -> RuleRes
             );
         }
     }
-    let build = visitor.build.check();
+    let mut build = visitor.build.check();
+    if visitor.build_unproven {
+        for finding in &mut build.findings {
+            finding.rule_inputs = None;
+        }
+    }
     visitor.result.findings.extend(build.findings);
     visitor
         .result
@@ -56,8 +63,8 @@ fn check_sources(parsed: &super::ParsedSpec<'_>, defines: &[String], result: &mu
             return;
         }
     };
-    result.source_uncertainty = resolved.incomplete;
-    for (number, source) in resolved.sources {
+    result.source_uncertainty.clone_from(&resolved.incomplete);
+    for (number, source) in &resolved.sources {
         let remote = match &source.url {
             Ok(url) => url.split_once(':').is_some_and(|(scheme, _)| {
                 scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")
@@ -71,12 +78,10 @@ fn check_sources(parsed: &super::ParsedSpec<'_>, defines: &[String], result: &mu
         };
         let problem = match &source.digest {
             Err(reason) => Some(reason.as_str()),
-            Ok(Some(hash)) if crate::source::validate_sha256(hash).is_err() => Some(
-                "invalid sha256; expected 64 hexadecimal digits. Repair the digest before submitting the package",
-            ),
-            Ok(None) if remote => Some(
-                "no sha256; openRuyi requires SHA-256 for HTTP(S) sources. gen attempts missing digests automatically unless --offline; for an existing SPEC, use edit --hash-source N. A passing static check is not source verification",
-            ),
+            Ok(Some(hash)) if crate::source::validate_sha256(hash).is_err() => {
+                Some("invalid sha256; expected 64 hexadecimal digits")
+            }
+            Ok(None) if remote => Some("no sha256; openRuyi requires SHA-256 for HTTP(S) sources"),
             _ => None,
         };
         if let Some(problem) = problem {
@@ -85,8 +90,9 @@ fn check_sources(parsed: &super::ParsedSpec<'_>, defines: &[String], result: &mu
                 producer: "ruyipack",
                 code: rule.code,
                 severity: rule.severity,
-                span: source.span,
+                span: source.span.clone(),
                 message: format!("Source{number}: {problem}"),
+                rule_inputs: None,
             });
         }
     }
@@ -96,9 +102,18 @@ struct CheckVisitor {
     result: RuleResult,
     build: BuildRequirements,
     conditional: bool,
+    subpackage: bool,
+    build_unproven: bool,
 }
 
 impl<'ast> Visit<'ast> for CheckVisitor {
+    fn visit_section(&mut self, section: &'ast rpm_spec::ast::Section<Span>) {
+        let previous = self.subpackage;
+        self.subpackage |= matches!(section, rpm_spec::ast::Section::Package { .. });
+        rpm_spec_analyzer::visit::walk_section(self, section);
+        self.subpackage = previous;
+    }
+
     fn visit_item(&mut self, item: &'ast rpm_spec::ast::SpecItem<Span>) {
         use rpm_spec::ast::SpecItem;
         match item {
@@ -132,15 +147,18 @@ impl<'ast> Visit<'ast> for CheckVisitor {
             _ => None,
         };
         let span = super::diagnostic::location(item.data);
+        let first_finding = self.result.findings.len();
         match &item.tag {
             Tag::License => license::check(&mut self.result, "package.license", literal, span),
             Tag::Other(name) if name.eq_ignore_ascii_case("BuildSystem") => {
+                self.build_unproven |= self.subpackage;
                 let system = literal
                     .filter(|_| !self.conditional)
                     .map(|s| s.trim().to_owned());
                 self.build.systems.push((system, span));
             }
             Tag::BuildRequires => {
+                self.build_unproven |= self.subpackage;
                 if !self.conditional
                     && item.qualifiers.is_empty()
                     && let TagValue::Dep(DepExpr::Atom(atom)) = &item.value
@@ -163,6 +181,13 @@ impl<'ast> Visit<'ast> for CheckVisitor {
                 if let Some(finding) = field.finding(literal, span) {
                     self.result.findings.push(finding);
                 }
+            }
+        }
+        // The lexical rules share field names across branches and subpackages;
+        // those names alone cannot prove that a retained error has the same owner.
+        if self.conditional || self.subpackage {
+            for finding in &mut self.result.findings[first_finding..] {
+                finding.rule_inputs = None;
             }
         }
     }

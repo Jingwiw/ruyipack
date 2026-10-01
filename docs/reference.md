@@ -12,30 +12,106 @@ SPDX-License-Identifier: MulanPSL-2.0
 
 This reference covers semantics beyond `ruyipack COMMAND --help`.
 
-## Initialize
+## Workspace initialization
 
-`init NAME` writes `NAME.toml`; `--dir` selects an existing output directory.
+`ruyipack init [PATH] [--clone URL]` creates `.ruyiconfig/config.toml` and the
+embedded openRuyi build configuration in an empty directory (the current directory
+by default). Without `--clone`, initialization needs no Git, Docker, or network
+access. Initialization never starts Docker or creates a package. Existing markers
+cause a warning, including interrupted or damaged initialization; files are never
+repaired or overwritten implicitly.
+
+The configuration uses three paths: `recipes` defaults to `openruyi` and may be
+external; `work` defaults to `work` and stays inside the workspace; `specs` defaults
+to `SPECS` relative to the recipe repository. Re-running bare `init` diagnoses
+invalid base configuration without requiring the recipe repository or build tools.
+
+`--clone URL` first completes initialization, then runs Git clone into the configured
+`recipes` path. Git or network failure exits 1 while retaining the initialized
+configuration and any files Git left behind; the diagnostic distinguishes successful
+initialization from failed cloning. Re-running bare `init` never clones. Explicit
+`--clone` can retry an already valid workspace only while its configured recipe
+destination is absent. Any existing destination, even an empty or interrupted
+directory, is refused without overwrite; inspect retained files before retrying.
+An invalid workspace configuration blocks cloning and is not repaired.
+Git clone has a 300-second execution budget; other Git calls have 30 seconds.
+User Git configuration, filters, and SSH/credential helpers remain trusted;
+this is not a sandbox.
+
+## New development area and scaffold
+
+`new WORK [--pkgname PKG]` discovers the nearest `.ruyiconfig` above the current
+directory. Prepare its configured recipe Git repository with a committed `main`
+first. PKG defaults to WORK; `new ed-test --pkgname ed` creates:
+
+```text
+work/ed-test/
+  .config.toml                 # saved pkg = "ed" binding
+  ed.toml                      # author input, outside Git
+  checkout/                    # one linked Git worktree
+    SPECS/ed/
+```
+
+The checkout starts at the recipe repository's exact committed `main` on a separate
+branch. It preserves non-SPECS directories and selects only the bound package
+under SPECS; shared files directly under SPECS may also remain. Uncommitted files
+in the selected package block creation. Unrelated dirty recipe files stay untouched
+and are not copied. A package absent from that commit requires explicit `--pkgname PKG` for a new scaffold;
+the scaffold header explains that existing SPEC contents are not imported.
+Git uses trusted repository/user configuration, including checkout filters; this is
+not a sandbox, and configured filters may perform file or network I/O.
+
+The saved binding is reused by `new WORK`. A conflicting `--pkgname` is rejected even
+with `--force`; repeating `new` never resets the checkout or changes its branch.
+Interrupted areas are diagnosed rather than overwritten. `--stdout` and `--diff`
+perform preflight but create no area, binding or Git worktree. TOML output follows
+the [shared output rules](#output-and-file-safety), including preservation of manual
+content unless `--force` explicitly replaces the scaffold.
+
 No build system is selected by default. `--build-system autotools|cmake|meson`
 adds stage guidance; `--comments full` adds explanations and a commented
 subpackage example without changing values. Autotools prefills `autoconf`,
 `automake`, `libtool`, and `make`. CMake/Meson do not prefill a common tool set.
 Declare actual dependencies and confirm macros in the target environment.
 
-The scaffold saves the current year and configured Git author once. An unavailable
-or unsuitable author leaves an empty contributor list and a warning. Review these
-values and fill in package facts, sources, dependencies, stages, and files; `gen`
-uses saved values, not the current identity or date.
+The scaffold saves the current year and the configured Git author from the recipe
+repository (or existing checkout). An unavailable or unsuitable author leaves an
+empty contributor list and a warning. Fill in package facts, sources, dependencies,
+stages and files; `gen` uses saved values, not the current identity or date.
+Use `gen WORK` to read its saved `PKG.toml` and explicitly generate
+`checkout/SPECS/PKG/PKG.spec`. A new generation never imports an existing SPEC
+back into TOML, without implicit native generation.
 
-`--specs-dir` selects the local package-name lookup directory; otherwise `init`
-searches for the nearest `SPECS` above the output directory. Any existing entry,
-including untracked entries, blocks that name even with `--force` or `--stdout`.
-No lookup directory produces a warning; an invalid explicit directory is an error.
-This is not a query of Git, an RPM repository, or upstream package availability.
-TOML output uses the [shared output rules](#output-and-file-safety).
+## Common SPEC selection
+
+Human diagnostics identify the input once, then use `spec[LINE:COLUMN]` (or
+`spec` when no location is known). TOML retains full paths and source positions.
+
+A positional argument always selects WORK. The first implicit package lookup
+requires committed `SPECS/WORK/WORK.spec`; `--pkgname PKG` explicitly binds another
+package. Without a match or explicit binding, the command fails before allocation.
+For existing WORK, the saved binding wins and conflicting `--pkgname` fails.
+
+`inspect`, `check`, `schema edit`, and `source` create only WORK's binding when
+checkout is absent, then read the recipe's committed main blob. Reports include
+that commit as `input.revision`. Current recipe edits are not read or copied.
+`edit WORK` creates checkout for an actual edit, but does not publish SPEC without
+`--apply`. A check without editing reads existing stage or committed main. Read-only operations
+may create the small WORK state; they do not create a branch or publish SPEC.
+Each later operation uses current main until checkout exists, not a hidden sticky
+snapshot. Use `edit --expect-sha256 HASH` to pin the bytes you reviewed.
+Writes materialize checkout from committed main after preflight; selected dirty
+recipe materials still block checkout creation. Existing checkout's current branch
+and bytes are authoritative and are never reset.
+
+Use `--spec PATH` for external files. This is explicit even for `.spec` filenames;
+file existence never changes argument meaning. `check --manifest PATH` and
+`source verify --manifest PATH` select authoring input instead. These modes are
+mutually exclusive, not fallback searches.
 
 ## Manifest editor schema
 
-`ruyipack schema > ruyipack.schema.json` exports the authoring schema from the
+`ruyipack schema manifest > ruyipack.schema.json` exports the authoring schema from the
 installed binary, without reading a package, downloading anything or writing files
 itself. Put this directive at the start of your manifest (followed by a blank line):
 
@@ -49,23 +125,46 @@ itself. Put this directive at the start of your manifest (followed by a blank li
 [Tombi and compatible TOML editors](https://tombi-toml.github.io/tombi/docs/json-schema/)
 use it for completion, field descriptions and structural diagnostics. Paths are
 relative to the manifest. Regenerate the local schema after updating RuyiPack;
-no mutable remote URL or network access is required. `init` does not create a
+no mutable remote URL or network access is required. `new` does not create a
 sidecar or reference a file that may not exist.
 
-This is **not** `edit --schema`, which describes the selected fields of an existing
+`schema edit WORK --field FIELD` instead describes the selected fields of an existing
 SPEC. Authoring schema checks unknown/missing fields, types, supported build/stage
 names, Source/Patch shapes and supplied SHA-256 syntax. Missing SHA-256 remains
 allowed. RPM expressions, numeric aliases/overflow, required Source0, VCS choices,
 file-list content and other cross-field constraints still require
-`ruyipack gen NAME --offline --check`; schema success is not build validation.
-Unfilled `init` scaffolds intentionally pass structural checks, not generation.
+`ruyipack gen WORK --offline --check`; schema success is not build validation.
+Unfilled `new` scaffolds intentionally pass structural checks, not generation.
 
 ## Generate
 
-`gen NAME` reads `NAME.toml`, or the file selected by `--manifest`. NAME is a
-package selector, not a path. Generation validates the manifest, reparses and
-compares candidate facts, then runs [static checks](#static-checks).
-See [ed.toml](../examples/ed/ed.toml) for a complete manifest.
+`gen WORK` reads the input selected in WORK's binding: `authoring` reads
+`work/WORK/PKG.toml`; `edit` reads the saved source-bound stage. File existence
+and modification times do not choose the authority. `new` selects authoring
+when its scaffold is actually present; changing the default WORK stage selects
+edit. An external `--prepare DIR` does not change WORK's input.
+
+Use `gen WORK --input authoring` or `--input edit` to select explicitly. A
+successful normal generation saves that selection without deleting the other
+input. `--check`, `--stdout` and `--diff` use an explicit selection only for that
+invocation. Missing or stale selected inputs fail; there is no fallback to a
+cached SPEC, resolved TOML, or another input.
+
+By default, generation writes `PKG.resolved.toml` beside its input and a
+candidate SPEC; author input and checkout remain unchanged. The snapshot is
+read-only standard TOML (format version 2): `manifest` contains the validated values used by the
+renderer, `profile` the target defaults, and `downloads` the actual observations.
+It preserves RPM expressions rather than claiming native macro expansion.
+Source-bound snapshots instead have an `edit` section with the immutable source
+identity, selected fields and resolved values; unsupported scripts stay in SPEC.
+Neither snapshot is an authoring manifest or an automatic input to `gen`.
+
+`--spec=.` writes `PKG.spec` beside the snapshot; `--spec=auto` publishes the
+checkout SPEC; `--spec=PATH` names a complete destination. Publications use
+static admission (the same local-edit gate for source-bound input).
+`--check` writes no snapshot, candidate or SPEC. `--stdout` and `--diff` print
+candidate payloads without publication. Preview/check may still download unless
+`--offline` is set. See [ed.toml](../examples/ed/ed.toml) for authoring input.
 
 ### Repository and Sources
 
@@ -78,7 +177,7 @@ Choose an entry in `[package.vcs]` only when the fact is known:
 | `no-public-repository = true` | Emit the profile's no-repository comment |
 
 Omit the table or leave it empty while the repository status is unknown. Generation
-warns (also in JSON `authoring_warnings`), emits no VCS assertion, and never turns
+warns (also in TOML `authoring_warnings`), emits no VCS assertion, and never turns
 an unknown or failed lookup into `no-public-repository`. Conflicting choices fail.
 Addresses and declarations are not verified remotely. A generated candidate is not
 proof of VCS policy compliance; confirm the declaration before publishing.
@@ -110,7 +209,7 @@ and warning, not an error. This output does not meet openRuyi's SHA-256 requirem
 for HTTP(S) sources. An empty digest fails. Digests must be 64 hexadecimal digits;
 case is preserved.
 
-After filling the scaffold, `gen NAME` automatically attempts to download remote
+After filling the scaffold, `gen WORK` automatically attempts to download remote
 Sources whose `sha256` is absent and fill the generated SPEC. Use `--offline` to
 skip downloads entirely. Existing digests are retained, not downloaded or
 verified; remove a digest from the TOML when you intend to recalculate it.
@@ -119,15 +218,15 @@ executing macros. Download failures warn per Source and leave its digest missing
 Connection setup is limited to 10 seconds; the complete transfer, including
 redirects and reading the body, to 300 seconds.
 
-Completion changes the same in-memory manifest used by the renderer: it never
-writes the author TOML or an intermediate TOML. `--stdout` / `--diff` preview the
-completed SPEC; `--check --format json` writes no files and includes successful
-downloads in `source_hashes` (null with `--offline`, otherwise possibly empty).
-Failure reasons are in `authoring_warnings`; a static pass does not mean every
-digest was calculated. Preview and check modes also download unless `--offline`
-is set. Repeating the command downloads again while hashes remain absent in the
-author TOML; no hidden cache or writeback pins them. A calculated digest is not
-source authentication.
+Generation serializes the same validated values used for rendering into a
+read-only resolved snapshot on a normal invocation. The author input remains unchanged. `--check --format
+toml` includes successful downloads in `source_hashes` (an empty array with `--offline`),
+failures in `source_hash_failures`, and contextual warnings in `authoring_warnings`.
+Preview/check modes may download unless `--offline` is set. Explicit `--hash`
+recalculates existing declarations; ordinary completion does not replace them.
+A digest is an observation of downloaded bytes, not source authentication. If a
+version/URL changes and its omitted digest cannot be refreshed, the result warns;
+it does not certify the old declaration as a newly calculated fact.
 
 Source expressions may use `%{name}`, `%{version}`, and `%{url}` only when the
 referenced package values are unambiguous static literals. Expressions and
@@ -229,15 +328,31 @@ validation. `%files -l` and conditional file sections are not supported.
 
 ## Edit
 
-`edit FILE.spec` in a terminal asks what to edit; it does not attempt a full conversion.
-Scripts specify `--field`, `--set`, `--hash-source`, or `--all`. Use `--all --view` only when every
-construct is supported; `inspect` is the read-only overview.
+WORK selection follows [the common input rules](#common-spec-selection).
+Use `edit --spec PATH` for independent files; repeat `--spec` for a batch.
+`--from` retains its saved absolute SPEC paths. Named operations hold their WORK
+lock through validation and publication; direct-file edits do not use that lock.
 
-Use `--field FIELD` for an editor view, `--set FIELD=VALUE` for string assignments,
-`--view` to read TOML, or `--schema` to read its JSON Schema. The editor is selected
-from `--editor`, `$VISUAL`, `$EDITOR`, then `vim`; arguments are split without a
-shell. GUI editors must wait, e.g. `--editor 'code --wait'`. A successful editor
-exit validates and writes the candidate; editor output goes to stderr.
+Default `edit WORK` opens a persistent TOML stage using `--editor`, `$VISUAL`,
+`$EDITOR`, then `vim`. No menu, package static check or SPEC write happens implicitly.
+GUI editors must wait, e.g. `--editor 'code --wait'`; editor output goes to stderr.
+Unfinished TOML remains saved even when it cannot yet generate a candidate.
+
+`--menu` selects fields and edits their current values inline. `--set FIELD=VALUE`
+is non-interactive. Every editing path saves the same TOML document.
+`--field FIELD` edits the current value directly in the terminal; use `--editor COMMAND`
+for selected TOML editing, or `--prepare DIR` to save it without opening an editor.
+`--all` requests strict full mapping.
+`inspect WORK --editable --field FIELD` and `schema edit WORK --field FIELD` are
+separate read-only projection/schema queries.
+
+`--diff` constructs the same safe candidate as `gen`, caches the SPEC and saves
+one `.diff` beside the stage TOML input (not the checkout SPEC); it also prints the diff (TOML reports its path).
+`--check` additionally checks the edited candidate. `--apply` always checks local
+admission and publishes only when admissible. These options can be combined.
+`--hash` refreshes every remote HTTP(S) Source, including signatures;
+`--hash-source N` selects individual Sources. Both use the edited candidate and
+save the resulting facts back to the stage. Local materials/Patches are excluded.
 
 The subset covers existing main-package metadata, Sources with adjacent
 RemoteAsset markers, BuildSystem/BuildRequires, descriptions, simple file lists,
@@ -261,42 +376,45 @@ Version or Source URL changes produce `review_triggers` and `review_required`
 (source/digests, patches, native build). They do not turn a static pass into a
 failure. Empty lists mean no triggering change, not that external checks ran.
 Use `--expect-sha256 HASH` for a single-file edit based on an earlier read or
-`source-hash` result. A mismatch refuses the operation; publication still checks
+`source hash` result. A mismatch refuses the operation; publication still checks
 for subsequent changes. This binds the SPEC bytes, not external macros or URLs.
 
 ### Persistent drafts
 
 ```sh
-ruyipack edit ed.spec other.spec --field package.version --prepare drafts
+ruyipack edit --spec ed.spec --spec other.spec --field package.version --prepare drafts
 # Edit the TOML files in drafts, then:
-ruyipack edit --from drafts --check --format json
+ruyipack edit --from drafts --check --format toml
 ruyipack edit --from drafts --diff
-ruyipack edit --from drafts
+ruyipack edit --from drafts --apply
 ```
 
-`--from` checks/applies without an editor; add `--editor COMMAND` to reopen it.
+`--from` resumes without an editor; choose `--check`, `--diff` or `--apply`, or
+add `--editor COMMAND` to reopen TOML.
 Drafts use source basenames and TOML 1.1. Keep `.state` (original bytes, source
 identities, and schemas) with the editable files. Duplicate basenames need separate
-directories. Prepare fresh drafts after source changes or applying a batch.
+directories. A successful in-place apply advances the saved baseline. External source changes
+require a fresh stage; `--force` never overrides that boundary.
 Editor work is retained after validation failure or when changes remain unapplied.
 
 ## Output and file safety
 
-- `gen` defaults to `NAME.spec` beside its manifest; `init` defaults to `NAME.toml`.
-  `edit` defaults to replacing its source. Explicit output paths are relative to
+- `gen` defaults to resolved TOML and a cached SPEC; `new` writes `PKG.toml` inside
+  the selected development area.
+  `edit` defaults to persistent staging, and requires `--apply` to replace SPEC. Explicit output paths are relative to
   the current directory; parent directories must exist.
 - `--stdout` prints one candidate without consulting the target. `--diff` prints
-  a unified diff without writing (missing target = new file); edits can preview a
+  a unified diff without publishing SPEC (edit also saves candidate/diff); edits can preview a
   batch. Both return 0 on successful previews regardless of differences. Diff
   headers require UTF-8 paths without tabs/newlines.
 - Different existing outputs require an explicit action or terminal confirmation.
   `--force` replaces; `--skip-existing` keeps existing files and creates missing
-  ones. These apply to init/gen; edit's `--force` requires `--output`. Same-content
+  ones. These apply to new/gen; edit's `--force` requires `--output`. Same-content
   writes leave files untouched. See `--help` for incompatible option combinations.
 - Without a usable terminal, unresolved conflicts fail. The terminal menu offers
   keep (initial selection, still requires confirmation), diff, copy, or overwrite.
   Copies use `.new`, `.new.1`, etc. without replacing existing files. Cancellation
-  fails without writing. Candidate/diff/JSON go to stdout; notices go to stderr.
+  fails without writing. Candidate/diff/TOML go to stdout; notices go to stderr.
 - Edits reject detected source changes even with `--force`. All batch candidates
   validate before writing, but publication is atomic **per file**, not per batch.
   Later I/O failure reports already-written paths: inspect them before retrying.
@@ -312,14 +430,14 @@ Editor work is retained after validation failure or when changes remain unapplie
 ## Local build materials
 
 ```sh
-ruyipack check package.spec --materials --source-dir ./SOURCES
-ruyipack check --manifest package.toml --materials --source-dir ./SOURCES --format json
+ruyipack check --spec package.spec --materials --source-dir ./SOURCES
+ruyipack check --manifest package.toml --materials --source-dir ./SOURCES --format toml
 ```
 
 `--materials` adds offline Source/Patch checks to the normal static checks; it
 never replaces them. Manifest input is rendered and verified in memory, without
 hash downloads or output files. Diagnostic positions then refer to the generated
-SPEC; JSON identifies both the original input and generated SPEC digest.
+SPEC; TOML identifies both the original input and generated SPEC digest.
 
 `--source-dir` requires `--materials`. It selects the prepared RPM `_sourcedir`;
 by default this is the canonical recipe's directory, **not** the working directory.
@@ -336,7 +454,7 @@ warning for remote Sources; computing local bytes does not satisfy `--policy sub
 or modify the declaration. Unknown macros, includes, `%sourcelist` and `%patchlist`
 are not executed or guessed and cannot establish a complete inventory.
 
-JSON `materials` contains `valid`, `source_dir`, `files` and any inventory-level
+TOML `materials` contains `valid`, `source_dir`, `files` and any inventory-level
 `error`; each file has a status and structured error when unavailable. Top-level
 `valid` combines static and material results; `evidence.status` describes static
 checks only. Ordinary `check` does not read materials. Material checks collect
@@ -357,7 +475,7 @@ filesystem locking. Recheck after changing inputs and before queuing a build.
 | RPK001 | SPDX expressions in package License tags and recognized top-level SPEC file-license comments; these are different licenses |
 | RPK002 | Literal Name, Version, Release syntax; `Epoch: 0` is not rejected |
 | RPK003 | Literal project URL syntax; existing HTTP/HTTPS accepted |
-| RPK004 | Profile direct requirements for a single literal BuildSystem; currently Autotools has required tools |
+| RPK004 | openRuyi declared BuildSystem contract versus direct BuildRequires; not observed tool usage or dependency resolution |
 | RPK005 | Missing or malformed adjacent Source SHA-256; warning for authoring, error under the submit static policy |
 
 SPDX covers main/subpackages and conditional branches, not upstream license
@@ -365,7 +483,7 @@ correctness. IDs are case-insensitive, operators uppercase, deprecated IDs valid
 unknown IDs use bundled SPDX data. Missing file-license comments are not rejected
 by this expression check; script comments are not declarations. Unresolved
 license expressions leave checks incomplete even when a finding also proves failure.
-Unchanged invalid literal metadata also fails candidate checks; macro values are
+Unchanged, confirmed main-package literal violations may remain during local editing; changed invalid values still fail admission; macro values are
 not evaluated or certified.
 
 Missing Autotools tools fail unless unresolved conditions, rich dependencies, or
@@ -380,11 +498,11 @@ requires unambiguous static Source resolution. `-D 'MACRO EXPR'` supplies Source
 context and is recorded in the report; it does not evaluate License or other rules.
 Unknown Source context is reported
 separately, not called a missing digest; it does not block unrelated authoring edits.
-Nonblocking Source uncertainty remains in JSON evidence rather than producing
+Nonblocking Source uncertainty remains in TOML evidence rather than producing
 repeated warnings for ordinary native build macros; submit explains it as incomplete.
 Both policies are **static checks only**, not submission or release approval:
 source-content verification, native RPM validation and builds remain unperformed.
-Use `verify-sources` separately to compare downloaded bytes. Neither policy fully
+Use `source verify` separately to compare downloaded bytes. Neither policy fully
 validates Source URLs or refreshes archive digests. Static commands
 do not download sources or expand native RPM macros. No command resolves dependencies, verifies patches, or builds packages.
 
@@ -420,8 +538,8 @@ is executed. Generated declarations, `%sourcelist`, and Sources inside subpackag
 ## Verifying declared Source digests
 
 ```sh
-ruyipack verify-sources --manifest package.toml --format json
-ruyipack verify-sources package.spec -D 'archive_version 2.0'
+ruyipack source verify --manifest package.toml --format toml
+ruyipack source verify --spec package.spec -D 'archive_version 2.0'
 ```
 
 Verification downloads every resolvable remote Source, including those with a
@@ -434,22 +552,22 @@ later Sources. Uncertain Source identities prevent enumerating the input rather
 than silently dropping a declaration.
 
 Exit 0 means every applicable Source matched; missing, mismatch, uncertainty or
-failure exits 1. JSON includes input identity, definitions, original expressions,
+failure exits 1. TOML includes input identity, definitions, original expressions,
 separate `declared_sha256` and successful `download` evidence (SHA-256, URLs, byte
 count). A changed input fails verification; retained results describe the recorded
-input hash, not the new file. CLI errors exit 2 and may precede JSON.
+input hash, not the new file. CLI errors exit 2 and may precede TOML.
 
 ## Computing or completing a Source digest
 
 ```sh
-ruyipack source-hash package.spec --source 0 --format json
-ruyipack edit package.spec --set package.version=2.0 --hash-source 0 --diff
-ruyipack edit package.spec --hash-source 0 --prepare drafts
+ruyipack source hash --spec package.spec --source 0 --format toml
+ruyipack edit --spec package.spec --set package.version=2.0 --hash-source 0 --diff
+ruyipack edit --spec package.spec --hash-source 0 --prepare drafts
 ```
 
-`source-hash` downloads one selected Source without writing. Human output is its
+`source hash` downloads one selected Source without writing. Human output is its
 digest on stdout and copyable preview/apply commands on stderr, with an input hash
-guard against stale edits. JSON failures contain an error, never a fabricated hash.
+guard against stale edits. TOML failures contain an error, never a fabricated hash.
 
 `edit --hash-source N` calculates against the pending candidate, including version
 or URL edits. All selected URLs resolve before downloading; all normal candidate
@@ -463,25 +581,31 @@ Ordinary checking and editing stay offline; `gen` automatically attempts missing
 hashes unless `--offline` is used. Existing gen digests and author TOMLs are never
 updated. No Source operation proves patch applicability or package build success.
 
-## JSON and inspection
+## TOML and inspection
 
-`inspect --format json` returns main-preamble syntax, input SHA-256, parser identity,
+`inspect`, `check`, checked `gen`, `edit`, and `source hash/verify` use
+`--format toml` for machine reports; `json` is not an alias for these commands.
+Optional unobserved values are omitted rather than represented by null. Numbered
+source observations are arrays of records with an explicit `number` field.
+Authoring schemas remain standard JSON Schema. The standalone native gate's legacy structured JSON receipts are outside this CLI report migration; its human progress goes to stderr.
+
+`inspect --format toml` returns main-preamble tag/conditional records, input SHA-256, parser identity,
 and diagnostics, not macro definitions or section bodies. It does not evaluate
 conditions. Recoverable parser errors do not fail inspection; use `check` for gates.
 Human inspection normalizes tags and displays their conditional structure.
 
-`inspect` node `data` spans refer to original UTF-8 bytes: zero-based, end-exclusive
+`inspect` record `span` fields refer to original UTF-8 bytes: zero-based, end-exclusive
 offsets; one-based lines/byte columns. Verify the input digest before using them.
 They are parser locations, not safe replacement ranges. Invalid diagnostic byte
-bounds/order/UTF-8 boundaries and known unreliable macro coordinates yield `null`
-spans without hiding messages. This does not establish general semantic accuracy.
-`preamble` serialization is tied to the recorded parser revision.
+bounds/order/UTF-8 boundaries and known unreliable macro coordinates omit
+unreliable spans without hiding messages. This does not establish general semantic accuracy.
+`preamble` records distinguish tag names and explicit Source/Patch numbers, preserve raw source slices and conditional branches, and do not form a round-trip parser AST. Expression syntax is still tied to the recorded parser revision. Report v2 identifies its `main-package-syntax` scope and does not check macro expansion, native RPM, or builds.
 
 | Report | Contract |
 | --- | --- |
-| `check --format json` | Report v2: input identity, parser, selected rules, `spec-static` evidence, findings and `parser_diagnostics` |
-| `gen NAME --check --format json` | Envelope v2, `manifest-generation-static`: manifest/profile/selected build-contract hashes and candidate report (including warnings) |
-| `edit ... --format json` | Envelope v2: `operation` is `check`, `prepare`, or `apply`; original/candidate identities, reports, draft paths or publication outcomes |
+| `check --format toml` | Report v2: input identity, parser, selected rules, `spec-static` evidence, findings and `parser_diagnostics` |
+| `gen WORK --check --format toml` | Envelope v4, `manifest-generation-static` or `selected-generation-static`: input/profile/selected build-contract hashes and candidate report (including warnings) |
+| `edit ... --format toml` | Envelope v4: `operation` is `stage`, `diff`, `check`, or `apply`; original/candidate identities, reports, draft paths or publication outcomes |
 
 Static reports carry `evidence.incomplete_reasons` as a deterministic, deduplicated
 list, including when `status` is `fail`. Reasons distinguish `parser-error`,
@@ -492,48 +616,57 @@ warnings do not imply incomplete checks. Both generation and editing embed this
 same versioned report, independently of their outer envelope version.
 
 `gen --check` never writes or consults output conflicts; `--format` requires
-`--check`, which conflicts with output/preview/overwrite flags. Its input path is
-the intended destination, not an existing-file claim. `build_contract` is null in
+`--check`, which conflicts with output/preview/overwrite flags. The outer `input` identifies the consumed TOML; the nested candidate report names
+the intended SPEC destination, not an existing-file claim. `build_contract` is omitted in
 explicit-stage mode. Profile/contract hashes identify embedded TOML, not an entire
-environment or all validation code. With `--format json`, input, rendering and
+environment or all validation code. With `--format toml`, input, rendering and
 static failures yield one report and exit 1. Before a candidate exists,
-`report_subject` and `report` are null and `error` explains the failure; unreadable
-input has no SHA-256. CLI argument and output-write failures can precede JSON.
+`report` is omitted and `error` explains the failure; unreadable
+input has no SHA-256. CLI argument and output-write failures can precede TOML.
 
-Static evidence records `policy`, `source_uncertainty` (null when resolved), and
+Static evidence records `policy`, `source_uncertainty` (omitted when resolved), and
 `not_checked` stages. RPK005 uses the same ordered Source resolver as source
 hashing: known macros and conditions are evaluated without executing RPM macros;
 unknown declarations remain explicit. Gen/edit retain authoring warnings for
 missing SHA-256. A declared digest is never evidence that downloaded bytes match.
 
 Reporting commands use an `error` object with `code` and `message`.
-Unreadable/invalid-UTF-8 inputs report `valid: false`, `code: "input-read"`, and
-no fabricated input hash. Generation uses report version 3; `source-hash` uses
-version 2; `verify-sources` uses version 1. Codes describe the failing boundary, not text matched from a message.
-Edit JSON is compact; use `jq` to select fields or format it. Check reports already
+Unreadable/invalid-UTF-8 inputs report `valid = false`, `code = "input-read"`, and
+no fabricated input hash. Generation uses report version 4; `source hash` uses
+version 2; `source verify` uses version 1. Codes describe the failing boundary, not text matched from a message.
+Machine stdout is one complete TOML document, not line-delimited records; parse it with a TOML reader (for example Python 3.11+ `tomllib`). Check reports already
 include the baseline, so a separate original `check` is unnecessary for comparison.
-Preparation (`scope: "edit-draft"`) returns absolute draft paths, not a validated
-candidate. `valid` describes the requested operation, not package quality.
+Preparation (`scope: "edit-stage"`) returns absolute draft paths, not a validated
+candidate. Edit report version 4 separates `success` (the requested operation completed) from
+`valid` (all candidates passed the selected static checks). Each candidate also
+reports `admissible`: whether the local edit may be saved. Unchecked staging/diff has omitted `valid` and `admissible` fields, not a fabricated
+pass. A successful edit may
+retain confirmed, unchanged authoring violations; it is not a passing package check.
 Publication `outcomes` report `written`,
 `unchanged`, or `skipped`, actual destination paths, and known resulting hashes.
-On partial I/O failure, `valid` is false and `written` lists confirmed writes;
+On partial I/O failure, `success` is false and `written` lists confirmed writes;
 remaining files are not claimed complete. A missing receipt does not prove no write
 occurred. If stdout fails after publication, stderr names confirmed writes when
 it is still writable; publication is not undone. Neither channel is guaranteed
-when both are closed. Old drafts remain stale after
-application; use a new read or the receipt, not a forced stale-draft retry.
+when both are closed. Successful in-place application advances the stage baseline; a failed stage update
+is reported separately from any confirmed SPEC write. Old immutable baselines
+remain available for recovery.
 
 For edit, `baseline_report` records the original checks; `introduced_static_blockers`
-compares blocking rule facts, ignoring shifted positions (`null` when unresolved
-checks prevent attribution). Pre-existing errors are identified before opening the editor and on failure; they still block publication.
+compares blocking rule facts, ignoring shifted positions (omitted when unresolved
+checks prevent attribution). The editor shows its fixed selection before editing. Publication may retain
+a known authoring violation only when that rule’s complete inputs are confirmed
+unchanged. Changed invalid values, new blockers, incomplete checks and violations
+without input evidence still block. `edit --check` tests this same local-edit
+admission; standalone `check` and the submit policy remain strict.
 For edit, `original_sha256` identifies the source; the nested input hash identifies
-the candidate (`report_subject`). Paths have no human presentation suffix.
+the candidate. Each file has `state = "pending-edit"` or `"candidate"`. Paths have no human presentation suffix.
 Errors have `code`, `message`, and optional `path`/`selected_fields`; selection is
 operation scope, not necessarily the offending field. Codes include
 `unmappable-fields`, `source-changed`, `source-hash-failed`, `invalid-draft`,
 `invalid-assignment`, `invalid-candidate`, `static-check-failed`, and the fallback
-`operation-failed`. CLI argument errors can precede JSON. Diagnostics use lowercase
-severity names and remain inside JSON rather than stderr.
+`operation-failed`. CLI argument errors can precede TOML. Diagnostics use lowercase
+severity names and remain inside TOML rather than stderr.
 
 Pin tool/parser identities and check `format_version`. Incompatible report changes
 increment it; optional fields and unknown error codes must be tolerated. Saved
@@ -544,9 +677,10 @@ process group on timeout. It is not a runtime fallback for Source operations.
 
 ### Machine reports
 
-A safely constructed `edit --diff` remains inspectable when static checks fail;
-its exit status is still 1. `--stdout` and publication still require those checks
-to pass. A construction or source-freshness failure produces no diff.
+A safely constructed `edit --diff` remains inspectable when an explicitly requested
+check fails; its exit status is 1. Without `--check`, a diff is unchecked, not a
+claim that the package passes static rules. `--apply` always requires local-edit
+admission. A construction or source-freshness failure produces no diff.
 
 Publication errors retain their code/message and add `stage`, `reason`, and a
 path when known; I/O failures also carry `io_kind`. On partial publication,
@@ -557,10 +691,10 @@ applicable. `retryable` concerns the download only, never the whole edit/apply.
 Generation exposes best-effort failures in `source_hash_failures`; missing
 SHA-256 remains a warning, not a publication policy.
 
-JSON reports include the producer's name, version, full Git `revision`, and
+TOML reports include the producer's name, version, full Git `revision`, and
 `dirty` (tracked changes only, including staged changes). Static check reports
 keep this under `evidence.tool`; other command envelopes use `tool`, including
-input failures. Unknown revision/dirty values are `null`, not a clean-tree claim.
+input failures. Unknown revision/dirty fields are omitted, not a clean-tree claim.
 Git is consulted only at build time and is optional; an archive never borrows an
 ancestor repository's revision. Archive packagers can set
 `RUYIPACK_SOURCE_REVISION` to a full object ID and optionally

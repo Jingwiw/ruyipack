@@ -48,6 +48,7 @@ pub(crate) fn check(
         severity,
         message,
         span,
+        rule_inputs: literal.map(|value| vec![field.to_owned(), value.to_owned()]),
     });
 }
 

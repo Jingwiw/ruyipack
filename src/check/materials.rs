@@ -6,40 +6,25 @@
 
 //! Read-only inventory of a prepared RPM source directory, not a build admission policy.
 
-use crate::{source, spec, utf8_file};
+use crate::{source, spec};
 use fs_err as fs;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    io::{self, Read, Write},
-    path::{Path, PathBuf},
+    io::{self, Write},
+    path::Path,
 };
 
-#[derive(Serialize)]
-struct Failure {
-    code: &'static str,
-    message: String,
-}
-fn failure(code: &'static str, message: impl ToString) -> Failure {
-    Failure {
-        code,
-        message: message.to_string(),
-    }
-}
+use crate::report::{Failure, failure};
 
-#[derive(Serialize)]
-struct Content {
-    size: u64,
-    sha256: String,
-}
+use crate::file_digest::{self, Content};
 
 #[derive(Serialize)]
 struct Record {
     identity: String,
     expression: String,
     resolved: Option<String>,
-    path: Option<PathBuf>,
+    path: Option<String>,
     declared_sha256: Option<String>,
     #[serde(flatten)]
     outcome: Outcome,
@@ -75,92 +60,35 @@ fn filename(value: &str) -> Result<&str, Failure> {
     Ok(name)
 }
 
-fn content(path: &Path) -> Result<Content, Failure> {
-    let io_error = |e: io::Error| {
-        failure(
-            if e.kind() == io::ErrorKind::NotFound {
-                "missing-file"
-            } else {
-                "io-error"
-            },
-            e,
-        )
-    };
-    let before = fs::symlink_metadata(path).map_err(io_error)?;
-    // Reject symlinks and special files before opening: preflight does not follow
-    // external material links or block waiting for a FIFO. This is not a hostile-directory sandbox.
-    if !before.is_file() {
-        return Err(failure(
-            "not-regular-file",
-            format!(
-                "{}: stage a regular file, not a symlink or special file",
-                path.display()
-            ),
-        ));
-    }
-    let mut file = fs::File::open(path)
-        .map_err(io_error)?
-        .take(before.len().saturating_add(1));
-    let mut digest = Sha256::new();
-    let mut size = 0;
-    let mut buffer = [0; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer).map_err(io_error)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-        size += read as u64;
-    }
-    let after = fs::symlink_metadata(path).map_err(io_error)?;
-    if !after.is_file()
-        || size != before.len()
-        || after.len() != before.len()
-        || after.modified().map_err(io_error)? != before.modified().map_err(io_error)?
-    {
-        return Err(failure(
-            "material-changed",
-            format!(
-                "{} changed while hashing; retry against stable files",
-                path.display()
-            ),
-        ));
-    }
-    Ok(Content {
-        size,
-        sha256: format!("{:x}", digest.finalize()),
-    })
-}
-
 #[derive(Serialize)]
 pub(crate) struct Report {
     pub(crate) valid: bool,
-    source_dir: Option<PathBuf>,
+    source_dir: Option<String>,
     files: Vec<Record>,
     error: Option<Failure>,
 }
 
 /// Checks only declared inputs in a stable, prepared _sourcedir. No fetching or writes.
 pub(crate) fn analyze(
-    input: &Path,
-    original: &str,
+    source_dir: Option<&Path>,
     parsed: &spec::ParsedSpec<'_>,
     defines: &[String],
-    source_dir: Option<&Path>,
 ) -> Report {
     let mut directory = None;
     let mut records = Vec::new();
     let result = (|| {
-        let path = fs::canonicalize(input).map_err(|e| failure("input-read", e))?;
-        let root = fs::canonicalize(source_dir.unwrap_or(path.parent().expect("absolute input")))
-            .map_err(|e| failure("source-directory", e))?;
+        let source_dir = source_dir.ok_or_else(|| failure(
+            "source-directory",
+            "a committed main SPEC has no checkout; provide --source-dir with its prepared materials",
+        ))?;
+        let root = fs::canonicalize(source_dir).map_err(|e| failure("source-directory", e))?;
         if !root.is_dir() {
             return Err(failure(
                 "source-directory",
                 format!("{}: expected a directory", root.display()),
             ));
         }
-        directory = Some(root.clone());
+        directory = Some(root.to_string_lossy().into_owned());
         let resolved = spec::sources::resolve_materials(parsed, defines)
             .map_err(|e| failure("material-resolution", e))?;
         let mut declarations = resolved
@@ -221,7 +149,19 @@ pub(crate) fn analyze(
                 if let Some(hash) = declared {
                     source::validate_sha256(hash).map_err(|e| failure("invalid-digest", e))?;
                 }
-                content(path)
+                file_digest::read(path).map_err(|error| {
+                    let code = match &error {
+                        file_digest::Error::Io(error)
+                            if error.kind() == io::ErrorKind::NotFound =>
+                        {
+                            "missing-file"
+                        }
+                        file_digest::Error::Io(_) => "io-error",
+                        file_digest::Error::NotRegular(_) => "not-regular-file",
+                        file_digest::Error::Changed(_) => "material-changed",
+                    };
+                    failure(code, error)
+                })
             })();
             let declared_sha256 = material.digest.ok().flatten();
             let outcome = match checked {
@@ -248,16 +188,10 @@ pub(crate) fn analyze(
                 identity,
                 expression: material.expression,
                 resolved: material.url.ok(),
-                path: local,
+                path: local.map(|path| path.to_string_lossy().into_owned()),
                 declared_sha256,
                 outcome,
             });
-        }
-        if !utf8_file::is_unchanged(&path, original).map_err(|e| failure("input-read", e))? {
-            return Err(failure(
-                "input-changed",
-                "recipe changed during inventory; retry",
-            ));
         }
         if let Some(reason) = resolved.incomplete {
             return Err(failure("material-resolution", reason));
@@ -277,6 +211,11 @@ pub(crate) fn analyze(
 }
 
 impl Report {
+    pub(crate) fn invalidate(&mut self, code: &'static str, message: impl std::fmt::Display) {
+        self.valid = false;
+        self.error = Some(failure(code, message));
+    }
+
     pub(crate) fn write_human(&self, stdout: &mut impl Write) -> io::Result<()> {
         for row in &self.files {
             let detail = match &row.outcome {
@@ -289,9 +228,7 @@ impl Report {
                 stdout,
                 "{} {}: {detail}",
                 row.identity,
-                row.path
-                    .as_deref()
-                    .map_or_else(|| "(unresolved)".into(), |p| p.display().to_string())
+                row.path.as_deref().unwrap_or("(unresolved)")
             )?;
         }
         if let Some(error) = &self.error {

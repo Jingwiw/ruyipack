@@ -6,7 +6,7 @@
 
 //! Black-box checks for generated-file destinations and read-only previews.
 
-use super::support::assert_file;
+use super::support::{self, assert_file};
 
 use std::{fs, path::Path, process::Command};
 
@@ -14,13 +14,15 @@ const MANIFEST: &str = include_str!("../../examples/ed/ed.toml");
 
 fn workspace() -> tempfile::TempDir {
     let directory = tempfile::tempdir().expect("create workspace");
-    fs::write(directory.path().join("ed.toml"), MANIFEST).expect("write manifest");
+    support::authoring_workspace(directory.path(), "review", "ed", MANIFEST);
     directory
 }
 
-fn gen_command(directory: &Path) -> Command {
+fn gen_command(directory: &Path, spec: &str) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ruyipack"));
-    command.current_dir(directory).args(["gen", "ed"]);
+    command
+        .current_dir(directory)
+        .args(["gen", "review", "--spec", spec]);
     command
 }
 
@@ -28,14 +30,14 @@ fn gen_command(directory: &Path) -> Command {
 fn diff_never_writes_new_changed_or_identical_targets() {
     let directory = workspace();
     let path = directory.path().join("ed.spec");
-    let preview = gen_command(directory.path())
+    let preview = gen_command(directory.path(), "ed.spec")
         .arg("--stdout")
         .output()
         .unwrap();
     assert!(preview.status.success());
     assert!(!path.exists());
 
-    let new = gen_command(directory.path())
+    let new = gen_command(directory.path(), "ed.spec")
         .arg("--diff")
         .output()
         .unwrap();
@@ -44,8 +46,8 @@ fn diff_never_writes_new_changed_or_identical_targets() {
     assert!(new.stderr.is_empty());
     assert!(!path.exists());
 
-    let spaced = gen_command(directory.path())
-        .args(["--diff", "-o", "ed review.spec"])
+    let spaced = gen_command(directory.path(), "ed review.spec")
+        .arg("--diff")
         .output()
         .unwrap();
     assert!(spaced.status.success());
@@ -58,7 +60,7 @@ fn diff_never_writes_new_changed_or_identical_targets() {
 
     let edited = b"# local edits\n";
     fs::write(&path, edited).unwrap();
-    let changed = gen_command(directory.path())
+    let changed = gen_command(directory.path(), "ed.spec")
         .arg("--diff")
         .output()
         .unwrap();
@@ -67,64 +69,50 @@ fn diff_never_writes_new_changed_or_identical_targets() {
     assert_eq!(fs::read(&path).unwrap(), edited);
 
     fs::write(&path, &preview.stdout).unwrap();
-    let identical = gen_command(directory.path())
+    let identical = gen_command(directory.path(), "ed.spec")
         .arg("--diff")
         .output()
         .unwrap();
     assert!(identical.status.success());
     assert!(identical.stdout.is_empty());
     assert_eq!(fs::read(&path).unwrap(), preview.stdout);
-    assert_file(directory.path().join("ed.toml"), MANIFEST);
+    assert_file(directory.path().join("work/review/ed.toml"), MANIFEST);
 }
 
 #[test]
-fn output_selects_a_cwd_relative_file_and_uses_the_same_overwrite_policy() {
+fn spec_selects_a_cwd_relative_file_and_uses_the_same_overwrite_policy() {
     let directory = workspace();
-    fs::create_dir(directory.path().join("nested")).unwrap();
-    fs::rename(
-        directory.path().join("ed.toml"),
-        directory.path().join("nested/ed.toml"),
-    )
-    .unwrap();
-    let args = [
-        "--manifest",
-        "nested/ed.toml",
-        "--output",
-        "review.spec.new",
-    ];
-    let generated = gen_command(directory.path()).args(args).output().unwrap();
-    assert!(
-        generated.status.success(),
-        "{}",
-        String::from_utf8_lossy(&generated.stderr)
-    );
+    let generated = gen_command(directory.path(), "review.spec.new")
+        .output()
+        .unwrap();
+    assert!(generated.status.success(), "{generated:?}");
     let target = directory.path().join("review.spec.new");
     let expected = fs::read(&target).unwrap();
-    assert!(!directory.path().join("nested/ed.spec").exists());
     assert!(!directory.path().join("ed.spec").exists());
+    assert_file(directory.path().join("work/review/ed.toml"), MANIFEST);
 
     fs::write(&target, "hand edited\n").unwrap();
-    let conflict = gen_command(directory.path()).args(args).output().unwrap();
+    let conflict = gen_command(directory.path(), "review.spec.new")
+        .output()
+        .unwrap();
     assert_eq!(conflict.status.code(), Some(1));
     let help = String::from_utf8_lossy(&conflict.stderr);
-    assert!(help.contains("review.spec.new"));
-    // gen does accept --output, so its conflict help must keep advertising it.
-    assert!(help.contains("--output FILE"), "{help}");
+    assert!(help.contains("review.spec.new"), "{help}");
+    assert!(help.contains("--force"), "{help}");
+    assert!(!help.contains("--output FILE"), "{help}");
     assert_file(&target, "hand edited\n");
 
-    let replaced = gen_command(directory.path())
-        .args(args)
+    let replaced = gen_command(directory.path(), "review.spec.new")
         .arg("-f")
         .output()
         .unwrap();
-    assert!(replaced.status.success());
+    assert!(replaced.status.success(), "{replaced:?}");
     assert_eq!(fs::read(&target).unwrap(), expected);
-    let diff = gen_command(directory.path())
-        .args(args)
+    let diff = gen_command(directory.path(), "review.spec.new")
         .arg("--diff")
         .output()
         .unwrap();
-    assert!(diff.status.success());
+    assert!(diff.status.success(), "{diff:?}");
     assert!(diff.stdout.is_empty());
 }
 
@@ -132,14 +120,14 @@ fn output_selects_a_cwd_relative_file_and_uses_the_same_overwrite_policy() {
 fn skip_existing_keeps_edits_and_creates_missing_targets() {
     let directory = workspace();
     let target = directory.path().join("ed.spec");
-    let created = gen_command(directory.path())
+    let created = gen_command(directory.path(), "ed.spec")
         .arg("--skip-existing")
         .output()
         .unwrap();
     assert!(created.status.success());
     assert!(target.is_file());
     fs::write(&target, "hand edited\n").unwrap();
-    let kept = gen_command(directory.path())
+    let kept = gen_command(directory.path(), "ed.spec")
         .arg("--skip-existing")
         .output()
         .unwrap();
@@ -151,17 +139,16 @@ fn skip_existing_keeps_edits_and_creates_missing_targets() {
 #[test]
 fn output_protection_applies_to_the_actual_input_and_parent_directory() {
     let directory = workspace();
-    let aliased = gen_command(directory.path())
-        .args(["-o", "ed.toml", "--force"])
+    let aliased = gen_command(directory.path(), "work/review/ed.toml")
+        .arg("--force")
         .output()
         .unwrap();
     assert_eq!(aliased.status.code(), Some(1));
     assert_eq!(
-        fs::read_to_string(directory.path().join("ed.toml")).unwrap(),
+        fs::read_to_string(directory.path().join("work/review/ed.toml")).unwrap(),
         MANIFEST
     );
-    let missing_parent = gen_command(directory.path())
-        .args(["-o", "missing/ed.spec"])
+    let missing_parent = gen_command(directory.path(), "missing/ed.spec")
         .output()
         .unwrap();
     assert_eq!(missing_parent.status.code(), Some(1));
@@ -182,7 +169,7 @@ fn publication_preserves_access_modes_and_uses_umask_for_new_files() {
     let target = directory.path().join("ed.spec");
     let control = directory.path().join("creation-control");
     fs::write(&control, "same inherited umask\n").unwrap();
-    let created = gen_command(directory.path()).output().unwrap();
+    let created = gen_command(directory.path(), "ed.spec").output().unwrap();
     assert!(created.status.success(), "{created:?}");
     assert_eq!(mode(&target), mode(&control));
     let expected = fs::read(&target).unwrap();
@@ -191,7 +178,7 @@ fn publication_preserves_access_modes_and_uses_umask_for_new_files() {
         fs::write(&target, "hand edited\n").unwrap();
         fs::set_permissions(&target, fs::Permissions::from_mode(original_mode)).unwrap();
         assert_eq!(mode(&target), original_mode);
-        let replaced = gen_command(directory.path())
+        let replaced = gen_command(directory.path(), "ed.spec")
             .arg("--force")
             .output()
             .unwrap();
@@ -201,7 +188,7 @@ fn publication_preserves_access_modes_and_uses_umask_for_new_files() {
     }
 
     fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
-    let unchanged = gen_command(directory.path())
+    let unchanged = gen_command(directory.path(), "ed.spec")
         .arg("--force")
         .output()
         .unwrap();
@@ -211,7 +198,7 @@ fn publication_preserves_access_modes_and_uses_umask_for_new_files() {
 
     fs::write(&target, "hand edited\n").unwrap();
     fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
-    let skipped = gen_command(directory.path())
+    let skipped = gen_command(directory.path(), "ed.spec")
         .arg("--skip-existing")
         .output()
         .unwrap();
@@ -219,7 +206,7 @@ fn publication_preserves_access_modes_and_uses_umask_for_new_files() {
     assert_eq!(mode(&target), 0o600);
     assert_eq!(fs::read_to_string(&target).unwrap(), "hand edited\n");
     assert_eq!(
-        fs::read_to_string(directory.path().join("ed.toml")).unwrap(),
+        fs::read_to_string(directory.path().join("work/review/ed.toml")).unwrap(),
         MANIFEST
     );
 }

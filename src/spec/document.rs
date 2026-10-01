@@ -9,6 +9,7 @@
 
 mod capture;
 mod render;
+pub(crate) mod schema;
 pub(crate) mod table;
 
 use std::{borrow::Cow, collections::BTreeMap, ops::Range};

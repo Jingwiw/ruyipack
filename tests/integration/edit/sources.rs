@@ -7,7 +7,7 @@
 //! Source context and field selection compose without broadening the edit boundary.
 
 use super::super::support::{assert_file, rejected, success};
-use super::{SPEC, command, fixture};
+use super::{SPEC, command, fixture, inspect};
 use std::{fmt::Write as _, fs, path::Path, process::Output};
 
 const URL: &str = "https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz";
@@ -18,7 +18,10 @@ fn run(directory: &Path, args: &[&str]) -> Output {
 }
 
 fn selected_view(directory: &Path, field: &str) -> Output {
-    run(directory, &["ed.spec", "--view", "--field", field])
+    inspect(directory)
+        .args(["--spec=ed.spec", "--field", field])
+        .output()
+        .unwrap()
 }
 
 fn only_source_url(output: &Output, expected: &str) {
@@ -50,7 +53,7 @@ fn source_context_accepts_known_ordered_values_and_rejects_ambiguity() {
         let output = run(
             directory.path(),
             &[
-                "ed.spec",
+                "--spec=ed.spec",
                 "--set",
                 &format!("sources.0.url={URL}"),
                 "--stdout",
@@ -71,6 +74,8 @@ fn source_context_accepts_known_ordered_values_and_rejects_ambiguity() {
         );
         let literal = source.replace(URL, "https://example.org/archive.tar.lz");
         fs::write(directory.path().join("ed.spec"), &literal).unwrap();
+        // This case deliberately starts a new baseline after changing fixture bytes.
+        fs::remove_dir_all(directory.path().join(".ruyipack-stage")).unwrap();
         only_source_url(
             &selected_view(directory.path(), "sources.0.url"),
             "https://example.org/archive.tar.lz",
@@ -96,7 +101,7 @@ fn unknown_include_and_statement_invalidate_context_not_literal_source_urls() {
             &run(
                 directory.path(),
                 &[
-                    "ed.spec",
+                    "--spec=ed.spec",
                     "--set",
                     &format!("sources.0.url={URL}"),
                     "--stdout",
@@ -107,6 +112,8 @@ fn unknown_include_and_statement_invalidate_context_not_literal_source_urls() {
         success(&selected_view(directory.path(), "package.summary"));
         let literal = source.replace(URL, "https://example.org/archive.tar.lz");
         fs::write(directory.path().join("ed.spec"), &literal).unwrap();
+        // This case deliberately starts a new baseline after changing fixture bytes.
+        fs::remove_dir_all(directory.path().join(".ruyipack-stage")).unwrap();
         only_source_url(
             &selected_view(directory.path(), "sources.0.url"),
             "https://example.org/archive.tar.lz",
@@ -114,7 +121,7 @@ fn unknown_include_and_statement_invalidate_context_not_literal_source_urls() {
         let unchanged = run(
             directory.path(),
             &[
-                "ed.spec",
+                "--spec=ed.spec",
                 "--set",
                 "sources.0.url=https://example.org/archive.tar.lz",
                 "--stdout",
@@ -126,7 +133,7 @@ fn unknown_include_and_statement_invalidate_context_not_literal_source_urls() {
             &run(
                 directory.path(),
                 &[
-                    "ed.spec",
+                    "--spec=ed.spec",
                     "--set",
                     "sources.0.url=https://example.org/%{version}.tar.lz",
                     "--stdout",
@@ -138,7 +145,7 @@ fn unknown_include_and_statement_invalidate_context_not_literal_source_urls() {
             &run(
                 directory.path(),
                 &[
-                    "ed.spec",
+                    "--spec=ed.spec",
                     "--set",
                     "package.version=2",
                     "--set",
@@ -160,7 +167,7 @@ fn an_unambiguous_package_context_is_used_without_entering_the_selected_document
     let output = run(
         directory.path(),
         &[
-            "ed.spec",
+            "--spec=ed.spec",
             "--set",
             &format!("sources.0.url={replacement}"),
             "--stdout",
@@ -176,7 +183,13 @@ fn a_source_url_draft_cannot_add_checksum_or_package_context_fields() {
     let directory = fixture(SPEC);
     success(&run(
         directory.path(),
-        &["ed.spec", "--field", "sources.0.url", "--prepare", "drafts"],
+        &[
+            "--spec=ed.spec",
+            "--field",
+            "sources.0.url",
+            "--prepare",
+            "drafts",
+        ],
     ));
     let schema: serde_json::Value = serde_json::from_slice(
         &fs::read(directory.path().join("drafts/.state/schema/0.json")).unwrap(),
@@ -197,11 +210,11 @@ fn a_source_url_draft_cannot_add_checksum_or_package_context_fields() {
         fs::write(&draft, changed).unwrap();
         let output = run(
             directory.path(),
-            &["--from", "drafts", "--check", "--format", "json"],
+            &["--from", "drafts", "--check", "--format", "toml"],
         );
         assert_eq!(output.status.code(), Some(1), "{output:?}");
-        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(report["valid"], false);
+        let report = super::support::machine_report(&output);
+        assert!(report.get("valid").is_none());
         assert_file(directory.path().join("ed.spec"), SPEC);
     }
     fs::write(&draft, allowed).unwrap();
@@ -221,7 +234,7 @@ fn selecting_one_source_url_preserves_an_unmapped_sibling_source_and_its_digest(
     let output = run(
         directory.path(),
         &[
-            "ed.spec",
+            "--spec=ed.spec",
             "--set",
             &format!("sources.0.url={replacement}"),
             "--stdout",
@@ -258,6 +271,7 @@ fn implicit_source_numbers_follow_rpm_before_field_selection() {
             SPEC.replace(&old, &declarations)
         );
         let directory = fixture(&source);
+        let mut expected = source.clone();
         for (i, number) in numbers.iter().enumerate() {
             let field = format!("sources.{number}.url");
             let view = selected_view(directory.path(), &field);
@@ -271,22 +285,19 @@ fn implicit_source_numbers_follow_rpm_before_field_selection() {
             let edited = run(
                 directory.path(),
                 &[
-                    "ed.spec",
+                    "--spec=ed.spec",
                     "--set",
                     &format!("{field}=https://example.org/replaced.tar.gz"),
                     "--stdout",
                 ],
             );
             success(&edited);
-            assert_eq!(
-                edited.stdout,
-                source
-                    .replace(
-                        &format!("https://example.org/asset-{i}.tar.gz"),
-                        "https://example.org/replaced.tar.gz"
-                    )
-                    .as_bytes()
+            // Earlier pending field values remain in the same persistent stage.
+            expected = expected.replace(
+                &format!("https://example.org/asset-{i}.tar.gz"),
+                "https://example.org/replaced.tar.gz",
             );
+            assert_eq!(edited.stdout, expected.as_bytes());
         }
         if !numbers.contains(&0) {
             rejected(
@@ -314,7 +325,7 @@ fn uncertain_implicit_source_numbers_do_not_block_unrelated_edits() {
             &run(
                 directory.path(),
                 &[
-                    "ed.spec",
+                    "--spec=ed.spec",
                     "--set",
                     "sources.0.url=https://example.org/replaced.tar.gz",
                 ],
@@ -323,7 +334,7 @@ fn uncertain_implicit_source_numbers_do_not_block_unrelated_edits() {
         );
         let version = run(
             directory.path(),
-            &["ed.spec", "--set", "package.version=2", "--stdout"],
+            &["--spec=ed.spec", "--set", "package.version=2", "--stdout"],
         );
         success(&version);
         assert_eq!(
@@ -349,13 +360,13 @@ fn digest_whitespace_has_one_meaning_without_rewriting_untouched_bytes() {
         let directory = fixture(&source);
         success(&super::super::support::run(
             directory.path(),
-            &["check", "ed.spec", "--policy", "submit"],
+            &["check", "--spec=ed.spec", "--policy", "submit"],
         ));
         for (value, expected) in [(HASH, &source), (replacement.as_str(), &changed)] {
             let assignment = format!("sources.0.sha256={value}");
             let output = run(
                 directory.path(),
-                &["ed.spec", "--set", &assignment, "--stdout"],
+                &["--spec=ed.spec", "--set", &assignment, "--stdout"],
             );
             success(&output);
             assert_eq!(output.stdout, expected.as_bytes());
@@ -378,7 +389,12 @@ fn a_damaged_selected_digest_can_be_repaired_without_changing_other_bytes() {
         rejected(
             &run(
                 directory.path(),
-                &["ed.spec", "--set", &format!("sources.0.sha256={invalid}")],
+                &[
+                    "--spec=ed.spec",
+                    "--set",
+                    &format!("sources.0.sha256={invalid}"),
+                    "--apply",
+                ],
             ),
             "expected 64 hexadecimal digits",
         );
@@ -387,7 +403,7 @@ fn a_damaged_selected_digest_can_be_repaired_without_changing_other_bytes() {
     success(&run(
         directory.path(),
         &[
-            "ed.spec",
+            "--spec=ed.spec",
             "--field",
             "sources.0.sha256",
             "--prepare",
@@ -403,7 +419,7 @@ fn a_damaged_selected_digest_can_be_repaired_without_changing_other_bytes() {
     success(&preview);
     assert_eq!(preview.stdout, SPEC.replace(HASH, &replacement).as_bytes());
     assert_file(directory.path().join("ed.spec"), &source);
-    success(&run(directory.path(), &["--from", "drafts"]));
+    success(&run(directory.path(), &["--from", "drafts", "--apply"]));
     assert_file(
         directory.path().join("ed.spec"),
         &(SPEC.replace(HASH, &replacement)),
@@ -418,7 +434,7 @@ fn a_source_url_edit_preserves_its_unselected_damaged_digest() {
     let output = run(
         directory.path(),
         &[
-            "ed.spec",
+            "--spec=ed.spec",
             "--set",
             &format!("sources.0.url={replacement}"),
             "--stdout",
@@ -457,11 +473,11 @@ fn mapping_errors_identify_the_construct_without_blocking_unrelated_fields() {
     ] {
         let directory = fixture(&source);
         let args = if field.is_empty() {
-            vec!["ed.spec", "--all", "--view"]
+            vec!["--spec=ed.spec", "--all"]
         } else {
-            vec!["ed.spec", "--view", "--field", field]
+            vec!["--spec=ed.spec", "--field", field]
         };
-        let output = run(directory.path(), &args);
+        let output = inspect(directory.path()).args(args).output().unwrap();
         rejected(&output, message);
         assert!(String::from_utf8_lossy(&output.stderr).contains("--field"));
         success(&selected_view(directory.path(), "package.version"));

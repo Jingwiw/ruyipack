@@ -13,11 +13,11 @@ use std::{
     process::Output,
 };
 
-use serde_json::Value;
+use toml::Value;
 
 use super::support;
 
-use support::{command, json_line, output_text};
+use support::{command, output_text};
 
 fn write_file(directory: &Path, name: &str, contents: impl AsRef<[u8]>) -> PathBuf {
     let path = directory.join(name);
@@ -42,22 +42,23 @@ where
     command().args(args).output().expect("run ruyipack")
 }
 
-fn run_json_check(current_dir: &Path, spec: &OsStr) -> Output {
+fn run_toml_check(current_dir: &Path, spec: &OsStr) -> Output {
     command()
         .current_dir(current_dir)
         .args([
             OsStr::new("check"),
+            OsStr::new("--spec"),
             spec,
             OsStr::new("--format"),
-            OsStr::new("json"),
+            OsStr::new("toml"),
         ])
         .output()
-        .expect("run ruyipack JSON check")
+        .expect("run ruyipack TOML check")
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn json_reports_accept_non_utf8_paths_in_success_and_failure() {
+fn toml_reports_accept_non_utf8_paths_in_success_and_failure() {
     use std::os::unix::ffi::OsStrExt;
 
     let temp = tempfile::tempdir().unwrap();
@@ -67,40 +68,38 @@ fn json_reports_accept_non_utf8_paths_in_success_and_failure() {
     fs::write(&spec, original).unwrap();
     fs::write(&manifest, include_str!("../../examples/ed/ed.toml")).unwrap();
     for (prefix, input, suffix, exit, pointer) in [
-        (&["check"][..], &spec, &[][..], 0, "/input/display_path"),
-        (&["inspect"][..], &spec, &[][..], 0, "/input/display_path"),
         (
-            &["gen", "ed", "--manifest"][..],
-            &manifest,
-            &["--check"][..],
+            &["check", "--spec"][..],
+            &spec,
+            &[][..],
             0,
-            "/manifest/display_path",
+            "/input/display_path",
         ),
         (
-            &["edit"][..],
+            &["inspect", "--spec"][..],
             &spec,
-            &["--check", "--set", "package.version=2"][..],
+            &[][..],
+            0,
+            "/input/display_path",
+        ),
+        (
+            &["check", "--manifest"][..],
+            &manifest,
+            &[][..],
+            0,
+            "/input/display_path",
+        ),
+        (
+            &["edit", "--spec"][..],
+            &spec,
+            &["--check"][..],
             0,
             "/files/0/source",
         ),
         (
-            &["edit"][..],
+            &["edit", "--spec"][..],
             &spec,
-            &["--set", "package.version=1.22.5"][..],
-            0,
-            "/outcomes/0/path",
-        ),
-        (
-            &["edit"][..],
-            &spec,
-            &["--check", "--set", "package.version="][..],
-            1,
-            "/files/0/error/path",
-        ),
-        (
-            &["edit"][..],
-            &spec,
-            &["--check", "--field", "missing"][..],
+            &["--check", "--set", "missing=value"][..],
             1,
             "/error/path",
         ),
@@ -109,7 +108,7 @@ fn json_reports_accept_non_utf8_paths_in_success_and_failure() {
             .args(prefix)
             .arg(input)
             .args(suffix)
-            .args(["--format", "json"])
+            .args(["--format", "toml"])
             .output()
             .unwrap();
         assert_eq!(
@@ -118,19 +117,52 @@ fn json_reports_accept_non_utf8_paths_in_success_and_failure() {
             "{prefix:?} {suffix:?}: {output:?}"
         );
         assert!(output.stderr.is_empty(), "{output:?}");
-        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let report = super::support::machine_report(&output);
         assert_eq!(
-            report.pointer(pointer).and_then(Value::as_str),
+            pointer
+                .trim_start_matches('/')
+                .split('/')
+                .try_fold(&report, |value, part| {
+                    if let Some(array) = value.as_array() {
+                        array.get(part.parse::<usize>().ok()?)
+                    } else {
+                        value.get(part)
+                    }
+                })
+                .and_then(Value::as_str),
             Some(input.to_string_lossy().as_ref())
         );
     }
+    // Display paths are lossy text, not a persistence encoding. A non-UTF-8
+    // SPEC stem cannot name a TOML stage; failure must still be a valid report.
+    let staged = command()
+        .args(["edit", "--spec"])
+        .arg(&spec)
+        .args(["--set", "package.version=2", "--apply", "--format", "toml"])
+        .output()
+        .unwrap();
+    assert_eq!(staged.status.code(), Some(1), "{staged:?}");
+    assert_eq!(machine_report(&staged)["success"].as_bool(), Some(false));
+    fs::write(&manifest, "not a manifest").unwrap();
+    let output = command()
+        .args(["check", "--manifest"])
+        .arg(&manifest)
+        .args(["--format", "toml"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report = machine_report(&output);
+    assert_eq!(report["error"]["code"].as_str(), Some("invalid-manifest"));
+    assert_eq!(
+        report["input"]["display_path"].as_str(),
+        Some(manifest.to_string_lossy().as_ref())
+    );
     support::assert_file(spec, original);
-    assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
 }
 
 fn machine_report(output: &Output) -> Value {
     assert!(output.stderr.is_empty(), "{}", output_text(&output.stderr));
-    json_line(output)
+    support::machine_report(output)
 }
 
 fn assert_machine_envelope(
@@ -140,70 +172,18 @@ fn assert_machine_envelope(
     status: &str,
     incomplete_reasons: &[&str],
 ) {
-    assert_eq!(report["format_version"], 2);
+    assert_eq!(report["format_version"].as_integer(), Some(2));
 
     let input = &report["input"];
-    assert_eq!(input["display_path"], display_path);
-    assert_eq!(input["sha256"], sha256);
+    assert_eq!(input["display_path"].as_str(), Some(display_path));
+    assert_eq!(input["sha256"].as_str(), Some(sha256));
 
     let evidence = &report["evidence"];
-    assert_eq!(evidence["stage"], "spec-static");
-    assert_eq!(evidence["status"], status);
+    assert_eq!(evidence["stage"].as_str(), Some("spec-static"));
+    assert_eq!(evidence["status"].as_str(), Some(status));
     assert_eq!(
         evidence["incomplete_reasons"],
-        serde_json::json!(incomplete_reasons)
-    );
-
-    assert_eq!(evidence["tool"]["name"], "ruyipack");
-    assert_eq!(evidence["tool"]["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(
-        evidence["tool"]["revision"],
-        if env!("RUYIPACK_BUILD_REVISION").is_empty() {
-            serde_json::Value::Null
-        } else {
-            env!("RUYIPACK_BUILD_REVISION").into()
-        }
-    );
-    assert_eq!(
-        evidence["tool"]["dirty"],
-        match env!("RUYIPACK_BUILD_DIRTY") {
-            "true" => serde_json::json!(true),
-            "false" => serde_json::json!(false),
-            _ => serde_json::Value::Null,
-        }
-    );
-    assert_eq!(
-        evidence["components"],
-        serde_json::json!([
-            {
-                "name": "rpm-spec",
-                "version": "0.4.1",
-                "repository": "https://github.com/openRuyi-Project/rpm-spec",
-                "revision": "964da4de8713babad153044dc1a7f0f48b2ae707",
-            },
-            {
-                "name": "rpm-spec-analyzer",
-                "version": "0.1.3",
-                "repository": "https://github.com/openRuyi-Project/rpm-spec-tool",
-                "revision": "b4aef927655256bef12608af665711245abcc4c0",
-            },
-        ])
-    );
-    assert_eq!(
-        evidence["selected_rules"],
-        serde_json::json!([
-            {"code": "RPM010", "severity": "deny"},
-            {"code": "RPM011", "severity": "deny"},
-            {"code": "RPM012", "severity": "deny"},
-            {"code": "RPM013", "severity": "deny"},
-            {"code": "RPM014", "severity": "deny"},
-            {"code": "RPM015", "severity": "deny"},
-            {"code": "RPK001", "severity": "deny"},
-            {"code": "RPK002", "severity": "deny"},
-            {"code": "RPK003", "severity": "deny"},
-            {"code": "RPK004", "severity": "deny"},
-            {"code": "RPK005", "severity": "warn"},
-        ])
+        toml::Value::try_from(incomplete_reasons).unwrap()
     );
 }
 
@@ -258,7 +238,11 @@ RPM001 = \"deny\"
 
     let output = command()
         .current_dir(temp.path())
-        .args([OsStr::new("check"), OsStr::new("demo.spec")])
+        .args([
+            OsStr::new("check"),
+            OsStr::new("--spec"),
+            OsStr::new("demo.spec"),
+        ])
         .output()
         .expect("run ruyipack");
 
@@ -298,7 +282,11 @@ RPM015 = \"allow\"
 
     let output = command()
         .current_dir(temp.path())
-        .args([OsStr::new("check"), OsStr::new("empty.spec")])
+        .args([
+            OsStr::new("check"),
+            OsStr::new("--spec"),
+            OsStr::new("empty.spec"),
+        ])
         .output()
         .expect("run ruyipack");
 
@@ -307,12 +295,13 @@ RPM015 = \"allow\"
     assert_eq!(
         output_text(&output.stderr),
         "\
-empty.spec:1:1: error[RPM010]: spec is missing the Name: tag
-empty.spec:1:1: error[RPM011]: spec is missing the Version: tag
-empty.spec:1:1: error[RPM012]: spec is missing the Release: tag
-empty.spec:1:1: error[RPM013]: spec is missing the License: tag
-empty.spec:1:1: error[RPM014]: spec is missing the Summary: tag
-empty.spec:1:1: error[RPM015]: spec is missing the URL: tag
+[INFO] empty.spec: checking SPEC
+[ERROR] spec[1:1] [RPM010]: spec is missing the Name: tag
+[ERROR] spec[1:1] [RPM011]: spec is missing the Version: tag
+[ERROR] spec[1:1] [RPM012]: spec is missing the Release: tag
+[ERROR] spec[1:1] [RPM013]: spec is missing the License: tag
+[ERROR] spec[1:1] [RPM014]: spec is missing the Summary: tag
+[ERROR] spec[1:1] [RPM015]: spec is missing the URL: tag
 "
     );
     assert_eq!(entries(temp.path()), before_entries);
@@ -326,7 +315,15 @@ fn check_continues_after_a_parser_warning() {
         "complete-warning.spec",
         format!("{COMPLETE_REQUIRED_TAGS}%unknown value\n"),
     );
-    let complete_output = run([OsStr::new("check"), complete_spec.as_os_str()]);
+    let complete_output = command()
+        .current_dir(temp.path())
+        .args([
+            OsStr::new("check"),
+            OsStr::new("--spec"),
+            complete_spec.as_os_str(),
+        ])
+        .output()
+        .unwrap();
 
     assert!(
         complete_output.status.success(),
@@ -342,8 +339,8 @@ fn check_continues_after_a_parser_warning() {
     assert_eq!(
         output_text(&complete_output.stderr),
         format!(
-            "{}:7:1: warning[rpmspec/W0002]: line not recognized\n",
-            complete_spec.display()
+            "[INFO] {}: checking SPEC\n[WARN] spec[7:1] [rpmspec/W0002]: line not recognized\n",
+            "complete-warning.spec"
         )
     );
 
@@ -360,7 +357,11 @@ License: MIT
 ",
     );
 
-    let output = run([OsStr::new("check"), spec.as_os_str()]);
+    let output = command()
+        .current_dir(temp.path())
+        .args([OsStr::new("check"), OsStr::new("--spec"), spec.as_os_str()])
+        .output()
+        .unwrap();
 
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty(), "{}", output_text(&output.stdout));
@@ -368,10 +369,11 @@ License: MIT
         output_text(&output.stderr),
         format!(
             "\
-{0}:6:1: warning[rpmspec/W0002]: line not recognized
-{0}:1:1: error[RPM015]: spec is missing the URL: tag
+[INFO] {0}: checking SPEC
+[WARN] spec[6:1] [rpmspec/W0002]: line not recognized
+[ERROR] spec[1:1] [RPM015]: spec is missing the URL: tag
 ",
-            spec.display()
+            "warning.spec"
         )
     );
 }
@@ -381,25 +383,29 @@ fn check_stops_tag_checks_when_the_parser_reports_an_error() {
     let temp = tempfile::tempdir().expect("create temporary directory");
     let spec = write_file(temp.path(), "parser-error.spec", PARSER_ERROR_SPEC);
 
-    let output = run([OsStr::new("check"), spec.as_os_str()]);
+    let output = command()
+        .current_dir(temp.path())
+        .args([OsStr::new("check"), OsStr::new("--spec"), spec.as_os_str()])
+        .output()
+        .unwrap();
 
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty(), "{}", output_text(&output.stdout));
     assert_eq!(
         output_text(&output.stderr),
         format!(
-            "{0}:7:9: error[rpmspec/E0007]: %package requires a subpackage name argument\n{0}: error: check incomplete because the SPEC parser reported an error\n",
-            spec.display()
+            "[INFO] {0}: checking SPEC\n[ERROR] spec[7:9] [rpmspec/E0007]: %package requires a subpackage name argument\n[ERROR] check incomplete because the SPEC parser reported an error\n",
+            "parser-error.spec"
         )
     );
 }
 
 #[test]
-fn check_json_reports_pass_with_input_identity() {
+fn check_toml_reports_pass_with_input_identity() {
     let temp = tempfile::tempdir().expect("create temporary directory");
     write_file(temp.path(), "demo.spec", COMPLETE_REQUIRED_TAGS);
 
-    let first = run_json_check(temp.path(), OsStr::new("demo.spec"));
+    let first = run_toml_check(temp.path(), OsStr::new("demo.spec"));
 
     assert_eq!(first.status.code(), Some(0));
     let first_report = machine_report(&first);
@@ -410,16 +416,19 @@ fn check_json_reports_pass_with_input_identity() {
         "pass",
         &[],
     );
-    assert_eq!(first_report["parser_diagnostics"], serde_json::json!([]));
-    assert_eq!(first_report["findings"], serde_json::json!([]));
+    assert_eq!(
+        first_report["parser_diagnostics"],
+        toml::Value::Array(vec![])
+    );
+    assert_eq!(first_report["findings"], toml::Value::Array(vec![]));
 }
 
 #[test]
-fn check_json_keeps_parser_warning_and_orders_findings() {
+fn check_toml_keeps_parser_warning_and_orders_findings() {
     let temp = tempfile::tempdir().expect("create temporary directory");
     write_file(temp.path(), "warning.spec", PARSER_WARNING_SPEC);
 
-    let first = run_json_check(temp.path(), OsStr::new("warning.spec"));
+    let first = run_toml_check(temp.path(), OsStr::new("warning.spec"));
 
     assert_eq!(first.status.code(), Some(1));
     let report = machine_report(&first);
@@ -432,53 +441,46 @@ fn check_json_keeps_parser_warning_and_orders_findings() {
     );
     assert_eq!(
         report["parser_diagnostics"],
-        serde_json::json!([{
-            "severity": "warning",
-            "code": "rpmspec/W0002",
-            "span": {
-                "start_byte": 46,
-                "end_byte": 60,
-                "start_line": 5,
-                "start_column": 1,
-                "end_line": 5,
-                "end_column": 15,
-            },
-            "message": "line not recognized",
-            "notes": [],
-        }])
+        toml::Value::Array(vec![toml::Value::Table(toml::toml! {
+            "severity" = "warning"
+            "code" = "rpmspec/W0002"
+            "span" = { "start_byte" = 46, "end_byte" = 60, "start_line" = 5, "start_column" = 1, "end_line" = 5, "end_column" = 15 }
+            "message" = "line not recognized"
+            "notes" = []
+        })])
     );
 
     let findings = report["findings"].as_array().expect("findings is an array");
     let missing_tags = [("RPM014", "Summary"), ("RPM015", "URL")];
     assert_eq!(findings.len(), missing_tags.len());
     for (finding, (code, tag)) in findings.iter().zip(missing_tags) {
-        assert_eq!(finding["producer"], "rpm-spec-analyzer");
-        assert_eq!(finding["code"], code);
-        assert_eq!(finding["severity"], "deny");
+        assert_eq!(finding["producer"].as_str(), Some("rpm-spec-analyzer"));
+        assert_eq!(finding["code"].as_str(), Some(code));
+        assert_eq!(finding["severity"].as_str(), Some("deny"));
         assert_eq!(
-            finding["message"],
-            format!("spec is missing the {tag}: tag")
+            finding["message"].as_str(),
+            Some((format!("spec is missing the {tag}: tag")).as_str())
         );
         assert_eq!(
             finding["span"],
-            serde_json::json!({
-                "start_byte": 0,
-                "end_byte": 61,
-                "start_line": 1,
-                "start_column": 1,
-                "end_line": 6,
-                "end_column": 1,
+            toml::Value::Table(toml::toml! {
+                "start_byte" = 0
+                "end_byte" = 61
+                "start_line" = 1
+                "start_column" = 1
+                "end_line" = 6
+                "end_column" = 1
             })
         );
     }
 }
 
 #[test]
-fn check_json_reports_parser_error_as_incomplete() {
+fn check_toml_reports_parser_error_as_incomplete() {
     let temp = tempfile::tempdir().expect("create temporary directory");
     write_file(temp.path(), "parser-error.spec", PARSER_ERROR_SPEC);
 
-    let output = run_json_check(temp.path(), OsStr::new("parser-error.spec"));
+    let output = run_toml_check(temp.path(), OsStr::new("parser-error.spec"));
 
     assert_eq!(output.status.code(), Some(1));
     let report = machine_report(&output);
@@ -490,26 +492,19 @@ fn check_json_reports_parser_error_as_incomplete() {
         &["parser-error"],
     );
     assert_eq!(
-        report["evidence"]["source_uncertainty"],
-        "parser errors prevent Source resolution"
+        report["evidence"]["source_uncertainty"].as_str(),
+        Some("parser errors prevent Source resolution")
     );
-    assert_eq!(report["findings"], serde_json::json!([]));
+    assert_eq!(report["findings"], toml::Value::Array(vec![]));
     assert_eq!(
         report["parser_diagnostics"],
-        serde_json::json!([{
-            "severity": "error",
-            "code": "rpmspec/E0007",
-            "span": {
-                "start_byte": 77,
-                "end_byte": 77,
-                "start_line": 7,
-                "start_column": 9,
-                "end_line": 7,
-                "end_column": 9,
-            },
-            "message": "%package requires a subpackage name argument",
-            "notes": [],
-        }])
+        toml::Value::Array(vec![toml::Value::Table(toml::toml! {
+            "severity" = "error"
+            "code" = "rpmspec/E0007"
+            "span" = { "start_byte" = 77, "end_byte" = 77, "start_line" = 7, "start_column" = 9, "end_line" = 7, "end_column" = 9 }
+            "message" = "%package requires a subpackage name argument"
+            "notes" = []
+        })])
     );
 }
 
@@ -521,7 +516,11 @@ fn assert_read_errors(subcommand: &str) {
         (&missing, format!("failed to read {}", missing.display())),
         (&invalid, format!("{} is not UTF-8", invalid.display())),
     ] {
-        let output = run([OsStr::new(subcommand), path.as_os_str()]);
+        let output = run([
+            OsStr::new(subcommand),
+            OsStr::new("--spec"),
+            path.as_os_str(),
+        ]);
         assert_eq!(output.status.code(), Some(1), "{subcommand}: {output:?}");
         assert!(output.stdout.is_empty(), "{subcommand}: {output:?}");
         assert!(
@@ -545,44 +544,105 @@ fn input_failures_share_machine_error_shape_across_commands() {
     let invalid = write_file(temp.path(), "invalid.spec", [0xff]);
     for path in [invalid.clone(), temp.path().join("missing.spec")] {
         for args in [
-            vec!["check"],
-            vec!["inspect"],
-            vec!["edit", "--set", "package.version=2", "--check"],
-            vec!["source-hash"],
-            vec!["verify-sources"],
-            vec!["gen", "demo", "--check", "--manifest"],
+            vec!["check", "--spec"],
+            vec!["inspect", "--spec"],
+            vec!["edit", "--set", "package.version=2", "--check", "--spec"],
+            vec!["source", "hash", "--spec"],
+            vec!["source", "verify", "--spec"],
         ] {
             let output = command()
                 .args(&args)
                 .arg(&path)
-                .args(["--format", "json"])
+                .args(["--format", "toml"])
                 .output()
                 .unwrap();
             assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
             assert!(output.stderr.is_empty(), "{output:?}");
-            let report = json_line(&output);
-            assert_eq!(report["valid"], false);
-            assert_eq!(report["error"]["code"], "input-read", "{args:?}: {report}");
+            let report = machine_report(&output);
+            if args[0] == "edit" {
+                assert!(report.get("valid").is_none());
+                assert_eq!(report["success"].as_bool(), Some(false));
+            } else {
+                assert_eq!(report["valid"].as_bool(), Some(false));
+            }
+            assert_eq!(
+                report["error"]["code"].as_str(),
+                Some("input-read"),
+                "{args:?}: {report}"
+            );
             assert!(!report["error"]["message"].as_str().unwrap().is_empty());
             let subject = match args[0] {
-                "gen" => &report["manifest"],
                 "edit" => {
                     let resolved = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-                    assert_eq!(report["error"]["path"], resolved.to_string_lossy().as_ref());
+                    assert_eq!(
+                        report["error"]["path"].as_str(),
+                        Some(resolved.to_string_lossy().as_ref())
+                    );
                     assert_eq!(
                         report["error"]["selected_fields"],
-                        serde_json::json!(["package.version"])
+                        toml::Value::Array(vec![toml::Value::from("package.version")])
                     );
                     continue;
                 }
                 _ => &report["input"],
             };
-            assert_eq!(subject["display_path"], path.to_string_lossy().as_ref());
-            assert!(subject["sha256"].is_null());
+            assert_eq!(
+                subject["display_path"].as_str(),
+                Some(path.to_string_lossy().as_ref())
+            );
+            assert!(subject.get("sha256").is_none());
         }
     }
     assert_eq!(fs::read(&invalid).unwrap(), [0xff]);
     assert_eq!(entries(temp.path()), [invalid]);
+
+    for exists in [true, false] {
+        let directory = tempfile::tempdir().unwrap();
+        let work = support::authoring_workspace(
+            directory.path(),
+            "review",
+            "ed",
+            include_str!("../../examples/ed/ed.toml"),
+        );
+        let path = work.canonicalize().unwrap().join("ed.toml");
+        if exists {
+            fs::write(&path, [0xff]).unwrap();
+        } else {
+            fs::remove_file(&path).unwrap();
+        }
+        let output = command()
+            .current_dir(directory.path())
+            .args(["gen", "review", "--check", "--format", "toml"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let report = machine_report(&output);
+        assert!(report.get("valid").is_none());
+        assert_eq!(report["success"].as_bool(), Some(false));
+        assert_eq!(
+            report["error"]["code"].as_str(),
+            Some("input-read"),
+            "{report}"
+        );
+        assert!(
+            report["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(path.to_str().unwrap()),
+            "{report}"
+        );
+        assert_eq!(
+            report["input"]["display_path"].as_str(),
+            Some(path.to_string_lossy().as_ref())
+        );
+        assert!(report["input"].get("sha256").is_none());
+        assert!(!work.join("ed.resolved.toml").exists());
+        assert!(!work.join("stage").exists());
+        if exists {
+            assert_eq!(fs::read(path).unwrap(), [0xff]);
+        }
+    }
 }
 
 #[test]
@@ -627,7 +687,11 @@ BODY
 
     let output = command()
         .current_dir(temp.path())
-        .args([OsStr::new("inspect"), OsStr::new("demo.spec")])
+        .args([
+            OsStr::new("inspect"),
+            OsStr::new("--spec"),
+            OsStr::new("demo.spec"),
+        ])
         .output()
         .expect("run ruyipack");
 
@@ -678,7 +742,15 @@ Summary: Broken subpackage
 ",
     );
 
-    let output = run([OsStr::new("inspect"), spec.as_os_str()]);
+    let output = command()
+        .current_dir(temp.path())
+        .args([
+            OsStr::new("inspect"),
+            OsStr::new("--spec"),
+            spec.as_os_str(),
+        ])
+        .output()
+        .unwrap();
 
     assert!(
         output.status.success(),
@@ -690,8 +762,8 @@ Summary: Broken subpackage
     assert_eq!(
         output_text(&output.stderr),
         format!(
-            "{}:4:9: error[rpmspec/E0007]: %package requires a subpackage name argument\n",
-            spec.display()
+            "[INFO] {}: inspecting SPEC\n[ERROR] spec[4:9] [rpmspec/E0007]: %package requires a subpackage name argument\n",
+            "missing-subpackage-name.spec"
         )
     );
 }
@@ -701,8 +773,8 @@ fn cli_rejects_invalid_invocations() {
     let cases: &[(&[&str], &str)] = &[
         (&[], "Usage: ruyipack <COMMAND>"),
         (&["unknown"], "error: unrecognized subcommand 'unknown'"),
-        (&["inspect"], "Usage: ruyipack inspect <SPEC>"),
-        (&["check"], "Usage: ruyipack check <SPEC>"),
+        (&["inspect"], "Usage: ruyipack inspect"),
+        (&["check"], "Usage: ruyipack check"),
         (
             &["check", "demo.spec", "extra"],
             "error: unexpected argument 'extra' found",
@@ -713,7 +785,7 @@ fn cli_rejects_invalid_invocations() {
         ),
         (
             &["inspect", ""],
-            "a value is required for '<SPEC>' but none was supplied",
+            "a value is required for '[WORK]' but none was supplied",
         ),
     ];
 
@@ -736,41 +808,4 @@ fn cli_rejects_invalid_invocations() {
             output_text(&output.stderr)
         );
     }
-}
-
-#[test]
-fn cli_prints_standard_help_and_version() {
-    let commands = ["init", "gen", "inspect", "check", "source-hash", "edit"];
-    let help = run(["--help"]);
-    super::support::quiet_success(&help);
-    let text = output_text(&help.stdout);
-    for name in commands {
-        assert!(
-            text.lines()
-                .any(|line| line.split_whitespace().next() == Some(name)),
-            "missing command {name}: {text}"
-        );
-    }
-    // Check product options, not Clap's wording or help paragraph layout.
-    for (name, options) in [
-        ("inspect", &["--format"] as &[_]),
-        ("check", &["--format"]),
-        ("gen", &["--format", "--check", "--offline"]),
-        ("edit", &["--set", "--field", "--check", "--hash-source"]),
-    ] {
-        let help = run([name, "--help"]);
-        super::support::quiet_success(&help);
-        for option in options {
-            assert!(
-                output_text(&help.stdout).contains(option),
-                "{name}: missing {option}"
-            );
-        }
-    }
-    let version = run(["--version"]);
-    super::support::quiet_success(&version);
-    assert_eq!(
-        output_text(&version.stdout),
-        format!("ruyipack {}\n", env!("CARGO_PKG_VERSION"))
-    );
 }

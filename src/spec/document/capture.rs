@@ -22,10 +22,10 @@ use crate::spec::ParsedSpec;
 
 impl<'src> Snapshot<'src> {
     pub(crate) fn capture_selected(
-        spec: &ParsedSpec<'src>,
+        spec: &'src ParsedSpec<'_>,
         selection: &[String],
     ) -> Result<Self, String> {
-        let source = spec.source;
+        let source = spec.source();
         let parsed = &spec.parsed;
         if source.contains(['\r', '\0']) {
             return Err("source: CR and NUL are unsupported".into());
@@ -57,16 +57,16 @@ impl<'src> Snapshot<'src> {
         let mut sections = Vec::new();
         // Editing locates declarations; static resolution supplies implicit identities.
         // Explicit fields remain repairable even when other Source values are unknown.
-        let source_numbers = needs_sources
+        let resolved_sources = needs_sources
             .then(|| crate::spec::sources::resolve(spec, &[]))
-            .and_then(Result::ok)
-            .map(|sources| {
-                sources
-                    .sources
-                    .into_iter()
-                    .map(|(number, source)| (source.span.bytes.start, number))
-                    .collect::<BTreeMap<_, _>>()
-            });
+            .and_then(Result::ok);
+        let source_numbers = resolved_sources.as_ref().map(|sources| {
+            sources
+                .sources
+                .iter()
+                .map(|(number, source)| (source.span.bytes.start, *number))
+                .collect::<BTreeMap<_, _>>()
+        });
         for (index, item) in parsed.spec.items.iter().enumerate() {
             match item {
                 SpecItem::Blank => {}
@@ -123,43 +123,56 @@ impl<'src> Snapshot<'src> {
                                 Tag::Source(Some(number)) => format!("Source{number}"),
                                 _ => "Source".to_owned(),
                             };
-                            let missing_asset = || {
-                                format!(
-                                    "{identity} ({name}): no adjacent RemoteAsset marker; local or unmarked Sources are not editable; select an individual marked Source with --field sources.N"
-                                )
+                            let previous =
+                                index.checked_sub(1).and_then(|i| parsed.spec.items.get(i));
+                            let adjacent = if let Some(SpecItem::Comment(previous)) = previous {
+                                let asset = checked_range(source, previous.data)?;
+                                (asset.end == range.start).then_some(asset)
+                            } else {
+                                None
                             };
-                            // RemoteAsset belongs to the immediately following Source.
-                            // Requiring byte adjacency avoids stealing a different asset's
-                            // digest across blank lines or unrelated comments.
-                            let Some(SpecItem::Comment(previous)) =
-                                index.checked_sub(1).and_then(|i| parsed.spec.items.get(i))
-                            else {
-                                return Err(missing_asset());
+                            let marked = adjacent.filter(|asset| {
+                                source[asset.clone()]
+                                    .starts_with(profile.remote_asset_bare.as_str())
+                            });
+                            let (asset, hash) = if let Some(asset) = marked {
+                                let hash = profile
+                                    .remote_asset_digest(
+                                        source[asset.clone()].trim_end_matches('\n'),
+                                    )
+                                    .map_err(|reason| format!("{identity}.sha256: {reason}"))?
+                                    .unwrap_or("")
+                                    .to_owned();
+                                consumed_assets.push(asset.clone());
+                                (asset, hash)
+                            } else {
+                                // Insert a marker only for a statically known remote Source.
+                                // Local files must never gain RemoteAsset metadata.
+                                let remote = resolved_sources
+                                    .as_ref()
+                                    .and_then(|sources| sources.sources.get(&number))
+                                    .and_then(|source| source.url.as_ref().ok())
+                                    .is_some_and(|url| crate::source::is_remote_url(url));
+                                if !remote {
+                                    return Err(format!(
+                                        "{identity} ({name}): no adjacent RemoteAsset marker; local or unresolved Sources are not editable; select an individual remote Source with --field sources.N"
+                                    ));
+                                }
+                                if let Some(SpecItem::Comment(previous)) = previous
+                                    && source[checked_range(source, previous.data)?]
+                                        .contains("RemoteAsset")
+                                {
+                                    return Err(format!(
+                                        "{identity}.sha256: malformed or nonadjacent RemoteAsset marker"
+                                    ));
+                                }
+                                (range.start..range.start, String::new())
                             };
-                            let asset = checked_range(source, previous.data)?;
-                            if asset.end != range.start {
-                                return Err(format!(
-                                    "{identity}.sha256: RemoteAsset must be immediately adjacent"
-                                ));
-                            }
-                            let asset_text = &source[asset.clone()];
-                            if !asset_text.starts_with(profile.remote_asset_bare.as_str()) {
-                                return Err(missing_asset());
-                            }
-                            let hash = profile
-                                .remote_asset_digest(asset_text.trim_end_matches('\n'))
-                                .map_err(|reason| format!("{identity}.sha256: {reason}"))?
-                                .unwrap_or("");
                             let field = format!("{identity}.sha256");
                             if snapshot.selects(&field) {
-                                insert(
-                                    &mut snapshot.document,
-                                    &field,
-                                    Value::String(hash.to_owned()),
-                                )?;
-                                snapshot.digest_markers.insert(field, asset.clone());
+                                insert(&mut snapshot.document, &field, Value::String(hash))?;
+                                snapshot.digest_markers.insert(field, asset);
                             }
-                            consumed_assets.push(asset);
                             (format!("{identity}.url"), expected)
                         }
                         _ => {
@@ -244,7 +257,61 @@ impl<'src> Snapshot<'src> {
         if selection.is_empty() && lookup(&snapshot.document, "package.name").is_none() {
             return Err("package.name: required main package is missing".into());
         }
+        for field in selection {
+            if lookup(&snapshot.document, field).is_none() {
+                return Err(format!("{field}: unknown field or group"));
+            }
+        }
         Ok(snapshot)
+    }
+
+    /// Project every independently source-mappable field while keeping other bytes opaque.
+    /// This does not claim that unmapped RPM constructs can be regenerated from TOML.
+    pub(crate) fn capture_supported(spec: &'src ParsedSpec<'_>) -> Result<Self, String> {
+        let mut fields = [
+            "package.name",
+            "package.version",
+            "package.summary",
+            "package.license",
+            "package.url",
+            "package.description",
+            "package.files",
+            "build.system",
+            "build-requires.rpm",
+            "spec.release",
+            "spec.changelog",
+            "spec.comments",
+            "spec.license",
+            "spec.copyright-years",
+            "spec.copyright-holders",
+            "spec.contributors",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        if let Ok(sources) = crate::spec::sources::resolve(spec, &[]) {
+            for number in sources.sources.keys() {
+                fields.push(format!("sources.{number}"));
+            }
+        }
+        // Accept a jointly mappable group at once. Split only failed groups to
+        // isolate unsupported fields; do not redo the whole walk for each Source.
+        fn supported(spec: &ParsedSpec<'_>, fields: &[String], output: &mut Vec<String>) {
+            if Snapshot::capture_selected(spec, fields).is_ok() {
+                output.extend_from_slice(fields);
+            } else if fields.len() > 1 {
+                let (left, right) = fields.split_at(fields.len() / 2);
+                supported(spec, left, output);
+                supported(spec, right, output);
+            }
+        }
+        let mut selected = Vec::new();
+        supported(spec, &fields, &mut selected);
+        let fields = selected;
+        if fields.is_empty() {
+            return Err("source: no safely editable fields are available".into());
+        }
+        Self::capture_selected(spec, &fields)
     }
 
     fn scalar(&mut self, field: &str, range: Range<usize>, multiline: bool) -> Result<(), String> {

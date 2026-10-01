@@ -39,11 +39,18 @@ impl BuildRequirements {
                 code: RULE.code,
                 severity: if self.uncertain { Severity::Warn } else { RULE.severity },
                 message: if self.uncertain {
-                    format!("build-requires.rpm: cannot confirm {required:?} required by {system}; conditional or unevaluated requirements need RPM validation")
+                    format!("build-requires.rpm: cannot confirm {required:?} required by the openRuyi {system} declaration contract; conditional or unevaluated requirements need RPM validation")
                 } else {
-                    format!("build-requires.rpm: declare {required:?} required by {system}")
+                    format!("build-requires.rpm: declare {required:?} required by the openRuyi {system} declaration contract (not measured tool usage)")
                 },
                 span: span.clone(),
+                // A confirmed violation depends on the unique literal system and
+                // every direct requirement. Uncertain contexts have no proof.
+                rule_inputs: (!self.uncertain).then(|| {
+                    let mut inputs = vec![system.clone(), required.clone()];
+                    inputs.extend(self.direct.iter().cloned());
+                    inputs
+                }),
             }).collect();
         let incomplete_reasons = if self.uncertain && !findings.is_empty() {
             vec![IncompleteReason::UnresolvedBuildRequirements]

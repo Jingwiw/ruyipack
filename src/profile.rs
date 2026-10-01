@@ -34,7 +34,7 @@ pub(crate) fn identity() -> Identity {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub(crate) struct Profile {
     pub(crate) spec_license: String,

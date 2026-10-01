@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-License-Identifier: MulanPSL-2.0
+
+services:
+  worker:
+    build: .
+    image: ruyipack/mock-openruyi:local
+    platform: linux/amd64
+    # Mock's simple isolation mounts a chroot. No nested container daemon.
+    cap_add: [SYS_ADMIN]
+    environment:
+      MOCK_CONFIG: /etc/mock/openruyi.cfg
+      BUILD_TARGET: /etc/ruyipack-target.json
+    init: true
+    stop_grace_period: 10s

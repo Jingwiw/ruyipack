@@ -20,6 +20,92 @@ fn source(directory: &Path, name: &str, contents: &str) -> PathBuf {
 }
 
 #[test]
+fn stage_artifacts_publish_binary_bytes_and_refuse_nonregular_targets() {
+    let directory = tempfile::tempdir().unwrap();
+    let artifact = directory.path().join("candidate.bin");
+    write_artifact(&artifact, b"first\x00\xff").unwrap();
+    assert_eq!(fs::read(&artifact).unwrap(), b"first\x00\xff");
+    write_artifact(&artifact, b"replacement\x00").unwrap();
+    assert_eq!(fs::read(&artifact).unwrap(), b"replacement\x00");
+    assert_eq!(
+        write_artifact(directory.path(), b"no").unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn stage_artifacts_refuse_symlink_and_hardlink_aliases_without_changing_bytes() {
+    use std::os::unix::fs::symlink;
+    let directory = tempfile::tempdir().unwrap();
+    let original = source(directory.path(), "original", "pristine\n");
+    let symlink_path = directory.path().join("symlink");
+    symlink(&original, &symlink_path).unwrap();
+    assert_eq!(
+        write_artifact(&symlink_path, b"candidate")
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert!(
+        fs::symlink_metadata(&symlink_path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    let hardlink = directory.path().join("hardlink");
+    fs::hard_link(&original, &hardlink).unwrap();
+    for path in [&original, &hardlink] {
+        assert_eq!(
+            write_artifact(path, b"candidate").unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(fs::read_to_string(path).unwrap(), "pristine\n");
+    }
+}
+
+#[test]
+fn publication_log_paths_are_relative_and_remain_distinguishable() {
+    let current = std::env::current_dir().unwrap();
+    let mut output = Vec::new();
+    for name in ["first/pkg.spec", "second/pkg.spec"] {
+        EditOutcome::Written(current.join(name))
+            .write_human(&mut output)
+            .unwrap();
+    }
+    let output = String::from_utf8(output).unwrap();
+    assert_eq!(
+        dialoguer::console::strip_ansi_codes(&output),
+        "[INFO] Wrote first/pkg.spec\n[INFO] Wrote second/pkg.spec\n"
+    );
+}
+
+#[test]
+fn diff_headers_preserve_data_paths_and_terminate_spaced_filenames() {
+    let path = Path::new("dir with spaces/pkg.spec");
+    let diff = diff_text(path, Some(b"old\n"), "new\n").unwrap();
+    assert!(diff.starts_with("--- dir with spaces/pkg.spec\t\n+++ dir with spaces/pkg.spec\t\n"));
+    let diff = diff_text(path, None, "new\n").unwrap();
+    assert!(diff.starts_with("--- /dev/null\n+++ dir with spaces/pkg.spec\t\n"));
+    for invalid in ["pkg\t.spec", "pkg\r.spec", "pkg\n.spec"] {
+        assert_matches!(diff_text(Path::new(invalid), Some(b"old\n"), "new\n"),
+            Err(OutputError::DiffPath(actual)) if actual == Path::new(invalid));
+    }
+    assert_matches!(diff_text(path, Some(b"old\xff\n"), "new\n"),
+        Err(OutputError::DiffEncoding { path: actual, .. }) if actual == path);
+}
+
+#[cfg(unix)]
+#[test]
+fn diff_headers_reject_non_utf8_names_instead_of_replacing_their_identity() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    let path = PathBuf::from(OsString::from_vec(b"pkg\xff.spec".to_vec()));
+    assert_matches!(diff_text(&path, Some(b"old\n"), "new\n"),
+        Err(OutputError::DiffPath(actual)) if actual == path);
+}
+
+#[test]
 fn copy_selection_is_unreachable_for_directories_or_nameless_targets() {
     let directory = tempfile::tempdir().unwrap();
     let input = source(directory.path(), "input.spec", "original\n");
@@ -30,7 +116,7 @@ fn copy_selection_is_unreachable_for_directories_or_nameless_targets() {
     }];
     for target in [directory.path(), Path::new(""), Path::new("/")] {
         assert!(run(target, "candidate\n", OutputMode::Write, no_prompt).is_err());
-        assert!(run_edits(&files, Some(target), EditMode::Write, no_prompt).is_err());
+        assert!(run_edits(&files, Some(target), no_prompt).is_err());
     }
     assert_eq!(fs::read_to_string(input).unwrap(), "original\n");
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
@@ -71,7 +157,6 @@ fn copy_selection_preserves_extensions_and_existing_sidecars() {
                     contents: "candidate\n",
                 }],
                 Some(&target),
-                EditMode::Write,
                 |_| Ok(ConflictAction::Copy),
             )
             .unwrap();
@@ -110,7 +195,6 @@ fn edit_selection_cannot_authorize_a_changed_source_or_destination() {
                 contents: "candidate\n",
             }],
             Some(&target),
-            EditMode::Write,
             |path| {
                 assert_eq!(path, target);
                 fs::write(changed, "external change\n").unwrap();
@@ -141,7 +225,6 @@ fn edit_diff_returns_to_selection_and_cancellation_does_not_publish() {
             contents: "candidate\n",
         }],
         Some(&target),
-        EditMode::Write,
         |_| {
             selections += 1;
             if selections == 1 {
@@ -203,7 +286,7 @@ fn all_sources_are_checked_before_force_writes_any_member() {
         },
     ];
     std::assert_matches!(
-        run_edits(&files, None, EditMode::Overwrite, no_prompt),
+        run_edits(&files, None, |_| Ok(ConflictAction::Overwrite)),
         Err(OutputError::SourceChanged(path)) if path == second
     );
     assert_eq!(fs::read_to_string(first).unwrap(), "first\n");
@@ -224,11 +307,11 @@ fn repeated_source_checks_reject_a_same_bytes_symlink_replacement() {
 
         contents: "edited\n",
     }];
-    check_sources(&files, &[false]).unwrap();
+    check_sources(&files, &[]).unwrap();
     fs::remove_file(&input).unwrap();
     symlink(&replacement, &input).unwrap();
     assert_matches!(
-        check_sources(&files, &[false]),
+        check_sources(&files, &[]),
         Err(OutputError::SourceChanged(path)) if path == input
     );
 }
@@ -253,7 +336,7 @@ fn successful_overwrites_do_not_invalidate_the_remaining_batch() {
         },
     ];
     assert_eq!(
-        run_edits(&files, None, EditMode::Overwrite, no_prompt).unwrap(),
+        run_edits(&files, None, |_| Ok(ConflictAction::Overwrite)).unwrap(),
         vec![
             EditOutcome::Written(first.clone()),
             EditOutcome::Written(second.clone())
@@ -278,7 +361,7 @@ fn hardlinked_sources_and_targets_are_rejected() {
         contents: "edited\n",
     }];
     assert_matches!(
-        run_edits(&own_alias, Some(&alias), EditMode::Overwrite, no_prompt),
+        run_edits(&own_alias, Some(&alias), |_| Ok(ConflictAction::Overwrite)),
         Err(OutputError::EditLayout(_))
     );
     let duplicate_sources = [
@@ -296,7 +379,7 @@ fn hardlinked_sources_and_targets_are_rejected() {
         },
     ];
     assert_matches!(
-        run_edits(&duplicate_sources, None, EditMode::Overwrite, no_prompt),
+        run_edits(&duplicate_sources, None, |_| Ok(ConflictAction::Overwrite)),
         Err(OutputError::EditLayout(_))
     );
     assert_eq!(fs::read_to_string(first).unwrap(), "first\n");
@@ -317,8 +400,7 @@ fn edits_preserve_access_permissions_on_existing_and_new_targets() {
             contents: "edited\n",
         }],
         Some(&target),
-        EditMode::Overwrite,
-        no_prompt,
+        |_| Ok(ConflictAction::Overwrite),
     )
     .unwrap();
     assert_eq!(
@@ -333,8 +415,7 @@ fn edits_preserve_access_permissions_on_existing_and_new_targets() {
             contents: "edited\n",
         }],
         None,
-        EditMode::Overwrite,
-        no_prompt,
+        |_| Ok(ConflictAction::Overwrite),
     )
     .unwrap();
     assert_eq!(
@@ -354,7 +435,7 @@ fn unchanged_edits_do_not_replace_files() {
         contents: "same\n",
     }];
     assert_eq!(
-        run_edits(&files, None, EditMode::Overwrite, no_prompt).unwrap(),
+        run_edits(&files, None, |_| Ok(ConflictAction::Overwrite)).unwrap(),
         vec![EditOutcome::Unchanged(input.clone())]
     );
     let after = fs::metadata(&input).unwrap();
@@ -387,7 +468,7 @@ fn a_later_write_failure_retains_exact_written_paths() {
         },
     ];
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
-    let result = run_edits(&files, None, EditMode::Overwrite, no_prompt);
+    let result = run_edits(&files, None, |_| Ok(ConflictAction::Overwrite));
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
     let Err(OutputError::Partial { written, source }) = result else {
         panic!("expected a partial permission failure: {result:?}")

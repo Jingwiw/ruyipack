@@ -10,10 +10,16 @@ use std::ops::Range;
 use toml::Table;
 
 use super::table::{string, strings, validate_shape};
+use crate::spec::ParsedSpec;
+
 use super::{List, Snapshot, validate_comments, validate_file_path, validate_text};
 
 impl Snapshot<'_> {
-    pub(crate) fn render(&self, edited: &Table, defines: &[String]) -> Result<String, String> {
+    pub(crate) fn render(
+        &self,
+        edited: &Table,
+        defines: &[String],
+    ) -> Result<ParsedSpec<'static>, String> {
         self.render_changes(edited, true, defines)
     }
 
@@ -22,7 +28,7 @@ impl Snapshot<'_> {
         &self,
         edited: &Table,
         defines: &[String],
-    ) -> Result<String, String> {
+    ) -> Result<ParsedSpec<'static>, String> {
         for (field, range) in &self.digest_markers {
             if self.source[range.clone()].contains('%') {
                 return Err(format!(
@@ -38,7 +44,7 @@ impl Snapshot<'_> {
         edited: &Table,
         with_digests: bool,
         defines: &[String],
-    ) -> Result<String, String> {
+    ) -> Result<ParsedSpec<'static>, String> {
         validate_shape(&self.document, edited)?;
         let mut changes = Vec::new();
         for scalar in &self.scalars {
@@ -58,7 +64,8 @@ impl Snapshot<'_> {
             // Empty represents an already-bare marker, never a made-up digest.
             // Existing digests cannot be erased by accidentally clearing the draft.
             if value.is_empty()
-                && self.source[range.clone()].trim_end() == profile.remote_asset_bare
+                && (range.is_empty()
+                    || self.source[range.clone()].trim_end() == profile.remote_asset_bare)
             {
                 continue;
             }
@@ -140,20 +147,15 @@ impl Snapshot<'_> {
             cursor = range.end;
         }
         output.push_str(&self.source[cursor..]);
+        let parsed = ParsedSpec::parse(output);
         // Resolve selected URL expressions against the actual candidate, not a second
         // cached projection of package fields. Literal repairs need no macro context.
-        let mut sources = None;
+        let sources = std::cell::LazyCell::new(|| crate::spec::sources::resolve(&parsed, defines));
         for scalar in &self.scalars {
             if let Some(number) = scalar.field.strip_circumfix("sources.", ".url") {
                 let value = string(edited, &scalar.field)?;
                 let resolved = crate::spec::expression::substitute_fields(value, &[])
                     .or_else(|_| {
-                        let sources = sources.get_or_insert_with(|| {
-                            crate::spec::sources::resolve(
-                                &crate::spec::ParsedSpec::parse(&output),
-                                defines,
-                            )
-                        });
                         let source = sources
                             .as_ref()
                             .map_err(Clone::clone)?
@@ -167,7 +169,7 @@ impl Snapshot<'_> {
                     .map_err(|reason| format!("{}: {reason}", scalar.field))?;
             }
         }
-        Ok(output)
+        Ok(parsed)
     }
 
     fn replace_list(

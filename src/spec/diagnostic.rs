@@ -103,28 +103,22 @@ mod tests {
                     .with_note("the macro recovery context"),
             ],
         );
-        assert_eq!(
-            serde_json::to_value(&converted).unwrap(),
-            serde_json::json!([
-                {"severity":"error", "code":"rpmspec/E001",
-                 "span":{"start_byte":2,"end_byte":8,"start_line":1,"start_column":3,"end_line":2,"end_column":4},
-                 "message":"invalid syntax", "notes":["the recovery context"]},
-                {"severity":"warning", "code":null, "span":null,
-                 "message":"unlocated warning", "notes":[]},
-                {"severity":"warning", "code":"rpmspec/W0004", "span":null,
-                 "message":"unterminated macro", "notes":["the macro recovery context"]}
-            ])
-        );
+        assert_eq!(converted.len(), 3);
+        assert_eq!(converted[0].code.as_deref(), Some("rpmspec/E001"));
+        assert_eq!(converted[0].span.as_ref().unwrap().start, (1, 3));
+        assert_eq!(converted[0].message, "invalid syntax");
+        assert_eq!(converted[0].notes, ["the recovery context"]);
+        assert!(converted[1].code.is_none());
+        assert!(converted[1].span.is_none());
+        assert_eq!(converted[1].message, "unlocated warning");
+        assert_eq!(converted[2].code.as_deref(), Some("rpmspec/W0004"));
+        assert!(converted[2].span.is_none());
+        assert_eq!(converted[2].notes, ["the macro recovery context"]);
         let mut output = Vec::new();
-        crate::parser_diagnostic::write(
-            std::path::Path::new("input.spec"),
-            &converted,
-            &mut output,
-        )
-        .unwrap();
+        crate::parser_diagnostic::write(&converted, &mut output).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
-            "input.spec:1:3: error[rpmspec/E001]: invalid syntax\n  note: the recovery context\ninput.spec: warning: unlocated warning\ninput.spec: warning[rpmspec/W0004]: unterminated macro\n  note: the macro recovery context\n"
+            "[ERROR] spec[1:3] [rpmspec/E001]: invalid syntax\n  note: the recovery context\n[WARN] spec: unlocated warning\n[WARN] spec [rpmspec/W0004]: unterminated macro\n  note: the macro recovery context\n"
         );
     }
 
@@ -165,14 +159,16 @@ mod tests {
                     ],
                 );
                 assert_eq!(converted[0].span.is_some(), retained, "{span:?}");
-                let expected_span = retained.then(|| serde_json::to_value(location(span)).unwrap());
-                assert_eq!(
-                    serde_json::to_value(&converted).unwrap(),
-                    serde_json::json!([{
-                        "severity":"error", "code":code, "span":expected_span,
-                        "message":"conditional error", "notes":["original context"]
-                    }])
-                );
+                assert_eq!(converted[0].code.as_deref(), Some(code));
+                assert_eq!(converted[0].message, "conditional error");
+                assert_eq!(converted[0].notes, ["original context"]);
+                if retained {
+                    let actual = converted[0].span.as_ref().unwrap();
+                    let expected = location(span);
+                    assert_eq!(actual.start, expected.start);
+                    assert_eq!(actual.end, expected.end);
+                    assert_eq!(actual.bytes, expected.bytes);
+                }
             }
         }
     }

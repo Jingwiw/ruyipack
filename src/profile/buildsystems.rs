@@ -7,7 +7,7 @@
 //! Build-system contracts: declared requirements and default stage actions.
 //!
 //! Each supported system has a TOML file in `profiles/openruyi/buildsystems`
-//! and an entry in `CONTRACTS`. These supply CLI choices, init guidance, and
+//! and an entry in `CONTRACTS`. These supply CLI choices, new guidance, and
 //! the RPK004 requirement check. Stage actions are guidance, not shell scripts
 //! executed by RuyiPack: the generated BuildSystem tag selects target RPM macros.
 //! Each TOML records its policy/macro source. An empty requirement list means
@@ -21,12 +21,12 @@ use std::sync::LazyLock;
 pub(crate) struct Contract {
     pub(crate) name: String,
     pub(crate) build_requires: Vec<String>,
-    // Default stage actions shown as guidance in init templates.
+    // Default stage actions shown as guidance in new templates.
     #[serde(default)]
     pub(crate) stages: Vec<StageAction>,
 }
 
-/// Stage guidance for init. Missing notes serialize as null for strict templates.
+/// Stage guidance for new. Missing notes serialize as null for strict templates.
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StageAction {

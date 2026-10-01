@@ -9,7 +9,7 @@
 use std::{
     collections::HashSet,
     io::{Read, Write},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use fs_err::{self as fs, OpenOptions};
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::utf8_file;
 
-pub(super) struct Draft {
+pub(crate) struct Draft {
     pub source: PathBuf,
     pub original: String,
     pub fields: Vec<String>,
@@ -39,7 +39,7 @@ struct Entry {
     fields: Vec<String>,
 }
 
-pub(super) fn create(
+pub(crate) fn create(
     dir: &Path,
     sources: &[(&Path, &str, &[String], &toml::Table)],
 ) -> Result<Vec<PathBuf>, String> {
@@ -47,7 +47,7 @@ pub(super) fn create(
         return Err("no sources selected for draft preparation".into());
     }
     let mut index = Index {
-        version: 2,
+        version: 4,
         drafts: Vec::new(),
     };
     let mut contents = Vec::new();
@@ -71,15 +71,15 @@ pub(super) fn create(
             ));
         }
         let schema = format!("schema/{position}.json");
-        let body = toml::to_string_pretty(table)
-            .map_err(|error| format!("cannot serialize {draft}: {error}"))?;
+        let body = toml::to_string_pretty(table).map_err(|e| e.to_string())?;
         let document = format!(
             "#:tombi toml-version = \"v1.1.0\"\n#:schema .state/{schema}\n\n\
              # Edit the selected fields, then save this file.\n\
              # Preview with ruyipack edit --from DIR --diff before applying.\n\n{body}"
         );
-        let schema_json = serde_json::to_vec_pretty(&super::fields::schema(table))
-            .map_err(|error| format!("cannot serialize schema for {draft}: {error}"))?;
+        let schema_json =
+            serde_json::to_vec_pretty(&crate::spec::document::schema::generate(table))
+                .map_err(|error| format!("cannot serialize schema for {draft}: {error}"))?;
         contents.push((document, schema_json));
         index.drafts.push(Entry {
             source,
@@ -87,7 +87,7 @@ pub(super) fn create(
             fields: fields.to_vec(),
         });
     }
-    let index_json = serde_json::to_vec_pretty(&index)
+    let index_toml = toml::to_string_pretty(&index)
         .map_err(|error| format!("cannot serialize draft index: {error}"))?;
     ensure_absent(&dir.join(".state"))?;
     for entry in &index.drafts {
@@ -104,7 +104,10 @@ pub(super) fn create(
         index.drafts.iter().zip(contents).zip(sources).enumerate()
     {
         write_new(
-            &state.join(format!("originals/{position}.spec")),
+            &state.join(format!(
+                "originals/{position}-{}.spec",
+                entry.original_sha256
+            )),
             original.as_bytes(),
         )?;
         write_new(&state.join(format!("schema/{position}.json")), &schema)?;
@@ -113,11 +116,11 @@ pub(super) fn create(
         drafts.push(path);
     }
     // An interrupted preparation has no complete index and cannot be loaded.
-    write_new(&state.join("index.json"), &index_json)?;
+    write_new(&state.join("index.toml"), index_toml.as_bytes())?;
     Ok(drafts)
 }
 
-pub(super) fn load(dir: &Path) -> Result<Vec<Draft>, String> {
+pub(crate) fn load(dir: &Path) -> Result<Vec<Draft>, String> {
     let dir = fs::canonicalize(dir).map_err(|error| error.to_string())?;
     let state = dir.join(".state");
     for path in [&state, &state.join("originals"), &state.join("schema")] {
@@ -129,15 +132,7 @@ pub(super) fn load(dir: &Path) -> Result<Vec<Draft>, String> {
             ));
         }
     }
-    let index_path = state.join("index.json");
-    let index: Index = serde_json::from_slice(&read_regular(&index_path)?)
-        .map_err(|error| format!("invalid draft index {}: {error}", index_path.display()))?;
-    if index.version != 2 {
-        return Err(format!(
-            "unsupported draft state version {} (expected 2)",
-            index.version
-        ));
-    }
+    let index = read_index(&state.join("index.toml"))?;
     if index.drafts.is_empty() {
         return Err("draft index contains no sources".into());
     }
@@ -152,13 +147,13 @@ pub(super) fn load(dir: &Path) -> Result<Vec<Draft>, String> {
         if !names.insert(name) {
             return Err("draft index contains duplicate generated paths".into());
         }
-        let original_path = state.join(format!("originals/{position}.spec"));
-        let original = String::from_utf8(read_regular(&original_path)?).map_err(|error| {
-            format!(
-                "invalid saved original {}: {error}",
-                original_path.display()
-            )
-        })?;
+        crate::source::validate_sha256(&entry.original_sha256)
+            .map_err(|_| "draft index original_sha256 must be a SHA-256".to_owned())?;
+        let original_path = state.join(format!(
+            "originals/{position}-{}.spec",
+            entry.original_sha256
+        ));
+        let original = read_text(&original_path)?;
         if utf8_file::sha256(&original) != entry.original_sha256 {
             return Err(format!(
                 "saved original hash mismatch for {}",
@@ -179,35 +174,28 @@ pub(super) fn load(dir: &Path) -> Result<Vec<Draft>, String> {
 }
 
 /// A destination must not replace the draft or its recovery inputs.
-pub(super) fn protect_output(output: &Path, drafts: &[&Path]) -> Result<(), String> {
-    let Some(draft) = drafts.first() else {
+pub(crate) fn protect_output(output: &Path, draft: Option<&Path>) -> Result<(), String> {
+    let Some(draft) = draft else {
         return Ok(());
     };
     let root = draft.parent().ok_or("draft has no parent directory")?;
-    let parent = output
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let target = fs::canonicalize(parent)
-        .map_err(|e| e.to_string())?
-        .join(output.file_name().ok_or("output must name a file")?);
-    if target.starts_with(root) {
+    let target = crate::file_output::output_path(output).map_err(|e| e.to_string())?;
+    if draft == target || target.starts_with(root.join(".state")) {
         return Err(format!(
-            "{}: output must be outside the draft directory",
+            "{}: output must not replace editable input or recovery state",
             output.display()
         ));
     }
     #[cfg(unix)]
     if let Ok(target_metadata) = fs::metadata(&target) {
         use std::os::unix::fs::MetadataExt;
-        let mut protected = drafts
-            .iter()
-            .map(|path| path.to_path_buf())
-            .collect::<Vec<_>>();
-        protected.push(root.join(".state/index.json"));
-        for index in 0..drafts.len() {
-            protected.push(root.join(format!(".state/originals/{index}.spec")));
-            protected.push(root.join(format!(".state/schema/{index}.json")));
+        let mut protected = vec![draft.to_path_buf(), root.join(".state/index.toml")];
+        for directory in ["originals", "schema"] {
+            for entry in
+                fs::read_dir(root.join(".state").join(directory)).map_err(|e| e.to_string())?
+            {
+                protected.push(entry.map_err(|e| e.to_string())?.path());
+            }
         }
         for path in protected {
             let metadata = fs::metadata(&path).map_err(|e| e.to_string())?;
@@ -227,15 +215,7 @@ fn draft_name(source: &Path) -> Result<String, String> {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .ok_or_else(|| format!("source {} has no UTF-8 file stem", source.display()))?;
-    let name = format!("{stem}.toml");
-    let mut components = Path::new(&name).components();
-    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
-        return Err(format!(
-            "source {} has an invalid draft file stem",
-            source.display()
-        ));
-    }
-    Ok(name)
+    Ok(format!("{stem}.toml"))
 }
 
 fn ensure_absent(path: &Path) -> Result<(), String> {
@@ -272,17 +252,136 @@ fn open_regular(path: &Path) -> Result<fs::File, String> {
     fs::File::open(path).map_err(|error| error.to_string())
 }
 
-fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
+pub(crate) fn read_text(path: &Path) -> Result<String, String> {
+    let mut text = String::new();
     open_regular(path)?
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    Ok(bytes)
+        .read_to_string(&mut text)
+        .map_err(|error| format!("cannot read draft file {}: {error}", path.display()))?;
+    Ok(text)
 }
 
-pub(super) fn read_text(path: &Path) -> Result<String, String> {
-    String::from_utf8(read_regular(path)?)
-        .map_err(|error| format!("cannot read draft file {}: {error}", path.display()))
+fn read_index(path: &Path) -> Result<Index, String> {
+    let index: Index = toml::from_str(&read_text(path)?)
+        .map_err(|error| format!("invalid draft index {}: {error}", path.display()))?;
+    if index.version != 4 {
+        return Err(format!(
+            "unsupported draft state version {} (expected 4)",
+            index.version
+        ));
+    }
+    Ok(index)
+}
+
+/// Read the selected TOML fields, not a second SPEC authority.
+pub(crate) fn read_document_path(path: &Path) -> Result<toml::Table, String> {
+    let text = read_text(path)?;
+    toml::from_str(&text).map_err(|error: toml::de::Error| {
+        if let Some(span) = error.span() {
+            let prefix = &text[..span.start.min(text.len())];
+            let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+            let column = prefix.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+            format!("{}:{line}:{column}: {}", path.display(), error.message())
+        } else {
+            format!("{}: {}", path.display(), error.message())
+        }
+    })
+}
+
+pub(crate) fn save_document(path: &Path, document: &toml::Table) -> Result<(), String> {
+    let body = toml::to_string_pretty(document).map_err(|e| e.to_string())?;
+    let before = read_text(path)?;
+    let directives = before
+        .lines()
+        .take_while(|line| line.starts_with("#:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = if directives.is_empty() {
+        body
+    } else {
+        format!("{directives}\n\n{body}")
+    };
+    crate::file_output::write_artifact(path, text.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// Restore omitted keys, not explicit empty or invalid values supplied by the author.
+pub(crate) fn complete_missing(document: &mut toml::Table, baseline: &toml::Table) {
+    for (key, value) in baseline {
+        match document.entry(key.clone()) {
+            toml::map::Entry::Vacant(entry) => {
+                entry.insert(value.clone());
+            }
+            toml::map::Entry::Occupied(mut entry) => {
+                if let (Some(edited), Some(before)) =
+                    (entry.get_mut().as_table_mut(), value.as_table())
+                {
+                    complete_missing(edited, before);
+                }
+            }
+        }
+    }
+}
+
+/// Update editable scope or advance a successfully applied baseline. The index
+/// is published last: interrupted updates retain the previous recovery input.
+pub(crate) fn update(
+    path: &Path,
+    fields: &[String],
+    document: &toml::Table,
+    applied: Option<&str>,
+) -> Result<(), String> {
+    let root = path.parent().ok_or("stage input has no parent")?;
+    let state = root.join(".state");
+    let index_path = state.join("index.toml");
+    let mut index = read_index(&index_path)?;
+    let (position, entry) = index
+        .drafts
+        .iter_mut()
+        .enumerate()
+        .find(|(_, entry)| draft_name(&entry.source).is_ok_and(|name| path == root.join(name)))
+        .ok_or("stage input is not bound in its index")?;
+    if let Some(original) = applied {
+        if !utf8_file::is_unchanged(&entry.source, original).map_err(|e| e.to_string())? {
+            return Err("applied source changed; retained draft baseline was not advanced".into());
+        }
+        entry.original_sha256 = utf8_file::sha256(original);
+        // Never overwrite the indexed baseline before the index write succeeds.
+        let baseline = state.join(format!(
+            "originals/{position}-{}.spec",
+            entry.original_sha256
+        ));
+        if !baseline.exists() {
+            write_new(&baseline, original.as_bytes())?;
+        } else if read_text(&baseline)? != original {
+            return Err("saved baseline hash collision or corruption".into());
+        }
+    }
+    entry.fields = fields.to_vec();
+    let schema = serde_json::to_vec_pretty(&crate::spec::document::schema::generate(document))
+        .map_err(|e| e.to_string())?;
+    crate::file_output::write_artifact(&state.join(format!("schema/{position}.json")), &schema)
+        .map_err(|e| e.to_string())?;
+    save_document(path, document)?;
+    let metadata = toml::to_string_pretty(&index).map_err(|e| e.to_string())?;
+    crate::file_output::write_artifact(&index_path, metadata.as_bytes()).map_err(|e| e.to_string())
+}
+
+pub(crate) fn diff(path: &Path, original: &str, contents: &str) -> Result<String, String> {
+    crate::file_output::diff_text(path, Some(original.as_bytes()), contents)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn save_diff(dir: &Path, stem: &str, diff: &str) -> Result<PathBuf, String> {
+    let path = dir.join(format!("{stem}.diff"));
+    crate::file_output::write_artifact(&path, diff.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// Candidates are derived from the input on every invocation, never trusted as a cache hit.
+pub(crate) fn cache(dir: &Path, stem: &str, contents: &str) -> Result<PathBuf, String> {
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{stem}.candidate.spec"));
+    crate::file_output::write_artifact(&path, contents.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -356,7 +455,11 @@ mod tests {
         assert_eq!(loaded[0].path, prepared[0]);
         assert_eq!(fs::read_to_string(&input.0).unwrap(), input.1);
         assert_eq!(
-            fs::read_to_string(dir.join(".state/originals/0.spec")).unwrap(),
+            fs::read_to_string(dir.join(format!(
+                ".state/originals/0-{}.spec",
+                utf8_file::sha256(&input.1)
+            )))
+            .unwrap(),
             input.1
         );
     }
@@ -370,7 +473,14 @@ mod tests {
         fs::write(&input.0, "Name: changed\n").unwrap();
         assert_eq!(load(&dir).unwrap()[0].original, input.1);
         fs::write(&input.0, &input.1).unwrap();
-        fs::write(dir.join(".state/originals/0.spec"), "Name: changed\n").unwrap();
+        fs::write(
+            dir.join(format!(
+                ".state/originals/0-{}.spec",
+                utf8_file::sha256(&input.1)
+            )),
+            "Name: changed\n",
+        )
+        .unwrap();
         assert!(load(&dir).err().unwrap().contains("hash mismatch"));
     }
 
@@ -392,8 +502,11 @@ mod tests {
             assert_eq!(draft.source, fs::canonicalize(&inputs[position].0).unwrap());
             assert_eq!(draft.original, inputs[position].1);
             assert!(
-                dir.join(format!(".state/originals/{position}.spec"))
-                    .is_file()
+                dir.join(format!(
+                    ".state/originals/{position}-{}.spec",
+                    utf8_file::sha256(&inputs[position].1)
+                ))
+                .is_file()
             );
             assert!(dir.join(format!(".state/schema/{position}.json")).is_file());
         }
@@ -405,30 +518,38 @@ mod tests {
         let input = source(temp.path(), "demo.spec");
         let dir = temp.path().join("drafts");
         create(&dir, &[input]).unwrap();
-        let path = dir.join(".state/index.json");
-        let original: serde_json::Value =
-            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let path = dir.join(".state/index.toml");
+        let original: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         let mut invalid = Vec::new();
         let mut value = original.clone();
-        value["version"] = 999.into();
+        value["version"] = toml::Value::Integer(999);
         invalid.push(value);
         let mut value = original.clone();
-        value["unexpected"] = true.into();
+        value
+            .as_table_mut()
+            .unwrap()
+            .insert("unexpected".into(), toml::Value::Boolean(true));
         invalid.push(value);
         let mut value = original.clone();
-        value["drafts"][0]["source"] = "demo.spec".into();
+        value["drafts"][0]["source"] = toml::Value::String("demo.spec".into());
         invalid.push(value);
         let mut value = original.clone();
-        value["drafts"] = serde_json::json!([]);
+        value["drafts"] = toml::Value::Array(Vec::new());
         invalid.push(value);
         let mut value = original.clone();
-        value["drafts"] = serde_json::json!([original["drafts"][0], original["drafts"][0]]);
+        value["drafts"] = toml::Value::Array(vec![
+            original["drafts"][0].clone(),
+            original["drafts"][0].clone(),
+        ]);
         invalid.push(value);
         let mut value = original;
-        value["drafts"][0]["unexpected"] = true.into();
+        value["drafts"][0]
+            .as_table_mut()
+            .unwrap()
+            .insert("unexpected".into(), toml::Value::Boolean(true));
         invalid.push(value);
         for value in invalid {
-            fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+            fs::write(&path, toml::to_string_pretty(&value).unwrap()).unwrap();
             assert!(load(&dir).is_err(), "{value}");
         }
     }
@@ -458,9 +579,9 @@ mod tests {
         assert!(!dir.join(".state").exists());
         let fresh = temp.path().join("fresh");
         create(&fresh, std::slice::from_ref(&input)).unwrap();
-        let index = fs::read(fresh.join(".state/index.json")).unwrap();
+        let index = fs::read(fresh.join(".state/index.toml")).unwrap();
         assert!(create(&fresh, &[input]).is_err());
-        assert_eq!(fs::read(fresh.join(".state/index.json")).unwrap(), index);
+        assert_eq!(fs::read(fresh.join(".state/index.toml")).unwrap(), index);
     }
 
     #[cfg(unix)]
@@ -480,7 +601,10 @@ mod tests {
         );
         fs::remove_file(&input.0).unwrap();
         fs::write(&input.0, &input.1).unwrap();
-        let original = dir.join(".state/originals/0.spec");
+        let original = dir.join(format!(
+            ".state/originals/0-{}.spec",
+            utf8_file::sha256(&input.1)
+        ));
         fs::remove_file(&original).unwrap();
         symlink(&replacement.0, &original).unwrap();
         assert!(load(&dir).err().unwrap().contains("not a symlink"));

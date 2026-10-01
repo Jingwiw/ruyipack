@@ -14,14 +14,113 @@ const MANIFEST: &str = include_str!("../examples/ed/ed.toml");
 
 fn workspace() -> tempfile::TempDir {
     let directory = tempfile::tempdir().expect("create workspace");
-    fs::write(directory.path().join("ed.toml"), MANIFEST).expect("write manifest");
+    let initialized = Command::new(env!("CARGO_BIN_EXE_ruyipack"))
+        .current_dir(directory.path())
+        .arg("init")
+        .output()
+        .unwrap();
+    assert!(initialized.status.success(), "{initialized:?}");
+    let work = directory.path().join("work/review");
+    fs::create_dir_all(&work).unwrap();
+    fs::write(work.join(".config.toml"), "pkg = \"ed\"\n").unwrap();
+    fs::write(work.join("ed.toml"), MANIFEST).expect("write WORK manifest");
     directory
 }
 
 fn gen_command(directory: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ruyipack"));
-    command.current_dir(directory).args(["gen", "ed"]);
     command
+        .current_dir(directory)
+        .args(["gen", "review", "--spec=ed.spec"]);
+    command
+}
+
+#[test]
+fn piped_human_diagnostics_never_emit_ansi_even_when_console_color_is_forced() {
+    let directory = workspace();
+    let path = directory.path().join("warning.spec");
+    fs::write(&path, "%unknown value\n").unwrap();
+    for (no_color, term) in [(false, "xterm"), (true, "xterm"), (false, "dumb")] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ruyipack"));
+        command
+            .current_dir(directory.path())
+            .args(["inspect", "--spec"])
+            .arg(&path)
+            .env("TERM", term)
+            .env("CLICOLOR_FORCE", "1");
+        if no_color {
+            command.env("NO_COLOR", "1");
+        } else {
+            command.env_remove("NO_COLOR");
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            "[INFO] warning.spec: inspecting SPEC\n[WARN] spec[1:1] [rpmspec/W0002]: line not recognized\n"
+        );
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn terminal_prefix_color_respects_no_color_and_dumb_term() {
+    let directory = workspace();
+    fs::write(directory.path().join("warning.spec"), "%unknown value\n").unwrap();
+    for (no_color, term, colored) in [
+        (false, "xterm", true),
+        (true, "xterm", false),
+        (false, "dumb", false),
+    ] {
+        let mut command = Command::new("script");
+        command
+            .current_dir(directory.path())
+            .env("TERM", term)
+            .env("CLICOLOR_FORCE", "1");
+        if no_color {
+            command.env("NO_COLOR", "1");
+        } else {
+            command.env_remove("NO_COLOR");
+        }
+        #[cfg(target_os = "macos")]
+        command.args([
+            "-q",
+            "/dev/null",
+            env!("CARGO_BIN_EXE_ruyipack"),
+            "inspect",
+            "--spec=warning.spec",
+        ]);
+        #[cfg(target_os = "linux")]
+        command.args([
+            "-q",
+            "-e",
+            "-c",
+            &shell_words::join([
+                env!("CARGO_BIN_EXE_ruyipack"),
+                "inspect",
+                "--spec=warning.spec",
+            ]),
+            "/dev/null",
+        ]);
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let text = String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n");
+        if colored {
+            assert!(
+                text.contains(
+                    "\u{1b}[33m[WARN]\u{1b}[0m spec[1:1] [rpmspec/W0002]: line not recognized\n"
+                ),
+                "{text:?}"
+            );
+        } else {
+            assert!(!text.contains('\u{1b}'), "{text:?}");
+            assert!(
+                text.contains("[WARN] spec[1:1] [rpmspec/W0002]: line not recognized\n"),
+                "{text:?}"
+            );
+        }
+        assert!(!output.stderr.contains(&0x1b), "{output:?}");
+    }
 }
 
 #[test]
@@ -44,22 +143,29 @@ fn disconnected_standard_streams_return_errors_without_panicking() {
     fs::write(directory.path().join("warning.spec"), "%unknown value\n").unwrap();
 
     for args in [
-        ["check", "ed.spec", "--format", "json"].as_slice(),
-        &["inspect", "ed.spec"],
-        &["inspect", "ed.spec", "--format", "json"],
-        &["gen", "ed", "--stdout"],
-        &["edit", "ed.spec", "--all", "--view"],
-        &["edit", "ed.spec", "--check", "--format", "json"],
+        ["check", "--spec=ed.spec", "--format", "toml"].as_slice(),
+        &["inspect", "--spec=ed.spec"],
+        &["inspect", "--spec=ed.spec", "--format", "toml"],
+        &["gen", "review", "--stdout"],
+        &["inspect", "--spec=ed.spec", "--editable", "--all"],
         &[
             "edit",
-            "ed.spec",
+            "--spec=ed.spec",
+            "--all",
+            "--check",
+            "--format",
+            "toml",
+        ],
+        &[
+            "edit",
+            "--spec=ed.spec",
             "--set",
             "package.version=1.22.6",
             "--stdout",
         ],
         &[
             "edit",
-            "ed.spec",
+            "--spec=ed.spec",
             "--set",
             "package.version=1.22.6",
             "--diff",
@@ -79,24 +185,33 @@ fn disconnected_standard_streams_return_errors_without_panicking() {
                 lines
                     .next()
                     .unwrap()
-                    .contains("review required after changing package.version:"),
+                    .starts_with("[INFO] ed.spec: stage saved:"),
                 "{stderr}"
             );
+            if args.contains(&"--stdout") {
+                assert!(
+                    lines
+                        .next()
+                        .unwrap()
+                        .contains("review required after changing package.version:"),
+                    "{stderr}"
+                );
+            }
         }
         assert!(
             lines
                 .next()
                 .unwrap()
-                .starts_with("error: failed to write output to stdout:"),
+                .starts_with("[ERROR] failed to write output to stdout:"),
             "{args:?}: {result:?}"
         );
         assert!(lines.next().is_none(), "{stderr}");
     }
 
     for args in [
-        ["check", "missing-tags.spec"].as_slice(),
-        &["inspect", "warning.spec"],
-        &["inspect", "absent.spec"],
+        ["check", "--spec=missing-tags.spec"].as_slice(),
+        &["inspect", "--spec=warning.spec"],
+        &["inspect", "--spec=absent.spec"],
     ] {
         let result = Command::new(env!("CARGO_BIN_EXE_ruyipack"))
             .current_dir(directory.path())
@@ -128,11 +243,12 @@ fn disconnected_standard_streams_return_errors_without_panicking() {
         .current_dir(directory.path())
         .args([
             "edit",
-            "ed.spec",
+            "--spec=ed.spec",
             "--set",
             "package.version=1.22.6",
+            "--apply",
             "--format",
-            "json",
+            "toml",
         ])
         .stdout(closed_pipe())
         .output()
@@ -161,19 +277,19 @@ fn disconnected_standard_streams_return_errors_without_panicking() {
         .current_dir(directory.path())
         .args([
             "edit",
-            "ed.spec",
+            "--spec=ed.spec",
             "--expect-sha256",
             &digest,
             "--set",
             "package.version=1.22.7",
             "--format",
-            "json",
+            "toml",
         ])
         .output()
         .unwrap();
     assert_eq!(retry.status.code(), Some(1));
-    let report: serde_json::Value = serde_json::from_slice(&retry.stdout).unwrap();
-    assert_eq!(report["error"]["code"], "source-changed");
+    let report: toml::Value = toml::from_str(&String::from_utf8_lossy(&retry.stdout)).unwrap();
+    assert_eq!(report["error"]["code"].as_str(), Some("source-changed"));
     assert_eq!(fs::read(directory.path().join("ed.spec")).unwrap(), changed);
 
     fs::write(directory.path().join("ed.spec"), "hand edited\n").unwrap();

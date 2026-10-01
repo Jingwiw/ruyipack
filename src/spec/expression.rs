@@ -88,8 +88,9 @@ impl Context {
             );
         } else if matches!(definition.kind, MacroDefKind::Global) || definition.eager {
             let expanded = self.expand(&definition.body);
-            self.literal(&definition.name, expanded.clone());
-            expanded?;
+            let result = expanded.as_ref().map(|_| ()).map_err(Clone::clone);
+            self.literal(&definition.name, expanded);
+            result?;
         } else {
             self.push(&definition.name, definition.body.clone());
         }
@@ -101,54 +102,57 @@ impl Context {
     }
 
     pub(crate) fn expand(&self, text: &Text) -> Result<String, String> {
-        self.expand_at(text, &mut Vec::new(), 0)
+        let mut output = String::new();
+        self.expand_into(text, &mut Vec::new(), 0, &mut output)?;
+        Ok(output)
     }
 
-    fn expand_at(
-        &self,
-        text: &Text,
-        stack: &mut Vec<String>,
+    fn expand_into<'a>(
+        &'a self,
+        text: &'a Text,
+        stack: &mut Vec<&'a str>,
         depth: usize,
-    ) -> Result<String, String> {
+        output: &mut String,
+    ) -> Result<(), String> {
         self.step()?;
         if depth >= 64 {
             return Err("excessively nested static macro expression".into());
         }
-        let mut output = String::new();
         for segment in &text.segments {
             self.step()?;
-            let value = match segment {
-                TextSegment::Literal(value) => value.clone(),
+            match segment {
+                TextSegment::Literal(value) => {
+                    // Bound total expansion, not just each recursive fragment.
+                    if output.len().saturating_add(value.len()) > 1024 * 1024 {
+                        return Err("macro expansion exceeds the 1 MiB static limit".into());
+                    }
+                    output.push_str(value);
+                }
                 TextSegment::Macro(reference)
                     if matches!(reference.kind, MacroKind::Plain | MacroKind::Braced)
                     && reference.args.is_empty() => {
-                        let name = &reference.name;
+                        let name = reference.name.as_str();
                         let definition = self.definitions.get(name).and_then(|defs| defs.last())
                             .ok_or_else(|| format!("unsupported source macro {name:?}: unavailable or ambiguous; supply its static value with --define"))?;
                         let definition = definition.as_ref().map_err(Clone::clone)?;
                         if matches!(reference.conditional, ConditionalMacro::IfNotDefined) {
-                            String::new()
+                            continue;
                         } else if let Some(value) = &reference.with_value {
-                            self.expand_at(value, stack, depth + 1)?
+                            self.expand_into(value, stack, depth + 1, output)?;
                         } else {
-                            if stack.contains(name) {
+                            if stack.contains(&name) {
                                 return Err(format!("cyclic or excessively nested macro {name:?}"));
                             }
-                            stack.push(name.clone());
-                            let result = self.expand_at(definition, stack, depth + 1);
+                            stack.push(name);
+                            let result = self.expand_into(definition, stack, depth + 1, output);
                             stack.pop();
-                            result?
+                            result?;
                         }
                     }
                 _ => return Err("unsupported Source expression: dynamic or parameterized macros are not executed".into()),
-            };
-            // Bound amplification independently of the number of recursive calls.
-            if output.len().saturating_add(value.len()) > 1024 * 1024 {
-                return Err("macro expansion exceeds the 1 MiB static limit".into());
             }
-            output.push_str(&value);
         }
-        Ok(output)
+        Ok(())
     }
 
     pub(crate) fn condition(&self, kind: CondKind, expr: &CondExpr<Span>) -> Result<bool, String> {

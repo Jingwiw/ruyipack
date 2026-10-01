@@ -12,15 +12,16 @@ pub(crate) mod materials;
 pub(crate) mod metadata;
 
 use std::{
-    io::{self, Write},
-    path::PathBuf,
+    io,
+    path::{Path, PathBuf},
 };
 
 use crate::{
     check_report::{CheckReport, Finding, IncompleteReason, SelectedRule, Severity},
-    output_cli::{ReportError, ReportFormat, read_source},
+    output_cli::{ReportError, ReportFormat, report_input},
     parser_diagnostic,
     spec::ParsedSpec,
+    workspace::SpecOptions,
 };
 
 /// Findings and unfinished checks are independent facts, not severity conventions.
@@ -30,10 +31,6 @@ pub(crate) struct RuleResult {
     pub(crate) findings: Vec<Finding>,
     pub(crate) incomplete_reasons: Vec<IncompleteReason>,
 }
-
-// Required main-package tags for this profile.
-const REQUIRED_TAG_LINT_IDS: [&str; 6] =
-    ["RPM010", "RPM011", "RPM012", "RPM013", "RPM014", "RPM015"];
 
 // Missing or malformed source digests warn while authoring, so unrelated edits
 // remain possible. Authoring a digest still requires a valid SHA-256.
@@ -82,23 +79,13 @@ impl Policy {
 /// Runs selected static checks; neither policy verifies downloaded bytes or builds.
 pub(crate) fn analyze(spec: &ParsedSpec<'_>, policy: Policy, defines: &[String]) -> CheckReport {
     let source = spec.source();
-    let mut selected_rules: Vec<_> = REQUIRED_TAG_LINT_IDS
-        .iter()
-        .map(|&code| SelectedRule {
-            code,
-            severity: Severity::Deny,
-        })
-        .collect();
     let diagnostics = spec.diagnostics();
 
     let parser_error = diagnostics
         .iter()
         .any(|item| item.severity == parser_diagnostic::Severity::Error);
-    let mut findings = if parser_error {
-        Vec::new()
-    } else {
-        spec.analyzer_findings(&selected_rules)
-    };
+    let (mut selected_rules, mut findings) =
+        crate::spec::analyzer::required_tags((!parser_error).then_some(spec));
     selected_rules.push(license::RULE);
     selected_rules.extend(metadata::RULES);
     selected_rules.push(build::RULE);
@@ -119,17 +106,18 @@ pub(crate) fn analyze(spec: &ParsedSpec<'_>, policy: Policy, defines: &[String])
 }
 
 #[derive(clap::Args)]
+#[command(group(clap::ArgGroup::new("check-input").args(["work", "spec", "manifest"]).required(true)))]
 pub(crate) struct Options {
-    /// RPM SPEC to check.
-    #[arg(value_name = "SPEC", required_unless_present = "manifest")]
-    spec: Option<PathBuf>,
+    #[command(flatten)]
+    input: SpecOptions,
     /// Check an authoring manifest by rendering it in memory, without downloads or writes.
-    #[arg(long, conflicts_with_all = ["spec", "defines"], value_name = "PATH")]
+    #[arg(long, conflicts_with_all = ["work", "spec", "pkgname", "defines"],
+        value_name = "PATH")]
     manifest: Option<PathBuf>,
     /// Also check staged Source/Patch files and report sizes and SHA-256 digests.
     #[arg(long)]
     materials: bool,
-    /// Prepared RPM _sourcedir; defaults to the recipe directory, not the current directory.
+    /// Prepared RPM _sourcedir; defaults to the input directory, but must be explicit without a checkout.
     #[arg(long, requires = "materials", value_name = "DIR")]
     source_dir: Option<PathBuf>,
     /// Static admission policy; neither policy verifies native builds.
@@ -143,58 +131,96 @@ pub(crate) struct Options {
 }
 
 pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
-    let path = options
-        .manifest
-        .as_ref()
-        .or(options.spec.as_ref())
-        .expect("required CLI input");
-    let Some(original) = read_source(path, options.format)? else {
-        return Ok(false);
+    let spec_input = if options.manifest.is_none() {
+        let Some(input) = report_input(
+            options.input.resolve(),
+            &options.input.display(),
+            options.format,
+        )?
+        else {
+            return Ok(false);
+        };
+        Some(input)
+    } else {
+        None
     };
-    let rendered;
-    let mut authoring_report = None;
-    let source = if options.manifest.is_some() {
-        match crate::render::manifest::parse(&original)
+    let manifest_source;
+    let (path, original) = if let Some(input) = &spec_input {
+        (input.path.as_path(), input.source.as_str())
+    } else {
+        let path = options.manifest.as_ref().expect("SPEC or manifest input");
+        let Some(source) = report_input(
+            crate::utf8_file::read(path),
+            &path.to_string_lossy(),
+            options.format,
+        )?
+        else {
+            return Ok(false);
+        };
+        manifest_source = source;
+        (path.as_path(), manifest_source.as_str())
+    };
+    let parsed = if options.manifest.is_some() {
+        match crate::render::manifest::parse(original)
             .and_then(|manifest| crate::render::run(&manifest))
         {
-            Ok(result) => {
-                authoring_report = Some(result.report);
-                rendered = result.contents;
-                &rendered
-            }
+            Ok(parsed) => parsed,
             Err(error) => {
-                if matches!(options.format, ReportFormat::Json) {
-                    let mut stdout = io::stdout().lock();
-                    let report = serde_json::json!({"format_version": 2, "valid": false,
-                        "tool": crate::tool::identity(), "input": {"display_path":path,"sha256":crate::utf8_file::sha256(&original)},
-                        "error": crate::output_cli::failure("invalid-manifest", &error)});
-                    serde_json::to_writer(&mut stdout, &report)
-                        .map_err(|e| ReportError::Stdout(e.into()))?;
-                    writeln!(stdout).map_err(ReportError::Stdout)?;
+                if matches!(options.format, ReportFormat::Toml) {
+                    crate::output_cli::write_failure(
+                        crate::report::Input {
+                            display_path: path.to_string_lossy(),
+                            sha256: Some(&crate::utf8_file::sha256(original)),
+                            revision: None,
+                        },
+                        crate::report::failure("invalid-manifest", &error),
+                    )?;
                     return Ok(false);
                 }
                 return Err(ReportError::Manifest(error));
             }
         }
     } else {
-        &original
+        ParsedSpec::parse(original)
     };
-    let parsed = std::cell::LazyCell::new(|| ParsedSpec::parse(source));
-    let mut report = match (options.policy, authoring_report) {
-        (Policy::Authoring, Some(report)) => report,
-        _ => analyze(&parsed, options.policy, &options.defines),
-    };
+    let mut report = analyze(&parsed, options.policy, &options.defines);
     if options.manifest.is_some() {
-        report.set_manifest_input(&original);
+        report.set_manifest_input(original);
+    }
+    if let Some(input) = &spec_input {
+        report.set_spec_revision(input.revision.as_deref());
     }
     if options.materials {
-        report.materials = Some(materials::analyze(
-            path,
-            &original,
-            &parsed,
-            &options.defines,
-            options.source_dir.as_deref(),
-        ));
+        // A committed SPEC is not a claim that the recipe working tree contains
+        // its matching materials. Require the caller's prepared directory here.
+        let directory = options.source_dir.as_deref().or_else(|| {
+            spec_input.as_ref().map_or_else(
+                || {
+                    Some(
+                        path.parent()
+                            .filter(|path| !path.as_os_str().is_empty())
+                            .unwrap_or_else(|| Path::new(".")),
+                    )
+                },
+                |input| input.revision.is_none().then(|| input.directory()),
+            )
+        });
+        let mut inventory = materials::analyze(directory, &parsed, &options.defines);
+        let unchanged = spec_input.as_ref().map_or_else(
+            || {
+                fs_err::canonicalize(path)
+                    .and_then(|path| crate::utf8_file::is_unchanged(&path, original))
+            },
+            |input| input.is_unchanged(),
+        );
+        match unchanged {
+            Ok(true) => {}
+            Ok(false) => {
+                inventory.invalidate("input-changed", "recipe changed during inventory; retry")
+            }
+            Err(error) => inventory.invalidate("input-read", error),
+        }
+        report.materials = Some(inventory);
     }
     match options.format {
         ReportFormat::Human => {
@@ -207,8 +233,8 @@ pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
                     .map_err(ReportError::Stdout)?;
             }
         }
-        ReportFormat::Json => report
-            .write_json(path, &mut io::stdout().lock())
+        ReportFormat::Toml => report
+            .write_toml(path, &mut io::stdout().lock())
             .map_err(ReportError::Stdout)?,
     }
     Ok(report.is_success())

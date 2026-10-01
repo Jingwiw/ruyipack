@@ -4,39 +4,20 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Manifest-to-SPEC rendering with the shared static checks.
+//! Manifest-to-SPEC rendering and independent fact verification.
 
 pub(crate) mod manifest;
 pub(crate) mod spec;
 
-use crate::{
-    check,
-    check_report::CheckReport,
-    spec::{ParsedSpec, verify},
-};
+use crate::spec::{ParsedSpec, verify};
 
-/// Renders one manifest without file or terminal I/O.
-pub(crate) fn run(manifest: &manifest::Manifest) -> Result<RenderedSpec, RenderError> {
+/// Render and independently verify the exact SPEC, retaining its parsed facts.
+/// Policy belongs to the caller; checking a manifest does not run authoring first.
+pub(crate) fn run(manifest: &manifest::Manifest) -> Result<ParsedSpec<'static>, RenderError> {
     let profile = crate::profile::load();
-    let contents = spec::render(manifest, profile);
-    let parsed = ParsedSpec::parse(&contents);
+    let parsed = ParsedSpec::parse(spec::render(manifest, profile));
     verify::run(&parsed, manifest, profile)?;
-    let report = check::analyze(&parsed, check::Policy::Authoring, &[]);
-    let build_contract = manifest
-        .build
-        .system
-        .as_deref()
-        .and_then(crate::profile::buildsystems::contract_identity);
-    Ok(RenderedSpec {
-        build_contract,
-        contents,
-        report,
-    })
-}
-pub(crate) struct RenderedSpec {
-    pub(crate) build_contract: Option<crate::profile::Identity>,
-    pub(crate) contents: String,
-    pub(crate) report: CheckReport,
+    Ok(parsed)
 }
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum RenderError {

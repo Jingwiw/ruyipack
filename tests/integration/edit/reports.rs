@@ -11,10 +11,9 @@ use super::{
     version_source,
 };
 use std::fs;
-use std::path::Path;
 
 #[test]
-fn invalid_toml_reports_its_file_line_and_column_in_check_json() {
+fn invalid_toml_reports_its_file_line_and_column_in_check_toml() {
     let directory = fixture(SPEC);
     let drafts = prepare(directory.path(), &["ed.spec"], &["package.version"]);
     let path = drafts.join("ed.toml");
@@ -22,16 +21,19 @@ fn invalid_toml_reports_its_file_line_and_column_in_check_json() {
     let output = command(directory.path())
         .arg("--from")
         .arg(&drafts)
-        .args(["--check", "--format", "json"])
+        .args(["--check", "--format", "toml"])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stderr.is_empty());
-    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["valid"], false);
-    assert_eq!(report["files"][0]["error"]["code"], "invalid-draft");
+    let report = super::support::machine_report(&output);
+    assert!(report.get("valid").is_none());
+    assert_eq!(
+        report["files"][0]["error"]["code"].as_str(),
+        Some("invalid-draft")
+    );
     let error = report["files"][0]["error"]["message"].as_str().unwrap();
-    assert!(error.contains("ed.toml:2:"), "{error}");
+    assert!(error.contains("ed.toml:2:24"), "{error}");
     assert_file(path, "[package]\nversion = \"unterminated\n");
     let preview = command(directory.path())
         .arg("--from")
@@ -61,9 +63,9 @@ fn incomplete_batch_diagnostics_identify_each_candidate_without_publishing() {
     }
     for diff in [false, true] {
         let output = command(directory.path())
-            .args(names)
+            .args(names.into_iter().flat_map(|name| ["--spec", name]))
             .args(diff.then_some("--diff"))
-            .args(["--set", "package.summary=Updated summary"])
+            .args(["--set", "package.summary=Updated summary", "--check"])
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -74,21 +76,37 @@ fn incomplete_batch_diagnostics_identify_each_candidate_without_publishing() {
                 2,
                 "{text}"
             );
-        } else {
-            assert!(output.stdout.is_empty());
+        }
+        if !diff {
+            assert!(output.stdout.is_empty(), "{output:?}");
         }
         let diagnostics = String::from_utf8(output.stderr).unwrap();
-        for name in names {
-            let path = fs::canonicalize(directory.path().join(name)).unwrap();
-            let expected = format!(
-                "{} (candidate): error: check incomplete because license expressions require RPM evaluation",
-                path.display()
-            );
+        let starts = names.map(|name| {
+            diagnostics
+                .find(&format!("[INFO] {name}: candidate static blockers:"))
+                .unwrap_or_else(|| panic!("missing {name} report context: {diagnostics}"))
+        });
+        assert!(starts[0] < starts[1], "{diagnostics}");
+        let line = source
+            .lines()
+            .position(|line| line.starts_with("License:"))
+            .unwrap()
+            + 1;
+        let issue = format!("[WARN] spec[{line}:1] [RPK001]: inherited 1 issue(s)");
+        let incomplete =
+            "[ERROR] check incomplete because license expressions require RPM evaluation";
+        assert_eq!(diagnostics.matches(&issue).count(), 2, "{diagnostics}");
+        assert_eq!(diagnostics.matches(incomplete).count(), 2, "{diagnostics}");
+        for (index, name) in names.into_iter().enumerate() {
+            let end = starts.get(index + 1).copied().unwrap_or(diagnostics.len());
+            let section = &diagnostics[starts[index]..end];
+            assert_eq!(section.matches(&issue).count(), 1, "{section}");
+            assert_eq!(section.matches(incomplete).count(), 1, "{section}");
             assert!(
-                diagnostics.lines().any(|line| line == expected),
-                "{diagnostics}"
+                section.contains(&format!("[ERROR] {name}: not admissible")),
+                "{section}"
             );
-            assert_file(path, &source);
+            assert_file(directory.path().join(name), &source);
         }
     }
 }
@@ -102,28 +120,31 @@ fn static_check_failure_blocks_even_forced_publication() {
     fs::write(&path, &source).unwrap();
     let checked = command(directory.path())
         .args([
-            "ed.spec",
+            "--spec=ed.spec",
             "--set",
             "package.version=1.22.6",
             "--check",
             "--format",
-            "json",
+            "toml",
         ])
         .output()
         .unwrap();
     assert_eq!(checked.status.code(), Some(1), "{checked:?}");
     assert!(checked.stderr.is_empty());
-    let report: serde_json::Value = serde_json::from_slice(&checked.stdout).unwrap();
-    assert_eq!(report["valid"], false);
-    assert_eq!(report["files"][0]["valid"], false);
+    let report = super::support::machine_report(&checked);
+    assert_eq!(report["valid"].as_bool(), Some(false));
+    assert_eq!(report["files"][0]["valid"].as_bool(), Some(false));
     assert_eq!(
-        report["files"][0]["report"]["findings"][0]["code"],
-        "RPM015"
+        report["files"][0]["report"]["findings"][0]["code"].as_str(),
+        Some("RPM015")
     );
-    assert_eq!(report["files"][0]["introduced_static_blockers"], false);
     assert_eq!(
-        report["files"][0]["baseline_report"]["evidence"]["status"],
-        "fail"
+        report["files"][0]["introduced_static_blockers"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        report["files"][0]["baseline_report"]["evidence"]["status"].as_str(),
+        Some("fail")
     );
     assert!(
         report["files"][0]["error"]["message"]
@@ -134,12 +155,23 @@ fn static_check_failure_blocks_even_forced_publication() {
     assert_file(&path, &source);
 
     let preview = command(directory.path())
-        .args(["ed.spec", "--set", "package.version=1.22.6", "--diff"])
+        .args([
+            "--spec=ed.spec",
+            "--set",
+            "package.version=1.22.6",
+            "--diff",
+            "--check",
+        ])
         .output()
         .unwrap();
     assert_eq!(preview.status.code(), Some(1), "{preview:?}");
     assert!(String::from_utf8_lossy(&preview.stdout).contains("+Version:        1.22.6"));
-    assert!(String::from_utf8_lossy(&preview.stderr).contains("RPM015"));
+    assert_eq!(
+        String::from_utf8_lossy(&preview.stderr)
+            .matches("spec is missing the URL: tag")
+            .count(),
+        1
+    );
     assert_file(&path, &source);
 
     let target = directory.path().join("other.spec");
@@ -150,7 +182,12 @@ fn static_check_failure_blocks_even_forced_publication() {
         &["--output", "other.spec", "--force"][..],
     ] {
         let output = command(directory.path())
-            .args(["ed.spec", "--set", "package.version=1.22.6"])
+            .args([
+                "--spec=ed.spec",
+                "--set",
+                "package.version=1.22.6",
+                "--apply",
+            ])
             .args(extra)
             .output()
             .unwrap();
@@ -163,148 +200,159 @@ fn static_check_failure_blocks_even_forced_publication() {
 }
 
 #[test]
-fn json_reports_cover_check_prepare_apply_retry_and_partial_failure() {
+fn toml_reports_cover_check_prepare_apply_retry_and_partial_failure() {
     let directory = fixture(SPEC);
     for (file, exit) in [("ed.spec", 0), ("missing.spec", 1)] {
         let output = command(directory.path())
-            .args([
-                file,
-                "--field",
-                "package.version",
-                "--check",
-                "--format",
-                "json",
-            ])
+            .args(["--spec", file, "--check", "--format", "toml"])
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(exit), "{output:?}");
         assert!(output.stderr.is_empty());
-        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(report["format_version"], 2);
-        assert_eq!(report["scope"], "selected-edit-static");
-        assert_eq!(report["valid"], exit == 0);
+        let report = super::support::machine_report(&output);
+        assert_eq!(report["format_version"].as_integer(), Some(4));
+        assert_eq!(report["scope"].as_str(), Some("edit-stage"));
+        assert_eq!(report["success"].as_bool(), Some(exit == 0));
         if exit == 0 {
+            assert_eq!(report["valid"].as_bool(), Some(true));
+            assert_eq!(report["files"][0]["state"].as_str(), Some("candidate"));
             assert_eq!(
-                report["files"][0]["report"]["evidence"]["stage"],
-                "spec-static"
+                report["files"][0]["report"]["evidence"]["stage"].as_str(),
+                Some("spec-static")
             );
         } else {
+            assert!(report.get("valid").is_none());
             assert!(report["files"].as_array().unwrap().is_empty());
-            assert!(report["error"]["code"].is_string());
-            assert!(report["error"]["message"].is_string());
+            assert!(report["error"]["code"].is_str());
+            assert!(report["error"]["message"].is_str());
         }
     }
     unchanged(directory.path());
-    fs::create_dir(directory.path().join("directory-target")).unwrap();
-    let output = command(directory.path())
+
+    // A failed publication retains its stage, so use an independent transaction.
+    let failed_directory = fixture(SPEC);
+    fs::create_dir(failed_directory.path().join("directory-target")).unwrap();
+    let output = command(failed_directory.path())
         .args([
-            "ed.spec",
+            "--spec=ed.spec",
             "--set",
             "package.version=2",
+            "--apply",
             "--output",
             "directory-target",
             "--format",
-            "json",
+            "toml",
         ])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
-    let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(receipt["error"]["code"], "operation-failed");
-    assert_eq!(receipt["error"]["stage"], "publication");
-    assert_eq!(receipt["error"]["reason"], "read-failed");
-    assert_eq!(receipt["error"]["io_kind"], "is-a-directory");
-    assert!(receipt["error"]["path"].is_string());
-    unchanged(directory.path());
-    let prepared = command(directory.path())
-        .args([
-            "ed.spec",
-            "--field",
-            "package.version",
-            "--prepare",
-            "drafts",
-            "--format",
-            "json",
-        ])
-        .output()
-        .unwrap();
-    success(&prepared);
-    let receipt: serde_json::Value = serde_json::from_slice(&prepared.stdout).unwrap();
-    let draft = Path::new(receipt["files"][0]["draft"].as_str().unwrap());
-    change_version(draft, "2");
+    let receipt = super::support::machine_report(&output);
+    assert_eq!(receipt["error"]["code"].as_str(), Some("operation-failed"));
+    assert_eq!(receipt["error"]["stage"].as_str(), Some("publication"));
+    assert_eq!(receipt["error"]["reason"].as_str(), Some("read-failed"));
+    assert_eq!(receipt["error"]["io_kind"].as_str(), Some("is-a-directory"));
+    assert!(receipt["error"]["path"].is_str());
+    unchanged(failed_directory.path());
+
+    let drafts = prepare(directory.path(), &["ed.spec"], &["package.version"]);
+    change_version(&drafts.join("ed.toml"), "2");
     let applied = command(directory.path())
-        .args(["--from", "drafts", "--format", "json"])
+        .args(["--from", "drafts", "--apply", "--format", "toml"])
         .output()
         .unwrap();
     success(&applied);
-    let receipt: serde_json::Value = serde_json::from_slice(&applied.stdout).unwrap();
-    assert_eq!(receipt["outcomes"][0]["status"], "written");
+    let receipt = super::support::machine_report(&applied);
+    assert_eq!(receipt["outcomes"][0]["status"].as_str(), Some("written"));
     assert_file(directory.path().join("ed.spec"), &version_source("2"));
     let repeated = command(directory.path())
-        .args(["ed.spec", "--set", "package.version=2", "--format", "json"])
+        .args(["--from", "drafts", "--apply", "--format", "toml"])
         .output()
         .unwrap();
     success(&repeated);
-    let receipt: serde_json::Value = serde_json::from_slice(&repeated.stdout).unwrap();
-    assert_eq!(receipt["outcomes"][0]["status"], "unchanged");
+    let receipt = super::support::machine_report(&repeated);
+    assert_eq!(receipt["outcomes"][0]["status"].as_str(), Some("unchanged"));
+    // Successful application rebases the stage; only a later external change is stale.
+    fs::write(directory.path().join("ed.spec"), version_source("3")).unwrap();
     let stale = command(directory.path())
-        .args(["--from", "drafts", "--format", "json"])
+        .args(["--from", "drafts", "--apply", "--format", "toml"])
         .output()
         .unwrap();
     assert_eq!(stale.status.code(), Some(1));
-    let receipt: serde_json::Value = serde_json::from_slice(&stale.stdout).unwrap();
-    assert_eq!(receipt["files"][0]["error"]["code"], "source-changed");
-    assert_file(directory.path().join("ed.spec"), &version_source("2"));
+    let receipt = super::support::machine_report(&stale);
+    assert_eq!(
+        receipt["files"][0]["error"]["code"].as_str(),
+        Some("source-changed")
+    );
+    assert_file(directory.path().join("ed.spec"), &version_source("3"));
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        let directory = fixture(SPEC);
         let locked = directory.path().join("locked");
         fs::create_dir(&locked).unwrap();
         fs::write(locked.join("second.spec"), SPEC).unwrap();
+        let drafts = prepare(
+            directory.path(),
+            &["ed.spec", "locked/second.spec"],
+            &["package.version"],
+        );
+        change_version(&drafts.join("ed.toml"), "3");
+        change_version(&drafts.join("second.toml"), "3");
+        // Prepare before locking the destination, isolating publication failure.
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
         let partial = command(directory.path())
-            .args([
-                "ed.spec",
-                "locked/second.spec",
-                "--set",
-                "package.version=3",
-                "--format",
-                "json",
-            ])
+            .args(["--from", "drafts", "--apply", "--format", "toml"])
             .output()
             .unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(partial.status.code(), Some(1));
         assert!(partial.stderr.is_empty());
-        let receipt: serde_json::Value = serde_json::from_slice(&partial.stdout).unwrap();
+        let receipt = super::support::machine_report(&partial);
         let written = fs::canonicalize(directory.path().join("ed.spec")).unwrap();
-        assert_eq!(receipt["written"], serde_json::json!([written]));
-        assert_eq!(receipt["valid"], false);
-        assert_eq!(receipt["error"]["code"], "operation-failed");
-        assert_eq!(receipt["error"]["stage"], "publication");
-        assert_eq!(receipt["error"]["reason"], "write-failed");
-        assert_eq!(receipt["error"]["io_kind"], "permission-denied");
         assert_eq!(
-            receipt["error"]["path"],
-            fs::canonicalize(locked.join("second.spec"))
+            receipt["written"]
+                .as_array()
                 .unwrap()
-                .to_str()
-                .unwrap()
+                .iter()
+                .map(|path| path.as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [written.to_str().unwrap()]
+        );
+        assert_eq!(receipt["success"].as_bool(), Some(false));
+        assert_eq!(receipt["valid"].as_bool(), Some(true));
+        assert_eq!(receipt["error"]["code"].as_str(), Some("operation-failed"));
+        assert_eq!(receipt["error"]["stage"].as_str(), Some("publication"));
+        assert_eq!(receipt["error"]["reason"].as_str(), Some("write-failed"));
+        assert_eq!(
+            receipt["error"]["io_kind"].as_str(),
+            Some("permission-denied")
+        );
+        assert_eq!(
+            receipt["error"]["path"].as_str(),
+            Some(
+                fs::canonicalize(locked.join("second.spec"))
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            )
         );
         assert_file(written, &version_source("3"));
         assert_file(locked.join("second.spec"), SPEC);
 
         use std::os::unix::ffi::OsStringExt;
+        let directory = fixture(SPEC);
         let missing = directory
             .path()
             .join(std::ffi::OsString::from_vec(b"missing-\xff".to_vec()));
         let failed = command(directory.path())
             .args([
-                "ed.spec",
+                "--spec=ed.spec",
                 "--set",
                 "package.version=4",
+                "--apply",
                 "--format",
-                "json",
+                "toml",
                 "--output",
             ])
             .arg(missing.join("out.spec"))
@@ -312,16 +360,22 @@ fn json_reports_cover_check_prepare_apply_retry_and_partial_failure() {
             .unwrap();
         assert_eq!(failed.status.code(), Some(1));
         assert!(failed.stderr.is_empty());
-        let report: serde_json::Value = serde_json::from_slice(&failed.stdout).unwrap();
-        assert_eq!(report["error"]["reason"], "read-failed");
-        assert_eq!(report["error"]["path"], missing.to_string_lossy().as_ref());
-        assert_file(directory.path().join("ed.spec"), &version_source("3"));
+        let report = super::support::machine_report(&failed);
+        assert_eq!(
+            report["error"]["reason"].as_str(),
+            Some("read-failed"),
+            "{report}"
+        );
+        assert_eq!(
+            report["error"]["path"].as_str(),
+            Some(missing.to_string_lossy().as_ref())
+        );
+        unchanged(directory.path());
     }
 }
 
 #[test]
 fn upgrade_review_is_visible_without_changing_static_check_success() {
-    let directory = fixture(SPEC);
     for (assignment, trigger) in [
         ("package.version=2", Some("package.version")),
         (
@@ -331,34 +385,43 @@ fn upgrade_review_is_visible_without_changing_static_check_success() {
         ("package.version=1.22.5", None),
         ("package.summary=Updated summary", None),
     ] {
+        let directory = fixture(SPEC);
         let output = command(directory.path())
             .args([
-                "ed.spec", "--set", assignment, "--check", "--format", "json",
+                "--spec=ed.spec",
+                "--set",
+                assignment,
+                "--check",
+                "--format",
+                "toml",
             ])
             .output()
             .unwrap();
         success(&output);
         assert!(output.stderr.is_empty());
-        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let report = super::support::machine_report(&output);
         let file = &report["files"][0];
-        assert_eq!(file["valid"], true);
-        assert_eq!(file["report"]["evidence"]["status"], "pass");
+        assert_eq!(file["valid"].as_bool(), Some(true));
+        assert_eq!(file["report"]["evidence"]["status"].as_str(), Some("pass"));
         if let Some(trigger) = trigger {
-            assert_eq!(file["review_triggers"], serde_json::json!([trigger]));
+            assert_eq!(
+                file["review_triggers"],
+                toml::Value::Array(vec![toml::Value::from(trigger)])
+            );
             assert_eq!(
                 file["review_required"],
-                serde_json::json!([
-                    "source-content-and-digests",
-                    "patch-applicability",
-                    "native-build"
+                toml::Value::Array(vec![
+                    toml::Value::from("source-content-and-digests"),
+                    toml::Value::from("patch-applicability"),
+                    toml::Value::from("native-build")
                 ])
             );
         } else {
-            assert_eq!(file["review_triggers"], serde_json::json!([]));
-            assert_eq!(file["review_required"], serde_json::json!([]));
+            assert_eq!(file["review_triggers"], toml::Value::Array(vec![]));
+            assert_eq!(file["review_required"], toml::Value::Array(vec![]));
         }
         let preview = command(directory.path())
-            .args(["ed.spec", "--set", assignment, "--stdout"])
+            .args(["--spec=ed.spec", "--set", assignment, "--stdout"])
             .output()
             .unwrap();
         success(&preview);
@@ -367,8 +430,8 @@ fn upgrade_review_is_visible_without_changing_static_check_success() {
             trigger.is_some()
         );
         assert!(String::from_utf8_lossy(&preview.stdout).contains("sha256:56e107"));
+        unchanged(directory.path());
     }
-    unchanged(directory.path());
 }
 
 #[test]
@@ -378,41 +441,113 @@ fn edit_reports_bind_original_candidate_and_profile_without_inventing_a_path() {
     let source_path = directory.path().join("ed.spec").canonicalize().unwrap();
     let output = command(directory.path())
         .args([
-            "ed.spec",
+            "--spec=ed.spec",
             "--set",
             "package.version=2",
             "--check",
             "--format",
-            "json",
+            "toml",
         ])
         .output()
         .unwrap();
     success(&output);
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let value = super::support::machine_report(&output);
     let file = &value["files"][0];
-    assert_eq!(file["source"], source_path.to_str().unwrap());
+    assert_eq!(file["source"].as_str(), Some(source_path.to_str().unwrap()));
     assert_eq!(
-        file["report"]["input"]["display_path"],
-        source_path.to_str().unwrap()
+        file["report"]["input"]["display_path"].as_str(),
+        Some(source_path.to_str().unwrap())
     );
     assert_eq!(
-        file["original_sha256"],
-        format!("{:x}", Sha256::digest(SPEC.as_bytes()))
+        file["original_sha256"].as_str(),
+        Some(format!("{:x}", Sha256::digest(SPEC.as_bytes())).as_str())
     );
     assert_eq!(
-        file["report"]["input"]["sha256"],
-        format!("{:x}", Sha256::digest(version_source("2").as_bytes()))
+        file["report"]["input"]["sha256"].as_str(),
+        Some((format!("{:x}", Sha256::digest(version_source("2").as_bytes()))).as_str())
     );
-    assert_eq!(file["report_subject"], "candidate");
-    assert_eq!(file["profile"]["name"], "openruyi");
+    assert_eq!(file["profile"]["name"].as_str(), Some("openruyi"));
     assert_eq!(
-        file["profile"]["sha256"],
-        format!(
-            "{:x}",
-            Sha256::digest(include_bytes!("../../../profiles/openruyi/profile.toml"))
+        file["profile"]["sha256"].as_str(),
+        Some(
+            (format!(
+                "{:x}",
+                Sha256::digest(include_bytes!("../../../profiles/openruyi/profile.toml"))
+            ))
+            .as_str()
         )
     );
-    assert_eq!(file["report"]["evidence"]["stage"], "spec-static");
+    assert_eq!(
+        file["report"]["evidence"]["stage"].as_str(),
+        Some("spec-static")
+    );
     assert!(file.get("environment").is_none());
     unchanged(directory.path());
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_publication_reports_real_filesystem_outcomes() {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+
+    let directory = fixture(SPEC);
+    let target = directory
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join(OsStr::from_bytes(b"review-\xff.spec"));
+    let filename_supported = match fs::write(&target, "filename probe\n") {
+        Ok(()) => {
+            fs::remove_file(&target).unwrap();
+            true
+        }
+        Err(error) => {
+            let confirmed_filename_rejection = error.kind() == std::io::ErrorKind::InvalidFilename;
+            #[cfg(target_os = "macos")]
+            let confirmed_filename_rejection =
+                confirmed_filename_rejection || error.raw_os_error() == Some(92); // EILSEQ
+            assert!(
+                confirmed_filename_rejection,
+                "unexpected filename probe failure: {error}"
+            );
+            false
+        }
+    };
+    let output = command(directory.path())
+        .args([
+            "--spec=ed.spec",
+            "--set=package.version=2",
+            "--apply",
+            "--output",
+        ])
+        .arg(&target)
+        .args(["--format", "toml"])
+        .output()
+        .unwrap();
+    let report = super::support::machine_report(&output);
+    if filename_supported {
+        success(&output);
+        assert_eq!(report["success"].as_bool(), Some(true));
+        assert_eq!(report["outcomes"][0]["status"].as_str(), Some("written"));
+        assert_eq!(
+            report["outcomes"][0]["path"].as_str(),
+            Some(target.to_string_lossy().as_ref())
+        );
+        assert_file(&target, &version_source("2"));
+    } else {
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert_eq!(report["success"].as_bool(), Some(false));
+        assert_eq!(report["error"]["stage"].as_str(), Some("publication"));
+        assert_eq!(report["error"]["reason"].as_str(), Some("write-failed"));
+        assert_eq!(
+            report["error"]["path"].as_str(),
+            Some(target.to_string_lossy().as_ref())
+        );
+        assert!(
+            fs::read_dir(directory.path())
+                .unwrap()
+                .all(|entry| entry.unwrap().file_name() != target.file_name().unwrap())
+        );
+    }
+    assert_file(directory.path().join("ed.spec"), SPEC);
 }

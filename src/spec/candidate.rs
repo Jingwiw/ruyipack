@@ -14,25 +14,24 @@ use crate::{
 };
 use toml::Table;
 
-pub(super) struct Candidate {
-    pub contents: String,
-    pub report: CheckReport,
+pub(crate) struct Candidate {
+    pub spec: ParsedSpec<'static>,
+    pub report: Option<CheckReport>,
     pub review_triggers: Vec<String>,
-    pub source_hashes: Option<crate::source::SourceHashes>,
 }
 
-pub(super) fn prepare(
+pub(crate) fn prepare(
     snapshot: &Snapshot<'_>,
     document: &Table,
     defines: &[String],
+    run_checks: bool,
 ) -> Result<Candidate, String> {
-    let contents = snapshot.render(document, defines)?;
-    let parsed = ParsedSpec::parse(&contents);
+    let parsed = snapshot.render(document, defines)?;
     let observed = Snapshot::capture_selected(&parsed, snapshot.selection())?;
     if observed.document() != document {
         return Err("edited fields did not survive SPEC parsing".into());
     }
-    let report = check::analyze(&parsed, check::Policy::Authoring, &[]);
+    let report = run_checks.then(|| check::analyze(&parsed, check::Policy::Authoring, &[]));
     let mut review_triggers = Vec::new();
     let before = snapshot.document();
     if table::lookup(before, "package.version") != table::lookup(document, "package.version") {
@@ -47,9 +46,8 @@ pub(super) fn prepare(
         }
     }
     Ok(Candidate {
-        contents,
+        spec: parsed,
         report,
         review_triggers,
-        source_hashes: None,
     })
 }

@@ -7,7 +7,6 @@
 //! Human and machine reports for one static SPEC check.
 
 use std::{
-    borrow::Cow,
     io::{self, Write},
     path::Path,
 };
@@ -15,6 +14,7 @@ use std::{
 use serde::Serialize;
 
 use crate::{
+    output_cli::{self, HumanLevel},
     parser_diagnostic::{self, Diagnostic as ParserDiagnostic},
     source_location::SourceLocation,
 };
@@ -23,9 +23,17 @@ use crate::{
 #[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Severity {
-    Allow,
     Warn,
     Deny,
+}
+
+impl Severity {
+    pub(crate) fn human_level(self) -> HumanLevel {
+        match self {
+            Self::Deny => HumanLevel::Error,
+            Self::Warn => HumanLevel::Warn,
+        }
+    }
 }
 
 const FORMAT_VERSION: u32 = 2;
@@ -58,21 +66,15 @@ pub(crate) struct SelectedRule {
     pub(crate) severity: Severity,
 }
 
-enum CheckStatus {
-    Pass,
-    Fail,
-    Incomplete,
-}
-
 /// Results produced by one execution of the static SPEC check.
 pub(crate) struct CheckReport {
     sha256: String,
+    source_revision: Option<String>,
     generated_spec_sha256: Option<String>,
     pub(crate) materials: Option<crate::check::materials::Report>,
     policy: crate::check::Policy,
     source_uncertainty: Option<String>,
     defines: Vec<String>,
-    status: CheckStatus,
     incomplete_reasons: Vec<IncompleteReason>,
     selected_rules: Vec<SelectedRule>,
     parser_diagnostics: Vec<ParserDiagnostic>,
@@ -104,24 +106,14 @@ impl CheckReport {
         });
         incomplete_reasons.sort_unstable();
         incomplete_reasons.dedup();
-        let status = if findings
-            .iter()
-            .any(|finding| finding.severity == Severity::Deny)
-        {
-            CheckStatus::Fail
-        } else if !incomplete_reasons.is_empty() {
-            CheckStatus::Incomplete
-        } else {
-            CheckStatus::Pass
-        };
         Self {
             generated_spec_sha256: None,
+            source_revision: None,
             materials: None,
             defines: defines.to_vec(),
             sha256: crate::utf8_file::sha256(source),
             policy,
             source_uncertainty,
-            status,
             incomplete_reasons,
             selected_rules,
             parser_diagnostics,
@@ -129,10 +121,71 @@ impl CheckReport {
         }
     }
 
+    fn status(&self) -> &'static str {
+        if self
+            .findings
+            .iter()
+            .any(|finding| finding.severity == Severity::Deny)
+        {
+            "fail"
+        } else if !self.incomplete_reasons.is_empty() {
+            "incomplete"
+        } else {
+            "pass"
+        }
+    }
+
     /// Returns whether the selected static checks passed.
     pub(crate) fn is_success(&self) -> bool {
-        matches!(self.status, CheckStatus::Pass)
+        self.status() == "pass" && self.materials.as_ref().is_none_or(|report| report.valid)
+    }
+
+    pub(crate) fn findings(&self) -> &[Finding] {
+        &self.findings
+    }
+
+    pub(crate) fn diagnostics(&self) -> &[ParserDiagnostic] {
+        &self.parser_diagnostics
+    }
+
+    /// Authoring may retain a violation only when its complete rule inputs are
+    /// unchanged. Equal messages or rule IDs are not proof of an unchanged fact.
+    /// This does not turn the candidate into a successful whole-package check.
+    pub(crate) fn allows_edit(&self, baseline: &Self) -> bool {
+        if self.is_success() {
+            return true;
+        }
+        self.policy == crate::check::Policy::Authoring
+            && baseline.policy == self.policy
+            && self.defines == baseline.defines
+            && self.incomplete_reasons.is_empty()
+            && baseline.incomplete_reasons.is_empty()
             && self.materials.as_ref().is_none_or(|report| report.valid)
+            && self
+                .changes(baseline)
+                .filter(|(finding, _)| finding.severity == Severity::Deny)
+                .all(|(finding, retained)| finding.rule_inputs.is_some() && retained)
+    }
+
+    /// Match occurrences, not just rule IDs: one baseline issue cannot excuse
+    /// two candidate issues. Unknown inputs are display matches only.
+    pub(crate) fn changes<'a>(
+        &'a self,
+        baseline: &'a Self,
+    ) -> impl Iterator<Item = (&'a Finding, bool)> {
+        let mut remaining = baseline.findings.iter().collect::<Vec<_>>();
+        self.findings.iter().map(move |finding| {
+            let matched = remaining.iter().position(|other| finding.same_issue(other));
+            if let Some(index) = matched {
+                remaining.swap_remove(index);
+            }
+            (finding, matched.is_some())
+        })
+    }
+
+    /// Identify immutable recipe content read without creating a checkout.
+    pub(crate) fn set_spec_revision(&mut self, revision: Option<&str>) {
+        self.source_revision = revision.map(str::to_owned);
     }
 
     /// Keep manifest bytes as the input identity; positions still refer to generated SPEC.
@@ -143,27 +196,16 @@ impl CheckReport {
         ));
     }
 
-    /// Positions move after edits. Compare rule facts and multiplicities, not offsets;
-    /// this explains a blocked edit, never weakens its publication gate.
+    /// Positions move after edits. Compare supplied rule inputs and multiplicities,
+    /// not offsets; unknown rule inputs remain explanatory, not admission evidence.
     pub(crate) fn introduced_static_blockers(&self, baseline: &Self) -> Option<bool> {
         let new = self
             .incomplete_reasons
             .iter()
             .any(|reason| !baseline.incomplete_reasons.contains(reason))
             || self
-                .findings
-                .iter()
-                .filter(|finding| finding.severity == Severity::Deny)
-                .any(|finding| {
-                    let same = |other: &&Finding| {
-                        other.severity == Severity::Deny
-                            && other.code == finding.code
-                            && other.producer == finding.producer
-                            && other.message == finding.message
-                    };
-                    self.findings.iter().filter(same).count()
-                        > baseline.findings.iter().filter(same).count()
-                });
+                .changes(baseline)
+                .any(|(finding, retained)| finding.severity == Severity::Deny && !retained);
         // Equal incomplete categories do not prove the unresolved facts are equal.
         if new {
             Some(true)
@@ -176,58 +218,63 @@ impl CheckReport {
 
     /// Writes human-readable parser diagnostics and static-check findings.
     pub(crate) fn write_human(&self, path: &Path, writer: &mut impl Write) -> io::Result<()> {
-        if self.generated_spec_sha256.is_some() {
-            writeln!(
+        if !self.parser_diagnostics.is_empty()
+            || !self.findings.is_empty()
+            || !self.incomplete_reasons.is_empty()
+        {
+            output_cli::human(
                 writer,
-                "{}: checking generated SPEC; diagnostic positions refer to that SPEC, not TOML",
-                path.display()
+                HumanLevel::Info,
+                Some(path),
+                format_args!(
+                    "{}",
+                    if self.generated_spec_sha256.is_some() {
+                        "checking generated SPEC; diagnostic positions refer to that SPEC, not TOML"
+                    } else {
+                        "checking SPEC"
+                    }
+                ),
             )?;
         }
-        parser_diagnostic::write(path, &self.parser_diagnostics, writer)?;
+        parser_diagnostic::write(&self.parser_diagnostics, writer)?;
         for finding in &self.findings {
-            let severity = match finding.severity {
-                Severity::Deny => "error",
-                Severity::Warn => "warning",
-                Severity::Allow => "diagnostic",
-            };
-            let span = &finding.span;
-            writeln!(
-                writer,
-                "{}:{}:{}: {severity}[{}]: {}",
-                path.display(),
-                span.start.0,
-                span.start.1,
-                finding.code,
-                finding.message
-            )?;
+            finding.write_human(writer)?;
         }
+        self.write_incomplete(writer)
+    }
+
+    pub(crate) fn write_incomplete(&self, writer: &mut impl Write) -> io::Result<()> {
         for reason in &self.incomplete_reasons {
-            writeln!(
+            output_cli::human(
                 writer,
-                "{}: error: check incomplete because {}",
-                path.display(),
-                if *reason == IncompleteReason::UnresolvedSources {
-                    self.source_uncertainty
-                        .as_deref()
-                        .unwrap_or(reason.explanation())
-                } else {
-                    reason.explanation()
-                }
+                HumanLevel::Error,
+                None,
+                format_args!(
+                    "check incomplete because {}",
+                    if *reason == IncompleteReason::UnresolvedSources {
+                        self.source_uncertainty
+                            .as_deref()
+                            .unwrap_or(reason.explanation())
+                    } else {
+                        reason.explanation()
+                    }
+                ),
             )?;
         }
         Ok(())
     }
 
-    /// Borrows the structured report for embedding without a JSON round trip.
-    pub(crate) fn structured<'a>(&'a self, path: &'a Path) -> impl Serialize + 'a {
-        MachineReport {
+    /// Borrows the structured report for direct embedding in command results.
+    pub(crate) fn structured<'a>(&'a self, path: &'a Path) -> Report<'a> {
+        Report {
             format_version: FORMAT_VERSION,
             valid: self.is_success(),
             generated_spec_sha256: self.generated_spec_sha256.as_deref(),
             materials: self.materials.as_ref(),
-            input: InputIdentity {
+            input: crate::report::Input {
                 display_path: path.to_string_lossy(),
-                sha256: &self.sha256,
+                sha256: Some(&self.sha256),
+                revision: self.source_revision.as_deref(),
             },
             evidence: Evidence {
                 stage: "spec-static",
@@ -235,7 +282,7 @@ impl CheckReport {
                 defines: &self.defines,
                 source_uncertainty: self.source_uncertainty.as_deref(),
                 not_checked: ["source-content", "native-rpm", "build"],
-                status: self.status.name(),
+                status: self.status(),
                 incomplete_reasons: &self.incomplete_reasons,
                 tool: crate::tool::identity(),
                 components: [
@@ -259,41 +306,22 @@ impl CheckReport {
         }
     }
 
-    /// Writes one deterministic JSON object.
-    pub(crate) fn write_json(&self, path: &Path, writer: &mut impl Write) -> io::Result<()> {
-        serde_json::to_writer(&mut *writer, &self.structured(path))?;
-        writeln!(writer)
-    }
-}
-
-impl CheckStatus {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::Pass => "pass",
-            Self::Fail => "fail",
-            Self::Incomplete => "incomplete",
-        }
+    /// Writes one deterministic TOML report.
+    pub(crate) fn write_toml(&self, path: &Path, writer: &mut impl Write) -> io::Result<()> {
+        crate::report::write(writer, &self.structured(path))
     }
 }
 
 #[derive(Serialize)]
-struct MachineReport<'a> {
+pub(crate) struct Report<'a> {
     valid: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     generated_spec_sha256: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     materials: Option<&'a crate::check::materials::Report>,
     format_version: u32,
-    input: InputIdentity<'a>,
+    input: crate::report::Input<'a>,
     evidence: Evidence<'a>,
     parser_diagnostics: &'a [ParserDiagnostic],
     findings: &'a [Finding],
-}
-
-#[derive(Serialize)]
-struct InputIdentity<'a> {
-    display_path: Cow<'a, str>,
-    sha256: &'a str,
 }
 
 #[derive(Serialize)]
@@ -326,14 +354,123 @@ pub(crate) struct Finding {
     pub(crate) severity: Severity,
     pub(crate) message: String,
     pub(crate) span: SourceLocation,
+    /// All inputs used by this violation's rule, including its field identity.
+    /// Producers without this evidence cannot authorize retaining a failed rule.
+    #[serde(skip)]
+    pub(crate) rule_inputs: Option<Vec<String>>,
+}
+
+impl Finding {
+    /// Unknown inputs can share a display identity, never admission evidence.
+    fn same_issue(&self, other: &Self) -> bool {
+        self.severity == other.severity
+            && self.producer == other.producer
+            && self.code == other.code
+            && match (&self.rule_inputs, &other.rule_inputs) {
+                (Some(left), Some(right)) => left == right,
+                (None, None) => self.message == other.message,
+                _ => false,
+            }
+    }
+
+    pub(crate) fn write_human(&self, writer: &mut impl Write) -> io::Result<()> {
+        output_cli::diagnostic(
+            writer,
+            self.severity.human_level(),
+            Some(self.span.start),
+            Some(self.code),
+            format_args!("{}", self.message),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const SPEC: &str = include_str!("../tests/fixtures/ed.spec");
+
+    fn check(source: &str) -> CheckReport {
+        crate::check::analyze(
+            &crate::spec::ParsedSpec::parse(source),
+            crate::check::Policy::Authoring,
+            &[],
+        )
+    }
+
     #[test]
-    fn json_preserves_writer_error_kind() {
+    fn edit_retains_only_proven_unchanged_rule_inputs_not_a_successful_check() {
+        let source = SPEC.replace("BuildRequires:  autoconf\n", "");
+        let baseline = check(&source);
+        let changed = source.replace("1.22.5", "1.22.600");
+        let candidate = check(&changed);
+        assert!(!candidate.is_success());
+        assert!(candidate.allows_edit(&baseline));
+        assert_eq!(candidate.introduced_static_blockers(&baseline), Some(false));
+
+        // Even an unrelated direct requirement is an input to this rule; equal
+        // missing-tool messages are not enough to admit a changed contract.
+        let other_requirements =
+            check(&changed.replace("BuildRequires:  lzip", "BuildRequires:  zip"));
+        assert!(!other_requirements.allows_edit(&baseline));
+        assert_eq!(
+            other_requirements.introduced_static_blockers(&baseline),
+            Some(true)
+        );
+
+        let submit = crate::check::analyze(
+            &crate::spec::ParsedSpec::parse(&changed),
+            crate::check::Policy::Submit,
+            &[],
+        );
+        assert!(!submit.is_success());
+        assert!(!submit.allows_edit(&baseline));
+    }
+
+    #[test]
+    fn equal_error_text_cannot_hide_a_changed_invalid_value_or_reuse_one_finding() {
+        let url = "https://www.gnu.org/software/ed/";
+        let source = SPEC.replace(url, "ftp://example.org/old");
+        let baseline = check(&source);
+        let retained = check(&source.replace("1.22.5", "1.22.6"));
+        assert!(retained.allows_edit(&baseline));
+
+        let changed = check(&source.replace("/old", "/new"));
+        assert_eq!(baseline.findings[0].message, changed.findings[0].message);
+        assert!(!changed.allows_edit(&baseline));
+        assert_eq!(changed.introduced_static_blockers(&baseline), Some(true));
+
+        let duplicate = check(&source.replace(
+            "URL:            ftp://example.org/old",
+            "URL:            ftp://example.org/old\nURL:            ftp://example.org/old",
+        ));
+        assert!(!duplicate.allows_edit(&baseline));
+    }
+
+    #[test]
+    fn unresolved_or_unproved_rule_contexts_never_authorize_retaining_blockers() {
+        for source in [
+            SPEC.replace("Summary:        A line-oriented text editor\n", ""),
+            SPEC.replace(
+                "License:        GPL-3.0-or-later AND LGPL-2.1-or-later",
+                "License: %{upstream_license}",
+            ),
+            format!("%if 1\n{SPEC}"),
+            SPEC.replace(
+                "URL:            https://www.gnu.org/software/ed/",
+                "%if 1\nURL: ftp://example.org/old\n%endif",
+            ),
+            format!("{SPEC}\n%package docs\nSummary: Docs\nURL: ftp://example.org/old\n"),
+        ] {
+            let baseline = check(&source);
+            let candidate = check(&source.replace("1.22.5", "1.22.6"));
+            assert!(!candidate.is_success(), "{source}");
+            assert!(!candidate.allows_edit(&baseline), "{source}");
+        }
+    }
+
+    #[test]
+    fn toml_preserves_writer_error_kind() {
         struct BrokenWriter;
         impl Write for BrokenWriter {
             fn write(&mut self, _: &[u8]) -> io::Result<usize> {
@@ -350,8 +487,65 @@ mod tests {
             &[],
         );
         let error = report
-            .write_json(Path::new("input.spec"), &mut BrokenWriter)
+            .write_toml(Path::new("input.spec"), &mut BrokenWriter)
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+
+        let error = report
+            .write_human(Path::new("input.spec"), &mut BrokenWriter)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn shortened_human_paths_do_not_change_machine_identity() {
+        let path = std::env::current_dir().unwrap().join("pkg.spec");
+        let mut report = check("");
+        let mut human = Vec::new();
+        report.write_human(&path, &mut human).unwrap();
+        let human = String::from_utf8(human).unwrap();
+        assert!(human.contains("[ERROR]"), "{human:?}");
+        assert!(
+            human.contains("[INFO] pkg.spec: checking SPEC"),
+            "{human:?}"
+        );
+        assert_eq!(human.matches("pkg.spec").count(), 1, "{human:?}");
+        assert!(human.contains(" spec[1:1] [RPM010]:"), "{human:?}");
+        assert!(!human.contains(path.to_str().unwrap()), "{human:?}");
+        let mut machine = Vec::new();
+        report.write_toml(&path, &mut machine).unwrap();
+        let machine_report: toml::Value =
+            toml::from_str(std::str::from_utf8(&machine).unwrap()).unwrap();
+        assert_eq!(
+            machine_report["input"]["display_path"].as_str(),
+            Some(path.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            machine_report["findings"][0]["severity"].as_str(),
+            Some("deny")
+        );
+
+        let manifest_path = std::env::current_dir().unwrap().join("pkg.toml");
+        report.set_manifest_input("[package]\n");
+        let mut human = Vec::new();
+        report.write_human(&manifest_path, &mut human).unwrap();
+        let human = String::from_utf8(human).unwrap();
+        assert!(
+            human.contains("pkg.toml: checking generated SPEC"),
+            "{human}"
+        );
+        assert!(human.contains("spec[1:1] [RPM010]:"), "{human}");
+        assert!(!human.contains("pkg.toml:1:1"), "{human}");
+        machine.clear();
+        report.write_toml(&manifest_path, &mut machine).unwrap();
+        let machine: toml::Value = toml::from_str(std::str::from_utf8(&machine).unwrap()).unwrap();
+        assert_eq!(
+            machine["input"]["display_path"].as_str(),
+            Some(manifest_path.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            machine["findings"][0]["span"]["start_line"].as_integer(),
+            Some(1)
+        );
     }
 }

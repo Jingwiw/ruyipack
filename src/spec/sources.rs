@@ -12,8 +12,12 @@ use rpm_spec::{
     ast::{CommentStyle, PreambleContent, Section, Span, SpecItem, Tag},
     parse_result::Severity,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
+#[derive(Clone)]
 pub(crate) struct Source {
     pub(crate) span: crate::source_location::SourceLocation,
     pub(crate) expression: String,
@@ -21,6 +25,7 @@ pub(crate) struct Source {
     pub(crate) url: Result<String, String>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Resolution {
     pub(crate) sources: BTreeMap<u32, Source>,
     pub(crate) patches: BTreeMap<u32, Source>,
@@ -28,8 +33,21 @@ pub(crate) struct Resolution {
     pub(crate) incomplete: Option<String>,
 }
 
-pub(crate) fn resolve(spec: &ParsedSpec<'_>, defines: &[String]) -> Result<Resolution, String> {
-    resolve_with_patches(spec, defines, false)
+pub(crate) fn resolve<'a>(
+    spec: &'a ParsedSpec<'_>,
+    defines: &[String],
+) -> Result<Cow<'a, Resolution>, String> {
+    // Unchanged source and no overrides have one meaning. Explicit -D contexts
+    // are separate evaluations and must never reuse the default-context facts.
+    if defines.is_empty() {
+        spec.sources
+            .get_or_init(|| resolve_with_patches(spec, defines, false))
+            .as_ref()
+            .map(Cow::Borrowed)
+            .map_err(Clone::clone)
+    } else {
+        resolve_with_patches(spec, defines, false).map(Cow::Owned)
+    }
 }
 
 /// Include Patch declarations without changing the scope of existing Source operations.
@@ -369,6 +387,20 @@ mod tests {
     #[test]
     fn ordered_static_facts_never_guess_dynamic_sources() {
         let prefix = "Name: probe\nVersion: 1\nRelease: 1\nSummary: Probe\nLicense: MIT\n";
+        let parsed = ParsedSpec::parse("Source0: https://example.org/%{target}\n");
+        for target in [None, Some("first"), Some("second"), None] {
+            let defines = target
+                .map(|value| format!("target {value}"))
+                .into_iter()
+                .collect::<Vec<_>>();
+            let resolved = resolve(&parsed, &defines).unwrap();
+            assert_eq!(
+                resolved.sources[&0].url.as_ref().ok(),
+                target
+                    .map(|value| format!("https://example.org/{value}"))
+                    .as_ref()
+            );
+        }
         for row in include_str!("../../tests/fixtures/source-expressions.tsv")
             .lines()
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
@@ -423,15 +455,13 @@ mod tests {
         );
         for header in ["Summary: %{injected}", "# %{injected}"] {
             let source = format!("{prefix}{header}\nSource0: https://example.org/archive\n");
-            let result = resolve(
-                &ParsedSpec::parse(&source),
-                &["injected text\nSource1: hidden".into()],
-            )
-            .unwrap();
+            let parsed = ParsedSpec::parse(&source);
+            let result = resolve(&parsed, &["injected text\nSource1: hidden".into()]).unwrap();
             assert!(result.incomplete.is_some(), "{header}");
             assert!(result.sources[&0].url.is_err());
         }
-        let unknown = resolve(&ParsedSpec::parse("%include external.inc\n"), &[]).unwrap();
+        let parsed = ParsedSpec::parse("%include external.inc\n");
+        let unknown = resolve(&parsed, &[]).unwrap();
         assert!(unknown.sources.is_empty() && unknown.incomplete.is_some());
         let hidden = format!(
             "{prefix}%package extras\nSummary: Extra\nSource0: https://example.org/hidden\n"

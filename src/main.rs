@@ -10,28 +10,31 @@ mod check;
 mod check_report;
 mod cli;
 mod edit;
+mod environment;
+mod file_digest;
 mod file_output;
 mod generate;
-mod init;
+mod host_process;
 mod inspect;
+mod new;
 mod output_cli;
 mod parser_diagnostic;
 mod profile;
 mod render;
+mod report;
+mod schema;
 mod source;
 mod source_hash;
 mod source_location;
 mod spec;
 mod spec_metadata;
+mod stage;
 mod tool;
 mod utf8_file;
 mod verify_sources;
+mod workspace;
 
-use std::{
-    fmt,
-    io::{self, Write},
-    process::ExitCode,
-};
+use std::{fmt, io, process::ExitCode};
 
 use clap::Parser;
 use cli::{Cli, Command};
@@ -39,35 +42,17 @@ use cli::{Cli, Command};
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Schema => exit_for(
-            writeln!(
-                io::stdout().lock(),
-                "{:#}",
-                render::manifest::schema::generate().as_value()
-            )
-            .map(|()| true),
-        ),
-        Command::Init(options) => exit_for(init::run(&options).map(|()| true)),
+        Command::Init(options) => exit_for(workspace::run(&options).map(|()| true)),
+        Command::Schema(options) => exit_for(schema::run(&options)),
+        Command::New(options) => exit_for(new::run(&options).map(|()| true)),
         Command::Edit(options) => exit_for(edit::run(options)),
-        Command::SourceHash(options) => exit_for(source_hash::run(&options)),
-        Command::VerifySources(options) => exit_for(verify_sources::run(&options)),
+        Command::Source(command) => match command {
+            cli::SourceCommand::Hash(options) => exit_for(source_hash::run(&options)),
+            cli::SourceCommand::Verify(options) => exit_for(verify_sources::run(&options)),
+        },
         Command::Check(options) => exit_for(check::run(&options)),
-        Command::Inspect { spec, format } => exit_for(inspect::run(&spec, format)),
-        Command::Gen {
-            name,
-            manifest,
-            offline,
-            check,
-            format,
-            output,
-        } => exit_for(generate::run(
-            &name,
-            manifest.as_deref(),
-            offline,
-            &output,
-            check,
-            format,
-        )),
+        Command::Inspect(options) => exit_for(inspect::run(&options)),
+        Command::Gen(options) => exit_for(generate::run(&options)),
     }
 }
 
@@ -78,7 +63,12 @@ fn exit_for<E: fmt::Display>(result: Result<bool, E>) -> ExitCode {
         Ok(false) => ExitCode::FAILURE,
         Err(error) => {
             // The command still fails when stderr is unavailable.
-            let _ = writeln!(io::stderr().lock(), "error: {error}");
+            let _ = output_cli::human(
+                &mut io::stderr().lock(),
+                output_cli::HumanLevel::Error,
+                None,
+                format_args!("{error}"),
+            );
             ExitCode::FAILURE
         }
     }

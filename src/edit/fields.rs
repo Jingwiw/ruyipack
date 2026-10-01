@@ -4,129 +4,77 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! String assignments, field selection and JSON Schema for source-mapped drafts.
+//! Typed CLI and inline assignments to existing source-mapped stage fields.
 
-use std::{borrow::Cow, collections::BTreeSet};
+use std::collections::BTreeSet;
 
-use serde_json::{Value as Json, json};
+use serde::Deserialize;
 use toml::{Table, Value};
 
-use crate::spec::document::table::{lookup, lookup_mut, path};
+use crate::spec::document::table::{lookup, lookup_mut};
 
-/// Replaces existing string fields without inferring types from their spelling.
-pub(super) fn assign<'a>(
-    original: &'a Table,
-    assignments: &[(String, String)],
-) -> Result<Cow<'a, Table>, String> {
-    let mut document = Cow::Borrowed(original);
+/// Strings remain literal; string arrays use TOML value syntax in CLI and inline edits.
+pub(super) fn assign(document: &mut Table, assignments: &[(String, String)]) -> Result<(), String> {
     let mut seen = BTreeSet::new();
     for (field, value) in assignments {
         if !seen.insert(field) {
             return Err(format!("{field}: repeated assignment"));
         }
-        if matches!(&document, Cow::Borrowed(table) if lookup(table, field).and_then(Value::as_str) == Some(value))
-        {
-            continue;
-        }
-        let target = lookup_mut(document.to_mut(), field)
-            .ok_or_else(|| format!("{field}: unknown field"))?;
-        let Some(current) = target.as_str() else {
-            return Err(format!(
-                "{field}: direct assignment requires a string field; use --field {field} --prepare DIR for arrays or groups, edit the TOML, then use --from DIR"
-            ));
-        };
-        if current != value {
-            *target = Value::String(value.clone());
-        }
-    }
-    Ok(document)
-}
-
-/// Validates field names without constructing an editable projection.
-pub(super) fn validate_selection(original: &Table, selected: &[String]) -> Result<(), String> {
-    for field in selected {
-        if lookup(original, field).is_none() {
-            return Err(format!("{field}: unknown field or group"));
-        }
+        let target =
+            lookup_mut(document, field).ok_or_else(|| format!("{field}: unknown field"))?;
+        *target = replacement(target, value, field)?;
     }
     Ok(())
 }
 
-/// Describes the current draft, not fields unsupported by the source mapping.
-pub(super) fn schema(document: &Table) -> Json {
-    let mut schema = table_schema(document, "");
-    schema["$schema"] = "http://json-schema.org/draft-07/schema#".into();
-    schema["title"] = "SPEC edit draft".into();
-    schema["description"] = "Editable fields from the current SPEC. Source expressions are not macro-expanded; SPEC validation runs after editing.".into();
-    schema
+fn replacement(current: &Value, text: &str, field: &str) -> Result<Value, String> {
+    match current {
+        Value::String(_) => Ok(Value::String(text.to_owned())),
+        Value::Array(_) => {
+            let values = toml::de::ValueDeserializer::parse(text)
+                .and_then(Vec::<String>::deserialize)
+                .map_err(|error| format!("{field}: expected TOML string array: {error}"))?;
+            Ok(Value::Array(
+                values.into_iter().map(Value::String).collect(),
+            ))
+        }
+        _ => Err(format!(
+            "{field}: direct assignment requires a string or string-array leaf"
+        )),
+    }
 }
 
-fn table_schema(table: &Table, parent: &str) -> Json {
-    let mut properties = serde_json::Map::new();
-    for (key, value) in table {
-        let field = path(parent, key);
-        let mut schema = match value {
-            Value::Table(table) => table_schema(table, &field),
-            Value::Array(_) => json!({ "type": "array", "items": { "type": "string" } }),
-            Value::String(_) => json!({ "type": "string" }),
-            // The source mapper emits only strings, string arrays and tables.
-            _ => Json::Bool(false),
+/// Edit leaves inline, preserving strings and string-array types.
+pub(super) fn edit_inline(document: &mut Table, selection: &[String]) -> Result<(), String> {
+    fn leaves(value: &Value, field: &str, fields: &mut Vec<String>) {
+        if let Value::Table(table) = value {
+            for (key, value) in table {
+                leaves(value, &format!("{field}.{key}"), fields);
+            }
+        } else {
+            fields.push(field.to_owned());
+        }
+    }
+    let mut fields = Vec::new();
+    for field in selection {
+        let value = lookup(document, field).ok_or_else(|| format!("{field}: unknown field"))?;
+        leaves(value, field, &mut fields);
+    }
+    for field in fields {
+        let current = lookup(document, &field).expect("selected leaf exists");
+        let initial = match current {
+            Value::String(value) => value.clone(),
+            Value::Array(_) => current.to_string(),
+            _ => return Err(format!("{field}: unsupported inline type")),
         };
-        if schema.is_object() {
-            schema["description"] = description(&field).into();
-        }
-        properties.insert(key.clone(), schema);
+        let edited: String = dialoguer::Input::new()
+            .with_prompt(&field)
+            .with_initial_text(&initial)
+            .allow_empty(true)
+            .interact_text()
+            .map_err(|error| format!("{field}: {error}"))?;
+        let replacement = replacement(current, &edited, &field)?;
+        *lookup_mut(document, &field).expect("selected leaf exists") = replacement;
     }
-    json!({
-        "type": "object",
-        "properties": properties,
-        "required": table.keys().collect::<Vec<_>>(),
-        "additionalProperties": false,
-    })
-}
-
-fn description(field: &str) -> &'static str {
-    match field {
-        "package" => "Main-package metadata and file lists.",
-        "package.name" => "RPM Name source expression.",
-        "package.version" => {
-            "RPM Version source expression; changing it does not verify source archives or patches."
-        }
-        "package.summary" => "Main-package Summary source text.",
-        "package.license" => {
-            "License expression for the packaged software, separate from the SPEC file license."
-        }
-        "package.url" => "Project homepage from the URL tag.",
-        "package.description" => "Main-package description body, including its line endings.",
-        "package.files" => "Main-package file lists; entries retain their RPM source expressions.",
-        "package.files.license" => "Paths marked with %license.",
-        "package.files.doc" => "Paths marked with %doc.",
-        "package.files.entries" => "File paths without an additional file directive.",
-        "spec" => "SPEC file metadata and text separate from the software metadata.",
-        "spec.release" => "RPM Release source expression.",
-        "spec.changelog" => "Changelog body, including its line endings.",
-        "spec.license" => "License of the SPEC file itself.",
-        "spec.copyright-years" => {
-            "Shared copyright year or year range from the existing copyright declarations."
-        }
-        "spec.copyright-holders" => "Copyright holders from the SPEC header.",
-        "spec.contributors" => "SPEC contributors from the existing header.",
-        "spec.comments" => {
-            "Existing ordinary comment blocks, including their # prefixes. Machine-readable declarations have separate fields."
-        }
-        "build" => "Existing declarative build settings.",
-        "build.system" => "BuildSystem tag source expression.",
-        "build-requires" => "Build dependencies declared in this SPEC.",
-        "build-requires.rpm" => {
-            "Existing BuildRequires source expressions; changing the list does not install or resolve dependencies."
-        }
-        "sources" => "Sources keyed by their RPM source number.",
-        _ if field.starts_with("sources.") && field.ends_with(".url") => {
-            "Source URL expression; RPM macros remain unexpanded."
-        }
-        _ if field.starts_with("sources.") && field.ends_with(".sha256") => {
-            "SHA-256 in the adjacent RemoteAsset comment. Empty means absent: supply 64 hexadecimal digits to add it. Editing does not download the archive."
-        }
-        _ => "Field from the existing SPEC.",
-    }
+    Ok(())
 }

@@ -7,6 +7,7 @@
 
 """Compare the authoring schema with real, offline gen inputs (Python 3.11+)."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -18,7 +19,7 @@ from jsonschema import Draft7Validator
 binary = str(Path(sys.argv[1]).resolve())
 root = Path(__file__).resolve().parent.parent
 base = (root / "examples/ed/ed.toml").read_text()
-result = subprocess.run([binary, "schema"], capture_output=True, check=True, timeout=30)
+result = subprocess.run([binary, "schema", "manifest"], capture_output=True, check=True, timeout=30)
 assert not result.stderr and result.stdout.endswith(b"\n"), result
 schema = json.loads(result.stdout)
 Draft7Validator.check_schema(schema)
@@ -37,6 +38,9 @@ hash_line = next(line for line in source.splitlines() if line.startswith("sha256
 # differences explicit so future tightening cannot silently reject legal input.
 cases = [
     ("missing-hash", changed(hash_line, ""), True, True),
+    ("missing-build-requires", base.split("[build-requires]", 1)[0] + "[package.files]" + base.split("[package.files]", 1)[1], True, True),
+    ("empty-build-requires", base.split("[build-requires]", 1)[0] + "[build-requires]\n[package.files]" + base.split("[package.files]", 1)[1], True, True),
+    ("explicit-empty-requires", base.split("[build-requires]", 1)[0] + "[build-requires]\nrpm = []\n[package.files]" + base.split("[package.files]", 1)[1], True, False),
     ("uppercase-hash", changed(hash_line, hash_line.replace(hash_line[10:-1], hash_line[10:-1].upper())), True, True),
     ("local-source", changed(source, 'path = "ed.tar.gz"\n'), True, True),
     ("zero-alias", changed("[sources.0]", '[sources."00"]'), True, True),
@@ -77,17 +81,39 @@ for stage in ["prep", "conf", "build", "install", "check"]:
     cases.append((stage, base + f'\n[build.stages.{stage}]\nreplace = ""\n', True, True))
 
 with tempfile.TemporaryDirectory(prefix="ruyipack-schema-") as directory:
-    path = Path(directory) / "ed.toml"
+    root_workspace = Path(directory)
+    subprocess.run([binary, "init"], cwd=root_workspace, capture_output=True, check=True, timeout=30)
+    development = root_workspace / "work/review"
+    development.mkdir(parents=True)
+    (development / ".config.toml").write_text('pkg = "ed"\n')
+    path = development / "ed.toml"
+    (development / ".lock").touch()
+    original_files = {p.relative_to(root_workspace) for p in root_workspace.rglob("*")}
+    original_files.add(path.relative_to(root_workspace))
     for name, text, schema_ok, gen_ok in cases:
         errors = list(validator.iter_errors(tomllib.loads(text)))
         assert (not errors) == schema_ok, (name, [str(error) for error in errors])
         path.write_text(text)
-        result = subprocess.run([binary, "gen", "ed", "--manifest", str(path), "--offline", "--check", "--format", "json"], capture_output=True, timeout=30)
+        result = subprocess.run([binary, "gen", "review", "--offline", "--check", "--format", "toml"], cwd=root_workspace, capture_output=True, timeout=30)
         assert result.returncode == (0 if gen_ok else 1), (name, result)
-        assert json.loads(result.stdout)["valid"] == gen_ok, (name, result)
-        assert path.read_text() == text and list(Path(directory).iterdir()) == [path]
+        report = tomllib.loads(result.stdout.decode())
+        assert report["success"] == gen_ok, (name, report)
+        assert (report.get("valid") is True) == gen_ok, (name, report)
+        assert path.read_text() == text and {p.relative_to(root_workspace) for p in root_workspace.rglob("*")} == original_files
+    workspace = Path(directory) / "workspace"
+    subprocess.run([binary, "init", str(workspace)], capture_output=True, check=True, timeout=30)
+    repo = workspace / "openruyi"
+    repo.mkdir()
+    env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+           "GIT_AUTHOR_NAME": "Schema Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.org",
+           "GIT_COMMITTER_NAME": "Schema Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.org"}
+    for args in [["init", "--quiet", "-b", "main"], ["commit", "--quiet", "--allow-empty", "-m", "Fixture"]]:
+        subprocess.run(["git", "-c", "core.hooksPath=" + os.devnull, "-c", "commit.gpgSign=false", *args],
+                       cwd=repo, env=env, capture_output=True, check=True, timeout=30)
     for system in [None, *systems]:
         args = [] if system is None else ["--build-system", system]
-        result = subprocess.run([binary, "init", "ed", "--dir", directory, "--stdout", *args], capture_output=True, check=True, timeout=30)
+        result = subprocess.run([binary, "new", "ed", "--pkgname", "ed", "--stdout", *args], cwd=workspace, env=env,
+                                capture_output=True, check=True, timeout=30)
         validator.validate(tomllib.loads(result.stdout.decode()))
+    assert not (workspace / "work").exists()
 print(f"{len(cases)} schema/gen cases and {1 + len(systems)} unfilled scaffolds passed; {sum(s and not g for _, _, s, g in cases)} semantic gaps remain gen checks")

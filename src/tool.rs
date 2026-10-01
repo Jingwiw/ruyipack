@@ -10,7 +10,9 @@
 pub(crate) struct Identity {
     name: &'static str,
     version: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
     revision: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     dirty: Option<bool>,
 }
 

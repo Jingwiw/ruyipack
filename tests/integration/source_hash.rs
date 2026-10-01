@@ -8,7 +8,9 @@
 
 use super::{
     http::{Server, response},
-    support::{assert_file, command, json_line, success},
+    support::{
+        assert_file, authoring_workspace, command, machine_report, recipe_workspace, success,
+    },
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -41,13 +43,13 @@ fn invalid_ca_bundles_identify_the_file_without_changing_input() {
         }
         let output = command()
             .env("SSL_CERT_FILE", &ca)
-            .arg("source-hash")
+            .args(["source", "hash", "--spec"])
             .arg(&input)
-            .args(["--format", "json"])
+            .args(["--format", "toml"])
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(1));
-        let report = json_line(&output);
+        let report = machine_report(&output);
         let error = &report["error"];
         let message = error["message"].as_str().unwrap();
         assert!(
@@ -55,9 +57,9 @@ fn invalid_ca_bundles_identify_the_file_without_changing_input() {
             "{message}"
         );
         assert!(message.to_lowercase().contains(diagnostic), "{message}");
-        assert_eq!(error["reason"], "tls");
-        assert_eq!(error["retryable"], false);
-        assert!(report["sha256"].is_null());
+        assert_eq!(error["reason"].as_str(), Some("tls"));
+        assert_eq!(error["retryable"].as_bool(), Some(false));
+        assert!(report.get("sha256").is_none());
         assert_file(&input, source);
     }
 }
@@ -104,19 +106,25 @@ fn streaming_hashes_validate_tls_redirects_and_complete_response_bodies() {
     let run = || {
         server
             .command()
-            .args(["source-hash"])
+            .args(["source", "hash", "--spec"])
             .arg(&input)
-            .args(["--source", "4", "--format", "json"])
+            .args(["--source", "4", "--format", "toml"])
             .output()
             .unwrap()
     };
     fs::write(&input, &source).unwrap();
     let output = run();
     success(&output);
-    let report = json_line(&output);
-    assert_eq!(report["sha256"], sha(b"\0\xffasset\n"));
-    assert_eq!(report["bytes"], 8);
-    assert_eq!(report["effective_url"], format!("{}/asset", server.url));
+    let report = machine_report(&output);
+    assert_eq!(
+        report["sha256"].as_str(),
+        Some((sha(b"\0\xffasset\n")).as_str())
+    );
+    assert_eq!(report["bytes"].as_integer(), Some(8));
+    assert_eq!(
+        report["effective_url"].as_str(),
+        Some((format!("{}/asset", server.url)).as_str())
+    );
     assert_eq!(*server.calls.lock().unwrap(), ["/redirect", "/asset"]);
     assert_file(&input, &source);
     for (path, message, reason, retryable, status) in [
@@ -135,8 +143,8 @@ fn streaming_hashes_validate_tls_redirects_and_complete_response_bodies() {
         .unwrap();
         let output = run();
         assert_eq!(output.status.code(), Some(1), "{path}: {output:?}");
-        let report = json_line(&output);
-        assert!(report["sha256"].is_null());
+        let report = machine_report(&output);
+        assert!(report.get("sha256").is_none());
         assert!(
             report["error"]["message"]
                 .as_str()
@@ -144,10 +152,15 @@ fn streaming_hashes_validate_tls_redirects_and_complete_response_bodies() {
                 .contains(message),
             "{report}"
         );
-        assert_eq!(report["error"]["reason"], reason);
-        assert_eq!(report["error"]["retryable"], retryable);
-        assert_eq!(report["error"]["http_status"], serde_json::json!(status));
-        assert_eq!(report["error"]["source_number"], 4);
+        assert_eq!(report["error"]["reason"].as_str(), Some(reason));
+        assert_eq!(report["error"]["retryable"].as_bool(), Some(retryable));
+        assert_eq!(
+            report["error"]
+                .get("http_status")
+                .and_then(toml::Value::as_integer),
+            status.map(i64::from)
+        );
+        assert_eq!(report["error"]["source_number"].as_integer(), Some(4));
         assert!(!report.to_string().contains("secret"));
     }
     let calls = server.calls.lock().unwrap();
@@ -166,7 +179,10 @@ fn streaming_hashes_validate_tls_redirects_and_complete_response_bodies() {
     fs::write(&input, source.replace("route redirect", "route retry")).unwrap();
     let output = run();
     success(&output);
-    assert_eq!(json_line(&output)["sha256"], sha(b"\0\xffasset\n"));
+    assert_eq!(
+        machine_report(&output)["sha256"].as_str(),
+        Some((sha(b"\0\xffasset\n")).as_str())
+    );
     assert_eq!(
         server
             .calls
@@ -180,27 +196,36 @@ fn streaming_hashes_validate_tls_redirects_and_complete_response_bodies() {
     fs::write(&input, source.replace("route redirect", "route encoding")).unwrap();
     let output = run();
     success(&output);
-    assert_eq!(json_line(&output)["sha256"], sha(b"raw!"));
+    assert_eq!(
+        machine_report(&output)["sha256"].as_str(),
+        Some((sha(b"raw!")).as_str())
+    );
     let rejected = server
         .command()
         .env_remove("SSL_CERT_FILE")
-        .arg("source-hash")
+        .args(["source", "hash", "--spec"])
         .arg(&input)
-        .args(["--source", "4", "--format", "json"])
+        .args(["--source", "4", "--format", "toml"])
         .output()
         .unwrap();
     assert_eq!(rejected.status.code(), Some(1)); // Never silently accept an untrusted TLS peer.
-    let error = &json_line(&rejected)["error"];
-    assert_eq!(error["stage"], "download");
-    assert_eq!(error["reason"], "tls");
-    assert_eq!(error["retryable"], false);
+    let error = &machine_report(&rejected)["error"];
+    assert_eq!(error["stage"].as_str(), Some("download"));
+    assert_eq!(error["reason"].as_str(), Some("tls"));
+    assert_eq!(error["retryable"].as_bool(), Some(false));
 }
 
 #[test]
 fn generation_completes_only_missing_hashes_and_never_publishes_stale_input() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().to_owned();
-    let input = root.join("ed.toml");
+    let work = authoring_workspace(
+        &root,
+        "authoring",
+        "ed",
+        include_str!("../../examples/ed/ed.toml"),
+    );
+    let input = work.join("ed.toml");
     let mode = Arc::new(Mutex::new("ok"));
     let current = mode.clone();
     let changed = input.clone();
@@ -229,53 +254,68 @@ fn generation_completes_only_missing_hashes_and_never_publishes_stale_input() {
         server
             .command()
             .current_dir(&root)
-            .args(["gen", "ed"])
+            .args(["gen", "authoring"])
             .args(extra)
             .output()
             .unwrap()
     };
     success(&run(&["--offline", "--stdout"]));
     assert!(server.calls.lock().unwrap().is_empty());
-    let output = run(&["--check", "--format", "json"]);
+    let output = run(&["--check", "--format", "toml"]);
     success(&output);
     assert_eq!(
-        json_line(&output)["source_hashes"]["0"]["sha256"],
-        sha(b"/ed-1.22.5.tar.lz")
+        machine_report(&output)["source_hashes"][0]["sha256"].as_str(),
+        Some((sha(b"/ed-1.22.5.tar.lz")).as_str())
     );
     assert_file(&input, &original);
     assert!(!root.join("ed.spec").exists());
     success(&run(&[]));
     assert!(
-        fs::read_to_string(root.join("ed.spec"))
+        fs::read_to_string(work.join("stage/ed.candidate.spec"))
             .unwrap()
             .contains(&sha(b"/ed-1.22.5.tar.lz"))
     );
-    fs::remove_file(root.join("ed.spec")).unwrap();
+    fs::remove_file(work.join("stage/ed.candidate.spec")).unwrap();
     manifest["sources"]["0"]
         .as_table_mut()
         .unwrap()
         .insert("sha256".into(), "a".repeat(64).into());
     fs::write(&input, toml::to_string(&manifest).unwrap()).unwrap();
     server.calls.lock().unwrap().clear();
-    success(&run(&["--check", "--format", "json"]));
+    success(&run(&["--check", "--format", "toml"]));
     assert!(server.calls.lock().unwrap().is_empty()); // Declared hashes are never overwritten or verified by gen.
+    let refreshed = run(&["--hash", "--check", "--format", "toml"]);
+    success(&refreshed);
+    assert_eq!(
+        machine_report(&refreshed)["source_hashes"][0]["sha256"].as_str(),
+        Some((sha(b"/ed-1.22.5.tar.lz")).as_str())
+    );
+    assert_eq!(server.calls.lock().unwrap().len(), 1);
+    let offline_hash = run(&["--offline", "--hash"]);
+    assert_eq!(offline_hash.status.code(), Some(2));
     fs::write(&input, &original).unwrap();
     *mode.lock().unwrap() = "fail";
-    let failed = run(&["--check", "--format", "json"]);
+    let failed = run(&["--check", "--format", "toml"]);
     success(&failed);
-    let report = json_line(&failed);
-    assert_eq!(report["source_hash_failures"]["0"]["reason"], "http-status");
-    assert_eq!(report["source_hash_failures"]["0"]["http_status"], 404);
-    assert_eq!(report["valid"], true); // A failed best-effort hash remains a warning.
-    assert!(report["source_hashes"]["0"].is_null());
+    let report = machine_report(&failed);
+    assert_eq!(
+        report["source_hash_failures"][0]["reason"].as_str(),
+        Some("http-status")
+    );
+    assert_eq!(
+        report["source_hash_failures"][0]["http_status"].as_integer(),
+        Some(404)
+    );
+    assert_eq!(report["valid"].as_bool(), Some(true)); // A failed best-effort hash remains a warning.
+    assert!(report["source_hashes"].as_array().unwrap().is_empty());
     assert_file(&input, &original);
     for mode_name in ["drift", "drift-fail"] {
         fs::write(&input, &original).unwrap();
         *mode.lock().unwrap() = mode_name;
-        let failed = run(&["--check", "--format", "json"]);
+        let failed = run(&["--check", "--format", "toml"]);
         assert_eq!(failed.status.code(), Some(1));
         assert!(
-            json_line(&failed)["error"]["message"]
+            machine_report(&failed)["error"]["message"]
                 .as_str()
                 .unwrap()
                 .contains("changed")
@@ -285,7 +325,7 @@ fn generation_completes_only_missing_hashes_and_never_publishes_stale_input() {
     }
     fs::write(
         &input,
-        original.replace("name = \"ed\"", "name = \"wrong\""),
+        original.replace("version = \"1.22.5\"", "version = \"\""),
     )
     .unwrap();
     server.calls.lock().unwrap().clear();
@@ -326,7 +366,7 @@ fn edit_hashes_the_pending_candidate_and_keeps_drafts_and_stale_guards() {
     };
     let args = [
         "edit",
-        "input.spec",
+        "--spec=input.spec",
         "--set",
         "package.version=2",
         "--hash-source",
@@ -334,27 +374,27 @@ fn edit_hashes_the_pending_candidate_and_keeps_drafts_and_stale_guards() {
         "--hash-source",
         "0",
     ];
-    let output = run(&[&args[..], &["--check", "--format", "json"]].concat());
+    let output = run(&[&args[..], &["--check", "--format", "toml"]].concat());
     success(&output);
     assert_eq!(
-        json_line(&output)["files"][0]["source_hashes"]["sources"]["0"]["sha256"],
-        sha(b"/2.tar")
+        machine_report(&output)["files"][0]["source_hashes"]["sources"][0]["sha256"].as_str(),
+        Some((sha(b"/2.tar")).as_str())
     );
     assert_eq!(*server.calls.lock().unwrap(), ["/2.tar"]);
     success(&run(&[&args[..], &["--diff"]].concat()));
     assert_file(&input, &source);
     *mode.lock().unwrap() = "fail";
-    let output = run(&[&args[..], &["--check", "--format", "json"]].concat());
+    let output = run(&[&args[..], &["--check", "--format", "toml"]].concat());
     assert_eq!(output.status.code(), Some(1));
-    let error = &json_line(&output)["files"][0]["error"];
-    assert_eq!(error["code"], "source-hash-failed");
-    assert_eq!(error["stage"], "download");
-    assert_eq!(error["reason"], "http-status");
-    assert_eq!(error["http_status"], 404);
-    assert_eq!(error["retryable"], false);
+    let error = &machine_report(&output)["files"][0]["error"];
+    assert_eq!(error["code"].as_str(), Some("source-hash-failed"));
+    assert_eq!(error["stage"].as_str(), Some("download"));
+    assert_eq!(error["reason"].as_str(), Some("http-status"));
+    assert_eq!(error["http_status"].as_integer(), Some(404));
+    assert_eq!(error["retryable"].as_bool(), Some(false));
     assert_file(&input, &source);
     *mode.lock().unwrap() = "ok";
-    success(&run(&args));
+    success(&run(&[&args[..], &["--apply"]].concat()));
     let expected = source
         .replace("Version:        1.22.5", "Version:        2")
         .replace(
@@ -365,7 +405,7 @@ fn edit_hashes_the_pending_candidate_and_keeps_drafts_and_stale_guards() {
     server.calls.lock().unwrap().clear();
     let stale = run(&[
         "edit",
-        "input.spec",
+        "--spec=input.spec",
         "--hash-source",
         "0",
         "--expect-sha256",
@@ -374,16 +414,20 @@ fn edit_hashes_the_pending_candidate_and_keeps_drafts_and_stale_guards() {
     ]);
     assert_eq!(stale.status.code(), Some(1));
     assert!(server.calls.lock().unwrap().is_empty());
+    fs::remove_dir_all(root.join(".ruyipack-stage")).unwrap();
     fs::write(
         &input,
         source.replace("#!RemoteAsset", "#!RemoteAsset:  sha256:INVALID"),
     )
     .unwrap();
-    success(&run(&["edit", "input.spec", "--hash-source", "0"])); // Damaged old hashes remain repairable.
+    success(&run(&["edit", "--spec=input.spec", "--hash-source", "0"])); // Damaged old hashes remain repairable.
+    let stage = root.join(".ruyipack-stage/input");
+    assert!(stage.join("input.toml").is_file());
+    fs::remove_dir_all(root.join(".ruyipack-stage")).unwrap();
     fs::write(&input, &source).unwrap();
     success(&run(&[
         "edit",
-        "input.spec",
+        "--spec=input.spec",
         "--hash-source",
         "0",
         "--prepare",
@@ -406,12 +450,13 @@ fn edit_hashes_the_pending_candidate_and_keeps_drafts_and_stale_guards() {
         "%description",
         "#!RemoteAsset\nSource1: local.tar\n%description",
     );
+    fs::remove_dir_all(root.join(".ruyipack-stage")).unwrap();
     fs::write(&input, &batch).unwrap();
     server.calls.lock().unwrap().clear();
     assert_eq!(
         run(&[
             "edit",
-            "input.spec",
+            "--spec=input.spec",
             "--hash-source",
             "0",
             "--hash-source",
@@ -424,4 +469,99 @@ fn edit_hashes_the_pending_candidate_and_keeps_drafts_and_stale_guards() {
     );
     assert!(server.calls.lock().unwrap().is_empty());
     assert_file(&input, &batch);
+}
+
+#[test]
+fn generation_hash_completion_uses_edited_urls_and_never_backfills_stale_baseline_digest() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let server = Server::new(true, |path| response(path.as_bytes()));
+    let source = include_str!("../fixtures/ed.spec").replace(
+        "https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz",
+        &format!("{}/ed-%{{version}}.tar", server.url),
+    );
+    let work = recipe_workspace(root, "gen-work", "ed", &source);
+    let prepare = server
+        .command()
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .current_dir(root)
+        .args([
+            "edit",
+            "gen-work",
+            "--field",
+            "package.version",
+            "--field",
+            "sources.0",
+            "--prepare",
+            "work/gen-work/stage",
+        ])
+        .output()
+        .unwrap();
+    success(&prepare);
+    let stage = work.join("stage/ed.toml");
+    let edited = format!(
+        "[package]\nversion = '2'\n[sources.0]\nurl = '{}/ed-%{{version}}.tar'\n",
+        server.url
+    );
+    fs::write(&stage, &edited).unwrap();
+    let run = |extra: &[&str]| {
+        server
+            .command()
+            .current_dir(root)
+            .args(["gen", "gen-work"])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    success(&run(&["--offline"]));
+    assert!(server.calls.lock().unwrap().is_empty());
+    let completed = work.join("stage/ed.resolved.toml");
+    let document: toml::Value = toml::from_str(&fs::read_to_string(&completed).unwrap()).unwrap();
+    assert!(
+        document["edit"]["values"]["sources"]["0"]
+            .as_table()
+            .unwrap()
+            .get("sha256")
+            .is_none()
+    );
+    let baseline_digest = "56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc";
+    assert!(
+        fs::read_to_string(work.join("stage/ed.candidate.spec"))
+            .unwrap()
+            .contains(baseline_digest)
+    );
+    success(&run(&[]));
+    let observed = sha(b"/ed-2.tar");
+    let document: toml::Value = toml::from_str(&fs::read_to_string(&completed).unwrap()).unwrap();
+    assert_eq!(
+        document["edit"]["values"]["sources"]["0"]["sha256"].as_str(),
+        Some(observed.as_str())
+    );
+    assert_eq!(document["role"].as_str(), Some("resolved-edit"));
+    assert_eq!(document["downloads"][0]["number"].as_integer(), Some(0));
+    assert_eq!(
+        document["downloads"][0]["sha256"].as_str(),
+        Some(observed.as_str())
+    );
+    assert_file(&stage, &edited);
+    assert_file(work.join("checkout/SPECS/ed/ed.spec"), &source);
+    server.calls.lock().unwrap().clear();
+    // An explicit digest remains a declaration; --hash alone requests re-observation.
+    fs::write(&stage, format!("{edited}sha256 = '{baseline_digest}'\n")).unwrap();
+    let checked = run(&["--check", "--format=toml"]);
+    success(&checked);
+    assert!(server.calls.lock().unwrap().is_empty());
+    assert!(
+        machine_report(&checked)["authoring_warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("declaration, not verification")
+    );
+    let refreshed = run(&["--hash", "--check", "--format=toml"]);
+    success(&refreshed);
+    assert_eq!(
+        machine_report(&refreshed)["source_hashes"][0]["sha256"].as_str(),
+        Some(observed.as_str())
+    );
+    assert_eq!(server.calls.lock().unwrap().len(), 1);
 }

@@ -7,10 +7,12 @@
 //! Typed authoring input and validation before SPEC rendering.
 
 pub(crate) mod schema;
+#[cfg(test)]
+mod tests;
 
 use super::RenderError;
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, de::Error as _};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::SerializeMap};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Authoring input for openRuyi SPEC generation. This schema checks structure,
@@ -33,7 +35,8 @@ struct ManifestInput {
     patches: Vec<(u32, Patch)>,
     #[serde(default)]
     build: Build,
-    build_requires: BuildRequires,
+    #[serde(default)]
+    build_requires: BuildRequiresInput,
     /// Subpackages keyed by suffix, or by full package name when full-name is true.
     #[serde(default)]
     subpackages: BTreeMap<String, SubpackageInput>,
@@ -79,15 +82,21 @@ struct PackageInput {
     /// Architecture-independent package; arbitrary BuildArch lists are not supported.
     #[serde(default)]
     noarch: bool,
+    #[serde(default)]
     files: Files,
 }
 
 /// Authoring input after structural and content checks. RPM expressions are
 /// still preserved as text; generation verifies them through the SPEC adapter.
+/// Serialization is a read-only snapshot, not the authoring input format.
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) struct Manifest {
     pub(crate) spec: SpecMetadata,
     pub(crate) package: Package,
+    #[serde(serialize_with = "serialize_materials")]
     pub(crate) sources: Vec<(u32, Source)>,
+    #[serde(serialize_with = "serialize_materials")]
     pub(crate) patches: Vec<(u32, Patch)>,
     pub(crate) build: Build,
     pub(crate) build_requires: BuildRequires,
@@ -95,18 +104,22 @@ pub(crate) struct Manifest {
 }
 
 /// A validated subpackage: its name form plus the same body a main package has.
+#[derive(Serialize)]
 pub(crate) struct Subpackage {
     pub(crate) name: SubpackageName,
     pub(crate) body: PackageBody,
 }
 
 /// How a subpackage names itself relative to the main package.
+#[derive(Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
 pub(crate) enum SubpackageName {
     /// Suffix appended to the main name: renders `%package <suffix>`.
     Suffix(String),
     /// Complete package name: renders `%package -n <name>`.
     Absolute(String),
 }
+#[derive(Serialize)]
 pub(crate) struct Package {
     pub(crate) name: String,
     pub(crate) version: String,
@@ -120,6 +133,7 @@ pub(crate) struct Package {
 }
 
 /// Fields shared by the main package and subpackages.
+#[derive(Serialize)]
 pub(crate) struct PackageBody {
     pub(crate) summary: String,
     pub(crate) description: String,
@@ -127,12 +141,14 @@ pub(crate) struct PackageBody {
     pub(crate) provides: Vec<String>,
     pub(crate) files: Files,
 }
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub(crate) struct SpecMetadata {
     pub(crate) copyright_years: String,
     pub(crate) contributors: Vec<String>,
 }
+#[derive(Serialize)]
+#[serde(tag = "kind", content = "url", rename_all = "kebab-case")]
 pub(crate) enum Vcs {
     /// No repository fact has been supplied; never means that none exists.
     Unknown,
@@ -189,6 +205,28 @@ pub(crate) enum Source {
     },
 }
 
+// Output identifies the resolved variant explicitly without changing the
+// authoring input's untagged URL/path choice or its deserialization schema.
+impl Serialize for Source {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut fields = serializer.serialize_map(None)?;
+        match self {
+            Self::Remote { url, sha256 } => {
+                fields.serialize_entry("kind", "remote")?;
+                fields.serialize_entry("url", url)?;
+                if let Some(hash) = sha256 {
+                    fields.serialize_entry("sha256", hash)?;
+                }
+            }
+            Self::Local { path } => {
+                fields.serialize_entry("kind", "local")?;
+                fields.serialize_entry("path", path)?;
+            }
+        }
+        fields.end()
+    }
+}
+
 impl Source {
     pub(crate) fn value(&self) -> &str {
         match self {
@@ -198,14 +236,14 @@ impl Source {
     }
 }
 /// Local patch declaration. Keep declaration order for RPM's %autopatch.
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Patch {
     /// Relative local patch path. Declaration order is application order.
     pub(crate) path: String,
 }
 
-#[derive(Default, Deserialize, JsonSchema)]
+#[derive(Default, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Build {
     #[schemars(extend("enum" = crate::profile::buildsystems::systems().collect::<Vec<_>>()))]
@@ -214,7 +252,7 @@ pub(crate) struct Build {
     pub(crate) stages: BTreeMap<Stage, StageConfig>,
 }
 
-#[derive(Deserialize, JsonSchema, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Deserialize, Serialize, JsonSchema, Eq, Ord, PartialEq, PartialOrd)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Stage {
     Prep,
@@ -236,7 +274,7 @@ impl Stage {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StageConfig {
     #[serde(default)]
@@ -248,12 +286,21 @@ pub(crate) struct StageConfig {
     #[serde(default)]
     pub(crate) append: String,
 }
-#[derive(Deserialize, JsonSchema)]
+#[derive(Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct BuildRequiresInput {
+    /// Omission selects the declared build-system contract; an explicit list,
+    /// including an empty one, remains the author's choice.
+    #[serde(default)]
+    #[schemars(with = "Vec<String>")]
+    rpm: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
 pub(crate) struct BuildRequires {
     pub(crate) rpm: Vec<String>,
 }
-#[derive(Default, Deserialize, JsonSchema)]
+#[derive(Default, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Files {
     #[serde(default)]
@@ -359,10 +406,29 @@ fn validate_body(
 /// Reads authoring fields without evaluating RPM macros. Structural errors
 /// abort deserialization; content errors are collected across the manifest.
 pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
-    let mut input: ManifestInput = toml::from_str(source)?;
+    resolve(toml::from_str(source)?)
+}
+
+/// Consumes an already parsed authoring document without a text round trip.
+pub(crate) fn parse_document(document: toml::Table) -> Result<Manifest, RenderError> {
+    resolve(toml::Value::Table(document).try_into()?)
+}
+
+fn resolve(mut input: ManifestInput) -> Result<Manifest, RenderError> {
     // Source identity is numeric; Patch declaration order is also application
     // order in native RPM's %autopatch, so never sort patches.
     input.sources.sort_by_key(|(number, _)| *number);
+    let build_requires = BuildRequires {
+        rpm: input.build_requires.rpm.unwrap_or_else(|| {
+            input
+                .build
+                .system
+                .as_deref()
+                .and_then(crate::profile::buildsystems::contract)
+                .map(|contract| contract.build_requires.clone())
+                .unwrap_or_default()
+        }),
+    };
     let package = &input.package;
     let invalid = |field: &str, reason: &str| format!("{field}: {reason}");
 
@@ -471,7 +537,7 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
             }
         }
     }
-    for requirement in &input.build_requires.rpm {
+    for requirement in &build_requires.rpm {
         record(validate_single_line("build-requires.rpm", requirement));
     }
     errors.extend(validate_body(
@@ -554,7 +620,7 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
         sources: input.sources,
         patches: input.patches,
         build: input.build,
-        build_requires: input.build_requires,
+        build_requires,
         subpackages,
     })
 }
@@ -582,6 +648,22 @@ where
         materials.push((number, value.try_into().map_err(D::Error::custom)?));
     }
     Ok(materials)
+}
+
+/// Arrays retain the validated Source order and the original Patch application
+/// order. Numbers are data, rather than table keys with a second ordering rule.
+fn serialize_materials<S: Serializer, T: Serialize>(
+    materials: &[(u32, T)],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(
+        materials
+            .iter()
+            .map(|(number, value)| crate::report::Entry {
+                number: *number,
+                value,
+            }),
+    )
 }
 
 fn validate_local_path(field: &str, path: &str) -> Result<(), String> {

@@ -7,81 +7,124 @@
 //! Editing arguments and output selection.
 
 use crate::output_cli::ReportFormat;
-use clap::{ArgGroup, Args};
+use clap::Args;
 use std::path::PathBuf;
 
 #[derive(Args)]
 #[command(
-    group(ArgGroup::new("edit_action").args([
-        "prepare", "view", "schema", "check", "diff", "stdout", "output"
-    ])),
-    after_help = "Opens selected SPEC fields as TOML in $VISUAL, $EDITOR, or vim.\nChoose fields interactively, or use --field / --set. Use --all only for fully supported SPECs.\nUse --set FIELD=VALUE repeatedly for string fields.\nUse --prepare DIR for persistent drafts.\nCommon fields: package.version, build-requires.rpm (array), sources.N.url, sources.N.sha256.\nUse --hash-source N to calculate and fill a Source digest.\nAfter the editor exits, checked edits are written to the source SPEC files.\nUse --diff to preview without writing; --from DIR applies saved drafts.\nChanging Version or Source only refreshes explicitly selected --hash-source digests; patches are not verified.\nReview them before building or submitting the package.\nExamples:\n  ruyipack edit ed.spec --set package.version=1.22 --diff\n  ruyipack edit ed.spec --field package.version --editor 'code --wait'\n  ruyipack edit ed.spec make.spec --field package.version --prepare drafts\n  ruyipack edit --from drafts --check\n  ruyipack edit --from drafts --diff\n  ruyipack edit --from drafts"
+    after_help = "Default: open a persistent TOML stage in $VISUAL, $EDITOR, or vim.
+--menu selects fields, then edits their values inline; --field edits known fields inline.
+--set FIELD=VALUE is non-interactive. Use --field FIELD --editor COMMAND for selected TOML editing.
+Neither mode writes SPEC files by default.
+--check checks the edit; --diff caches a candidate SPEC and saves/displays its diff.
+--apply checks local-edit admission and explicitly publishes to the development checkout.
+--check, --diff and --apply may be combined. Unchanged confirmed legacy issues may remain.
+--hash refreshes every remote Source (including signatures, excluding local files).
+--hash-source N refreshes only selected Sources. Hashes use the edited candidate and return to its stage.
+Use --from DIR to resume a stage; --editor reopens its TOML.
+Examples:
+  ruyipack edit ed
+  ruyipack edit ed --menu --check
+  ruyipack edit ed --field package.version --diff
+  ruyipack edit ed --set package.version=1.22 --diff
+  ruyipack edit ed --set package.version=1.22 --hash --check --diff --apply
+  ruyipack edit --from work/ed/stage --apply"
 )]
 pub(crate) struct Options {
-    /// SPEC files to edit.
-    #[arg(
-        value_name = "SPEC",
-        required_unless_present = "from",
-        conflicts_with = "from"
-    )]
+    /// Development areas to edit; repeat for a batch.
+    #[arg(value_name = "WORK", required_unless_present_any = ["specs", "from"], conflicts_with_all = ["specs", "from"])]
+    pub works: Vec<String>,
+    /// Edit explicit SPEC files instead of development areas.
+    #[arg(long = "spec", value_name = "PATH", conflicts_with_all = ["works", "from", "pkgname"])]
     pub specs: Vec<PathBuf>,
-    /// Applies saved drafts without opening an editor; --editor reopens them.
-    #[arg(long, value_name = "DIR", conflicts_with_all = ["prepare", "set", "fields", "view", "schema"])]
+    /// Package binding for a new development area.
+    #[arg(long, value_name = "PKG", requires = "works")]
+    pub pkgname: Option<String>,
+    /// Resume saved TOML stage values; --editor reopens it.
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["prepare", "set", "fields", "menu"])]
     pub from: Option<PathBuf>,
-    /// Writes editable TOML files and their source bindings to a directory.
-    #[arg(long, value_name = "DIR", conflicts_with_all = ["set", "editor"])]
+    /// Prepare a persistent stage in this directory without opening the editor.
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["editor", "menu"])]
     pub prepare: Option<PathBuf>,
-    /// Sets one existing string field; repeat for more fields.
-    #[arg(long, value_name = "FIELD=VALUE", value_parser = assignment, conflicts_with_all = ["fields", "view", "schema", "editor"])]
+    /// Choose fields from a menu and edit their existing values inline.
+    #[arg(long, conflicts_with_all = ["set", "editor", "all"])]
+    pub menu: bool,
+    /// Set an existing string or TOML string-array field; repeat for more fields.
+    #[arg(long, value_name = "FIELD=VALUE", value_parser = assignment, conflicts_with_all = ["fields", "editor"])]
     pub set: Vec<(String, String)>,
-    /// Recalculate a Source SHA-256 from the pending candidate; repeat for more Sources.
-    #[arg(long = "hash-source", value_name = "N", conflicts_with_all = ["view", "schema"])]
+    /// Refresh SHA-256 for all remote Sources, including signature Sources.
+    #[arg(long)]
+    pub hash: bool,
+    /// Refresh the SHA-256 of one Source from the edited candidate.
+    #[arg(long = "hash-source", value_name = "N")]
     pub hash_sources: Vec<u32>,
-    /// Define a static macro before reading the candidate, in order.
-    #[arg(
-        short = 'D',
-        long = "define",
-        value_name = "MACRO EXPR",
-        requires = "hash_sources"
-    )]
+    /// Define a static macro before resolving the edited candidate.
+    #[arg(short = 'D', long = "define", value_name = "MACRO EXPR")]
     pub defines: Vec<String>,
-    /// Refuse a single-file operation unless its original SHA-256 matches.
+    /// Refuse an operation unless its original SHA-256 matches.
     #[arg(long, value_name = "HASH", value_parser = parse_expected_sha256)]
     pub expect_sha256: Option<String>,
-    /// Selects a field or table for viewing or editing; repeat to add fields.
+    /// Edit a field or table inline; --editor or --prepare instead uses TOML.
     #[arg(long = "field", value_name = "FIELD")]
     pub fields: Vec<String>,
-    /// Explicitly maps every supported field; fails on unsupported constructs.
+    /// Require a complete mapping of every construct instead of a safe projection.
     #[arg(long, conflicts_with_all = ["fields", "set", "from"])]
     pub all: bool,
-    /// Prints the editable TOML for one SPEC without opening an editor.
-    #[arg(long, conflicts_with = "editor")]
-    pub view: bool,
-    /// Prints a JSON Schema for the displayed fields of one SPEC.
-    #[arg(long, conflicts_with = "editor")]
-    pub schema: bool,
-    /// Checks all drafts without writing SPEC files or opening an editor.
-    #[arg(long, conflicts_with = "editor")]
+    /// Check local-edit admission after editing; does not publish by itself.
+    #[arg(long)]
     pub check: bool,
-    /// Selects the check, draft preparation, or publication report format.
-    #[arg(long, value_enum, conflicts_with_all = ["view", "schema", "diff", "stdout", "editor"])]
+    /// Explicitly publish the candidate after local-edit admission succeeds.
+    #[arg(long)]
+    pub apply: bool,
+    /// Select the stage, check, or publication report format.
+    #[arg(long, value_enum, conflicts_with_all = ["stdout", "editor", "menu"])]
     pub format: Option<ReportFormat>,
-    /// Prints safely constructed diffs without writing; failed static checks still exit 1.
+    /// Cache the candidate SPEC and save/display its unified diff; no implicit check.
     #[arg(long)]
     pub diff: bool,
-    /// Prints one checked SPEC without writing a file.
-    #[arg(long)]
+    /// Print one constructed candidate SPEC without publishing it.
+    #[arg(long, conflicts_with = "diff")]
     pub stdout: bool,
-    /// Replaces an existing --output file without prompting.
-    // Clap waives required arguments when a conflicting group member is present.
-    #[arg(long, requires = "output", conflicts_with_all = ["prepare", "view", "schema", "check", "diff", "stdout"])]
+    /// Replace an existing --output destination without prompting.
+    #[arg(long, requires = "output")]
     pub force: bool,
-    /// Writes one edited SPEC to this path instead of replacing its source.
-    #[arg(short, long, value_name = "FILE")]
+    /// With --apply, publish to this file instead of replacing the source.
+    #[arg(
+        short,
+        long,
+        value_name = "FILE",
+        requires = "apply",
+        conflicts_with = "stdout"
+    )]
     pub output: Option<PathBuf>,
-    /// Overrides the editor command; GUI editors must wait until files close.
+    /// Override the TOML editor command; GUI editors must wait.
     #[arg(long, value_name = "COMMAND")]
     pub editor: Option<String>,
+}
+
+impl Options {
+    pub(super) fn generates_candidate(&self) -> bool {
+        self.check
+            || self.apply
+            || self.diff
+            || self.stdout
+            || self.hash
+            || !self.hash_sources.is_empty()
+    }
+
+    pub(super) fn checks_only(&self) -> bool {
+        self.check
+            && !self.apply
+            && !self.diff
+            && self.prepare.is_none()
+            && self.from.is_none()
+            && self.set.is_empty()
+            && self.fields.is_empty()
+            && !self.menu
+            && !self.hash
+            && self.hash_sources.is_empty()
+            && self.editor.is_none()
+    }
 }
 
 fn assignment(text: &str) -> Result<(String, String), String> {
@@ -99,42 +142,20 @@ fn parse_expected_sha256(value: &str) -> Result<String, &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use clap::{Parser, error::ErrorKind};
-
     use crate::Cli;
+    use clap::Parser;
 
     #[test]
-    fn edit_actions_are_optional_exclusive_and_force_requires_output() {
+    fn edit_operations_are_orthogonal_and_apply_authorizes_output() {
         let parse = |args: &[&str]| {
             Cli::try_parse_from(["ruyipack", "edit"].into_iter().chain(args.iter().copied()))
         };
-        let actions: [&[&str]; 7] = [
-            &["--prepare", "drafts"],
-            &["--view"],
-            &["--schema"],
-            &["--check"],
-            &["--diff"],
-            &["--stdout"],
-            &["--output", "other.spec"],
-        ];
-        assert!(parse(&["ed.spec"]).is_ok());
-        assert!(parse(&["ed.spec", "--force"]).is_err());
-        for (index, action) in actions.iter().enumerate() {
-            let mut args = vec!["ed.spec"];
-            args.extend_from_slice(action);
-            assert!(parse(&args).is_ok(), "{args:?}");
-            args.push("--force");
-            assert_eq!(parse(&args).is_ok(), action[0] == "--output", "{args:?}");
-            args.pop();
-            for other in &actions[index + 1..] {
-                let mut pair = args.clone();
-                pair.extend_from_slice(other);
-                assert_eq!(
-                    parse(&pair).err().map(|error| error.kind()),
-                    Some(ErrorKind::ArgumentConflict),
-                    "{pair:?}"
-                );
-            }
-        }
+        assert!(parse(&["ed"]).is_ok());
+        assert!(parse(&["ed", "--check", "--diff", "--apply", "--hash"]).is_ok());
+        assert!(parse(&["ed", "--set", "package.version=2", "--check", "--diff"]).is_ok());
+        assert!(parse(&["ed", "--menu", "--check", "--apply"]).is_ok());
+        assert!(parse(&["ed", "--output", "copy.spec"]).is_err());
+        assert!(parse(&["ed", "--apply", "--output", "copy.spec", "--force"]).is_ok());
+        assert!(parse(&["ed", "--force"]).is_err());
     }
 }

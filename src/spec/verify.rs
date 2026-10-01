@@ -33,7 +33,7 @@ pub(crate) fn run(
     manifest: &Manifest,
     profile: &Profile,
 ) -> Result<(), RenderError> {
-    let source = spec.source;
+    let source = spec.source();
     let parsed = &spec.parsed;
     if !parsed.diagnostics.is_empty() {
         return Err(RenderError::Invalid(format!(

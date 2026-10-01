@@ -17,62 +17,66 @@ esac
 root=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
-cp "$root/examples/ed/ed.toml" "$work/ed.toml"
 cd "$work"
+"$binary" init
 "$binary" --version
-"$binary" gen ed
-"$binary" check ed.spec
-"$binary" inspect ed.spec > inspect.txt
-cp ed.spec original.spec
-"$binary" edit ed.spec --field package.version --view > version.toml
-"$binary" edit ed.spec --set package.version=1.22.6 --diff > version.diff
+# New uses committed Git content; this smoke test never contacts a remote repository.
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+export GIT_AUTHOR_NAME='Smoke Fixture' GIT_AUTHOR_EMAIL=fixture@example.org
+export GIT_COMMITTER_NAME='Smoke Fixture' GIT_COMMITTER_EMAIL=fixture@example.org
+git -c core.hooksPath=/dev/null init --quiet -b main openruyi
+mkdir -p openruyi/SPECS/ed
+cp "$root/tests/fixtures/ed.spec" openruyi/SPECS/ed/ed.spec
+git -C openruyi add .
+git -C openruyi -c core.hooksPath=/dev/null -c commit.gpgSign=false commit --quiet -m 'Fixture baseline'
+"$binary" new ed > /dev/null
+cp "$root/examples/ed/ed.toml" work/ed/ed.toml
+spec=work/ed/checkout/SPECS/ed/ed.spec
+cp "$spec" original.spec
+"$binary" gen ed --offline
+test -s work/ed/ed.resolved.toml
+test -s work/ed/stage/ed.candidate.spec
+cmp "$spec" original.spec
+"$binary" gen ed --offline --spec=.
+cmp work/ed/ed.spec original.spec
+"$binary" gen ed --offline --spec=auto
+"$binary" check ed
+"$binary" inspect ed > inspect.txt
+"$binary" inspect ed --editable --field package.version > version.toml
+"$binary" edit ed --set package.version=1.22.6 --diff > version.diff
 test -s version.toml
-test -s version.diff
-cmp ed.spec original.spec
-if "$binary" edit ed.spec --set 'package.version=1 2'; then
+cmp version.diff work/ed/stage/ed.diff
+test -s work/ed/stage/ed.candidate.spec
+cmp "$spec" original.spec
+if "$binary" edit ed --set 'package.version=1 2' --apply; then
     echo "An invalid Version was accepted." >&2
     exit 1
 fi
-cmp ed.spec original.spec
-"$binary" edit ed.spec --set package.version=1.22.6
-cp ed.spec edited.spec
-if "$binary" gen ed </dev/null; then
-    echo "Conflicting output was accepted without an action." >&2
-    exit 1
-fi
-cmp ed.spec edited.spec
-# An existing package must not be initialized or overwritten.
-mkdir -p SPECS/demo
-if "$binary" init demo 2>init.err; then
-    echo "A package with an existing SPECS entry was initialized." >&2
-    exit 1
-fi
-grep -q "SPECS/demo already exists" init.err
-if [ -e demo.toml ]; then
-    echo "init wrote a manifest for an existing package." >&2
-    exit 1
-fi
-# Identical content is not a conflict; a changed scaffold is.
-"$binary" init scratch > /dev/null
-grep -q 'name = "scratch"' scratch.toml
-cp scratch.toml scratch.original
-if ! "$binary" init scratch </dev/null 2>/dev/null; then
-    echo "Recreating an identical scaffold failed." >&2
-    exit 1
-fi
-cmp scratch.toml scratch.original
-printf '\n# local note\n' >> scratch.toml
-if "$binary" init scratch </dev/null 2>scratch.err; then
+cmp "$spec" original.spec
+"$binary" edit ed --set package.version=1.22.6 --apply
+cp "$spec" edited.spec
+"$binary" new ed-test --pkgname ed > /dev/null
+grep -q 'name = "ed"' work/ed-test/ed.toml
+cmp original.spec work/ed-test/checkout/SPECS/ed/ed.spec
+# Identical scaffolds and saved bindings are reused; manual content is protected.
+"$binary" new scratch --pkgname scratch > /dev/null
+scaffold=work/scratch/scratch.toml
+grep -q 'name = "scratch"' "$scaffold"
+cp "$scaffold" scratch.original
+"$binary" new scratch --pkgname scratch </dev/null
+cmp "$scaffold" scratch.original
+printf '\n# local note\n' >> "$scaffold"
+if "$binary" new scratch --pkgname scratch </dev/null 2>scratch.err; then
     echo "Conflicting scaffold output was accepted without an action." >&2
     exit 1
 fi
 grep -q "already exists with different content" scratch.err
-"$binary" edit ed.spec --field package.version --prepare drafts
-printf '\n# Concurrent modification\n' >> ed.spec
-cp ed.spec concurrent.spec
-if "$binary" edit --from drafts; then
+"$binary" edit ed --field package.version --prepare drafts
+printf '\n# Concurrent modification\n' >> "$spec"
+cp "$spec" concurrent.spec
+if "$binary" edit --from drafts --apply; then
     echo "A stale draft was accepted." >&2
     exit 1
 fi
-cmp ed.spec concurrent.spec
+cmp "$spec" concurrent.spec
 echo "Installation smoke test passed."

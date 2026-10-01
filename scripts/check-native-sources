@@ -5,10 +5,15 @@
 #
 # SPDX-License-Identifier: MulanPSL-2.0
 
-"""Check Source numbering and generated recipe facts in a trusted openRuyi RPM environment."""
+"""Check Source numbering and generated recipe facts in a trusted openRuyi RPM environment.
+
+Progress is human stderr. This standalone native gate's structured JSON records
+remain a legacy receipt boundary until the build/engine receipt migration.
+"""
 import argparse
 import hashlib
 import json
+import tomllib
 import os
 import pathlib
 import signal
@@ -24,11 +29,11 @@ parser.add_argument("--ruyipack", type=pathlib.Path, help="also generate and bui
 args = parser.parse_args()
 os.environ["LC_ALL"] = "C"
 
-def run_checked(command, stage="Native result not accepted", allow_stderr=False):
+def run_checked(command, stage="Native result not accepted", allow_stderr=False, expected_error=None, cwd=None):
     try:
         # RPM macros may spawn children; close the whole process group on timeout.
         with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              text=True, start_new_session=True) as process:
+                              text=True, start_new_session=True, cwd=cwd) as process:
             try:
                 stdout, stderr = process.communicate(timeout=120)
             except subprocess.TimeoutExpired:
@@ -37,21 +42,25 @@ def run_checked(command, stage="Native result not accepted", allow_stderr=False)
                 raise SystemExit(f"{stage}: timed out after 120 seconds: {command!r}\n{stdout}{stderr}")
     except OSError as error:
         raise SystemExit(f"{stage}: {error}") from error
+    if expected_error is not None:
+        if process.returncode != 1 or expected_error not in stderr:
+            raise SystemExit(f"{stage}: expected rejection {expected_error!r}: {command!r}\nexit={process.returncode}\n{stdout}{stderr}")
+        return stdout
     # RPM can report errors on stderr with exit 0; an exit status alone is not evidence.
     if process.returncode or (stderr.strip() and not allow_stderr):
         raise SystemExit(f"{stage}: {command!r}\nexit={process.returncode}\n{stdout}{stderr}")
     if allow_stderr:
-        print(stdout, end="")
+        print(stdout, end="", file=sys.stderr)
         print(stderr, end="", file=sys.stderr)
     return stdout
 
 root = pathlib.Path(__file__).resolve().parent.parent
 packages = run_checked(["rpm", "-q", "rpm", "rpm-build", "rpm-config-openruyi", *args.require_package], "Environment not ready")
-print(packages, end="")
+print(packages, end="", file=sys.stderr)
 
 cases = root / "tests/fixtures/source-numbering.tsv"
 with tempfile.TemporaryDirectory(prefix="ruyipack-native-") as directory:
-    print(json.dumps({"rpm": run_checked(["rpm", "--version"]).strip(), "macro_configuration_sha256": hashlib.sha256(run_checked(["rpm", "--showrc"]).encode()).hexdigest(), "preprocessing": "none", "defines": [f"_tmppath {directory}"], "scope": "source-numbering, supplied SPEC parses, and optional generated fixture build"}))
+    print(json.dumps({"rpm": run_checked(["rpm", "--version"]).strip(), "macro_configuration_sha256": hashlib.sha256(run_checked(["rpm", "--showrc"]).encode()).hexdigest(), "preprocessing": "none", "defines": [f"_tmppath {directory}"], "scope": "source-numbering, build-script headers, supplied SPEC parses, and optional generated fixture build"}))
     for case in cases.read_text().splitlines():
         if not case or case.startswith("#"):
             continue
@@ -77,7 +86,21 @@ with tempfile.TemporaryDirectory(prefix="ruyipack-native-") as directory:
         expected = {number: f"asset-{index}.tar.gz" for index, number in enumerate(numbers)}
         if observed != expected:
             raise SystemExit(f"{headers}: expected {expected}, observed {observed}")
-        print(f"{','.join(headers)} -> {','.join(map(str, numbers))}: PASS")
+        print(f"{','.join(headers)} -> {','.join(map(str, numbers))}: PASS", file=sys.stderr)
+
+    # Native RPM accepts non-option header arguments, including the word `#`;
+    # do not rewrite input merely to satisfy the Rust parser's narrower grammar.
+    for stage in ["conf", "install"]:
+        for suffix in ["", " # inline comment", " -p", " -a", " -p # inline comment", " invalid-tail", " --invalid-option"]:
+            path = pathlib.Path(directory) / "header.spec"
+            source = ("Name: header-probe\nVersion: 1\nRelease: 1\nSummary: Header probe\nLicense: MIT\n"
+                      + f"%description\nHeader probe\n%{stage}{suffix}\n: NATIVE_BODY_MARKER\n%files\n")
+            path.write_text(source)
+            error = f"Bad %{stage} option --invalid-option: unknown option" if suffix == " --invalid-option" else None
+            expanded = run_checked(["rpmspec", "--define", f"_tmppath {directory}", "-P", str(path)], expected_error=error)
+            if error is None and f"%{stage}{suffix}\n: NATIVE_BODY_MARKER" not in expanded:
+                raise SystemExit(f"Native header/body mismatch: %{stage}{suffix}: {expanded!r}")
+            print(f"build header %{stage}{suffix}: {'rejected' if error else 'accepted'}: PASS", file=sys.stderr)
 
     # The Rust resolver consumes these same literal expectations independently.
     for row in (root / "tests/fixtures/source-expressions.tsv").read_text().splitlines():
@@ -92,7 +115,7 @@ with tempfile.TemporaryDirectory(prefix="ruyipack-native-") as directory:
         urls = [line.split(":", 1)[1].strip() for line in expanded.splitlines() if line.startswith("Source0:")]
         if urls != [expected]:
             raise SystemExit(f"Native macro mismatch: {expression}: expected {expected!r}, got {urls!r}")
-        print(f"static Source expression {expression} -> {expected}: PASS")
+        print(f"static Source expression {expression} -> {expected}: PASS", file=sys.stderr)
 
     # RPM Source and Patch share _sourcedir filename mapping, not URL decoding.
     for row in (root / "tests/fixtures/material-filenames.tsv").read_text().splitlines():
@@ -106,7 +129,7 @@ with tempfile.TemporaryDirectory(prefix="ruyipack-native-") as directory:
         observed = [line.split("=", 1)[1] for line in parsed.splitlines() if line.startswith(("SOURCE=", "PATCH="))]
         if observed != [str(pathlib.Path(directory) / expected)] * 2:
             raise SystemExit(f"Native filename mismatch: {expression}: {observed}")
-        print(f"Source/Patch filename {expression} -> {expected}: PASS")
+        print(f"Source/Patch filename {expression} -> {expected}: PASS", file=sys.stderr)
 
     for path in args.spec:
         source = path.read_bytes()
@@ -132,12 +155,20 @@ with tempfile.TemporaryDirectory(prefix="ruyipack-native-") as directory:
             (sources / name).write_text(f"--- a/payload.txt\n+++ b/payload.txt\n@@ -1 +1 @@\n-{before}\n+{after}\n")
         manifest = root / "tests/native/rpk-native.toml"
         spec = work / "SPECS/rpk-native.spec"
-        spec.write_text(run_checked([str(args.ruyipack.resolve()), "gen", "rpk-native", "--manifest", str(manifest), "--stdout"], "Generation failed"))
+        workspace = work / "ruyipack-workspace"
+        workspace.mkdir()
+        binary = str(args.ruyipack.resolve())
+        run_checked([binary, "init"], "Workspace initialization failed", allow_stderr=True, cwd=workspace)
+        development = workspace / "work/native"
+        development.mkdir(parents=True)
+        (development / ".config.toml").write_text('pkg = "rpk-native"\n')
+        (development / "rpk-native.toml").write_bytes(manifest.read_bytes())
+        spec.write_text(run_checked([binary, "gen", "native", "--offline", "--stdout"], "Generation failed", cwd=workspace))
         # OBS normally supplies release/changelog material. These explicit fixture
         # values do not validate OBS services or claim a production release identity.
         defines = ["--define", f"_topdir {work}", "--define", f"_tmppath {work}", "--define", "autorelease 1", "--define", "autochangelog %nil", "--define", "_buildhost ruyipack-native"]
         print(json.dumps({"ruyipack_sha256": hashlib.sha256(args.ruyipack.read_bytes()).hexdigest(), "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(), "spec_sha256": hashlib.sha256(spec.read_bytes()).hexdigest(), "fixture_defines": defines}))
-        inventory = json.loads(run_checked([str(args.ruyipack.resolve()), "check", str(spec), "--materials", "--source-dir", str(sources), "--format", "json"], "Material preflight failed"))
+        inventory = tomllib.loads(run_checked([str(args.ruyipack.resolve()), "check", "--spec", str(spec), "--materials", "--source-dir", str(sources), "--format", "toml"], "Material preflight failed"))
         expected_inputs = ["rpk-native-1.tar.gz", "rpk-native.conf", "2000-first.patch", "0001-second.patch"]
         rows = inventory["materials"]["files"]
         if not inventory["valid"] or [row["identity"] for row in rows] != ["Source0", "Source1", "Patch20", "Patch0"]:

@@ -9,30 +9,20 @@
 use toml::{Table, Value};
 
 pub(crate) fn lookup<'a>(table: &'a Table, field: &str) -> Option<&'a Value> {
-    let (head, tail) = field
-        .split_once('.')
-        .map_or((field, None), |(head, tail)| (head, Some(tail)));
-    if head.is_empty() {
-        return None;
-    }
-    let value = table.get(head)?;
-    match tail {
-        Some(tail) => lookup(value.as_table()?, tail),
-        None => Some(value),
+    match field.split_once('.') {
+        Some((head, tail)) if !head.is_empty() => lookup(table.get(head)?.as_table()?, tail),
+        None if !field.is_empty() => table.get(field),
+        _ => None,
     }
 }
 
 pub(crate) fn lookup_mut<'a>(table: &'a mut Table, field: &str) -> Option<&'a mut Value> {
-    let (head, tail) = field
-        .split_once('.')
-        .map_or((field, None), |(head, tail)| (head, Some(tail)));
-    if head.is_empty() {
-        return None;
-    }
-    let value = table.get_mut(head)?;
-    match tail {
-        Some(tail) => lookup_mut(value.as_table_mut()?, tail),
-        None => Some(value),
+    match field.split_once('.') {
+        Some((head, tail)) if !head.is_empty() => {
+            lookup_mut(table.get_mut(head)?.as_table_mut()?, tail)
+        }
+        None if !field.is_empty() => table.get_mut(field),
+        _ => None,
     }
 }
 

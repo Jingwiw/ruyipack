@@ -12,7 +12,7 @@ Write, check, and edit openRuyi SPEC files without rewriting unrelated content.
 
 This is an early **source preview** for maintainer-reviewed work. It generates
 SPECs from TOML and edits supported fields in existing SPECs; it does not discover
-complete dependencies or build packages. Generation downloads Sources with missing digests
+complete dependencies. Generation downloads Sources with missing digests
 unless `--offline` is set. CLI, manifest, and
 report formats may change; platform support is experimental.
 
@@ -32,58 +32,67 @@ with source distributions. For Ubuntu prerequisites and Rust setup, see the
 
 ## Try it
 
-Run the included example without changing the checkout:
+Start in an empty workspace with a committed recipe repository:
 
 ```sh
-work=$(mktemp -d)
-cp examples/ed/ed.toml "$work/ed.toml"
-ruyipack gen ed --manifest "$work/ed.toml"
-ruyipack check "$work/ed.spec"
-ruyipack inspect "$work/ed.spec"
-ruyipack edit "$work/ed.spec" --set package.version=1.22.6 --diff
-printf 'Example files: %s\n' "$work"
+ruyipack init . --clone "$RECIPE_REPOSITORY"
+ruyipack edit ed                            # edit persistent TOML; no SPEC write
+ruyipack edit ed --set package.version=1.22.6 --diff
+ruyipack gen ed                             # resolved TOML + cached SPEC
+ruyipack gen ed --spec=.                    # SPEC beside the TOML
+ruyipack edit ed --apply                    # checked, explicit checkout publication
 ```
 
-The last command previews a change; omit `--diff` to write it back. Version or
-Source changes **do not automatically refresh digests or verify patches**.
-Use `verify-sources` to compare existing digests before replacing them, or
-`edit --hash-source N` to deliberately calculate a selected digest. Before submitting a
-package, review its sources and changes, then build and test in the target
-openRuyi environment. A static `pass` is not a successful package build.
+`--diff` saves and displays a diff of an actual cached candidate SPEC. `--check`
+runs local-edit admission after editing; `--apply` always checks. Source changes
+require review: use `source verify` before deliberately refreshing declarations
+with `edit --hash`. Static success is not a native package build.
 
 ## Commands
 
 | Command | Use | Important boundary |
 | --- | --- | --- |
-| `schema` | Export the authoring manifest JSON Schema | Editor assistance, not semantic or build validation |
-| `init NAME` | Create a TOML scaffold | Fill in unknown package facts; local name checks are not upstream availability checks |
-| `gen NAME` | Generate from `NAME.toml` | Supports manual subpackages and explicit stages; manifest is authoritative |
-| `inspect FILE.spec` | Read tags and parser diagnostics | Syntax, not macro-expanded RPM values |
-| `check FILE.spec` | Run selected static rules | Does not validate Source downloads or the complete package |
-| `verify-sources --manifest FILE.toml` | Download and compare declared SHA-256 values | Reports match/mismatch/missing; never writes back; also accepts SPECs; unresolved expressions are reported |
-| `source-hash FILE.spec` | Download and hash one statically resolved Source | Built-in HTTP/TLS; read-only, never executes macros |
-| `edit FILE.spec --field package.version` | Edit selected fields through TOML | SPEC is authoritative; ambiguous fields are refused, unselected bytes preserved |
+| `init [PATH]` | Initialize `.ruyiconfig` in an empty directory | Offline; repeated initialization never overwrites configuration |
+| `new WORK [--pkgname PKG]` | Create a development checkout and TOML scaffold | Requires committed main; implicit PKG must match SPECS/PKG/PKG.spec |
+| `gen WORK` | Generate from WORK's selected authoring TOML or edit stage | Cached outputs by default; `--spec=auto` publishes checkout |
+| `inspect WORK` | Read facts; `--editable --field FIELD` prints TOML | No macro execution; first read creates a binding, not checkout |
+| `check WORK` | Selected offline rules; optional material inventory | Static pass is not a package build |
+| `source hash WORK` / `source verify WORK` | Calculate a digest / compare all declared digests | Network, read-only; never replace declarations |
+| `edit WORK` | Stage edits through TOML, inline `--field`/`--menu`, or `--set` | Only `--apply` publishes; unselected SPEC bytes preserved |
+| `schema manifest` / `schema edit WORK --field FIELD` | Full authoring / narrow editing schema | Structural assistance, not native validation |
 
 Source downloads use Rust HTTP/TLS, without curl, RPM, or a container.
-Native RPM is used only by the separate developer cross-check below.
+Native RPM runs only in the separate developer cross-check below; static commands
+require neither RPM nor Docker.
 
-Use `ruyipack COMMAND --help` for flags. Start a new package with `init`, complete
-its manifest, then run `gen` to fill missing digests in the SPEC automatically.
-Download failures warn with a reason and leave the digest missing; `--offline`
-skips downloads. Existing digests and the TOML are unchanged.
-Existing complex SPECs are best edited with `--field`
-or `--set`; full-view editing only supports a limited subset.
+WORK is the same object across commands. First use defaults PKG to WORK and
+requires committed `SPECS/PKG/PKG.spec`; use `--pkgname PKG` to bind a different or
+new package explicitly. Read-only commands create only `work/WORK/.config.toml`
+and read committed main (its revision appears in machine reports). Writes create
+a sparse checkout; existing checkouts retain their current branch and edits.
+
+```sh
+ruyipack new ed-test --pkgname ed
+# Fill work/ed-test/ed.toml.
+ruyipack gen ed-test --diff
+ruyipack gen ed-test --force
+ruyipack check ed-test
+```
+
+Use `--spec PATH` for independent SPEC files, not a guessed positional path.
+`edit --spec PATH` is repeatable for batches. `gen` only accepts WORK, selected by
+its saved binding and current input (`--input authoring|edit` selects explicitly). Completion preserves author input; `--offline` disables downloads. Complex recipes use selected editing, not full conversion.
 
 ## Documentation
 
 - [中文快速入门](docs/quickstart.zh-CN.md)
 - [Command and manifest reference](docs/reference.md): stages, Sources, subpackages,
-  drafts, output safety, static rules, and JSON contracts
+  drafts, output safety, static rules, and TOML report contracts
 - [Design and openRuyi context](docs/design.md): operation ownership, policy sources,
   module responsibilities, and regression contracts
 - [Example manifest](examples/ed/ed.toml)
 
-Before queuing a build, `ruyipack check package.spec --materials --source-dir SOURCES`
+Before queuing a build, `ruyipack check --spec package.spec --materials --source-dir SOURCES`
 checks staged Source/Patch files offline and reports their SHA-256 inventory.
 See [local material checks](docs/reference.md#local-build-materials) for scope and limitations.
 
@@ -118,3 +127,5 @@ input, and complete output. Remove credentials and private data before sharing.
 
 [MulanPSL-2.0](LICENSE). File-level declarations and license texts are recorded in
 [LICENSES](LICENSES).
+
+Machine reports use `--format toml`; JSON Schema retains its standard JSON format.
