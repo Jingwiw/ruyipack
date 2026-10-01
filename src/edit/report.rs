@@ -90,61 +90,60 @@ struct Outcome<'a> {
     sha256: Option<String>,
 }
 
+impl<'a> File<'a> {
+    fn from_edit(item: &'a super::Edit) -> Self {
+        let state = match item.candidate.as_ref() {
+            Some(Ok(candidate)) => State::Candidate(Box::new(CandidateState {
+                changed: candidate.spec.source() != item.snapshot.source(),
+                profile: crate::profile::identity(),
+                review_triggers: &candidate.review_triggers,
+                review_required: if candidate.review_triggers.is_empty() {
+                    &[]
+                } else {
+                    &[
+                        "source-content-and-digests",
+                        "patch-applicability",
+                        "native-build",
+                    ]
+                },
+                source_hashes: item.source_hashes.as_ref(),
+                checked: item.baseline.as_ref().zip(candidate.report.as_ref()).map(
+                    |(baseline, report)| Checked {
+                        valid: report.is_success(),
+                        admissible: report.allows_edit(baseline),
+                        baseline_report: baseline.structured(&item.path),
+                        report: report.structured(&item.path),
+                        introduced_static_blockers: report.introduced_static_blockers(baseline),
+                        error: super::static_check_error(item, candidate),
+                    },
+                ),
+                cached: item.cache.as_ref().map(|cache| Cached {
+                    candidate_spec: cache.path.to_string_lossy(),
+                    diff: cache.diff.as_ref().map(|(_, text)| text.as_str()),
+                    diff_file: cache.diff.as_ref().map(|(path, _)| path.to_string_lossy()),
+                }),
+            })),
+            check => State::PendingEdit {
+                error: check.and_then(|check| check.as_ref().err()),
+            },
+        };
+        Self {
+            source: item.path.to_string_lossy(),
+            draft: item.draft.as_ref().map(|path| path.to_string_lossy()),
+            stage: item.stage_dir.to_string_lossy(),
+            original_sha256: crate::utf8_file::sha256(item.snapshot.source()),
+            selected_fields: item.snapshot.selection(),
+            state,
+        }
+    }
+}
+
 pub(super) fn envelope<'a>(
     result: &'a Result<super::EditResult, super::EditError>,
     options: &super::Options,
 ) -> Envelope<'a> {
     let files = result.as_ref().ok().map_or_else(Vec::new, |result| {
-        result
-            .inputs
-            .iter()
-            .map(|item| {
-                let state = match item.candidate.as_ref() {
-                    Some(Ok(candidate)) => State::Candidate(Box::new(CandidateState {
-                        changed: candidate.spec.source() != item.snapshot.source(),
-                        profile: crate::profile::identity(),
-                        review_triggers: &candidate.review_triggers,
-                        review_required: if candidate.review_triggers.is_empty() {
-                            &[]
-                        } else {
-                            &[
-                                "source-content-and-digests",
-                                "patch-applicability",
-                                "native-build",
-                            ]
-                        },
-                        source_hashes: item.source_hashes.as_ref(),
-                        checked: item.baseline.as_ref().zip(candidate.report.as_ref()).map(
-                            |(baseline, report)| Checked {
-                                valid: report.is_success(),
-                                admissible: report.allows_edit(baseline),
-                                baseline_report: baseline.structured(&item.path),
-                                report: report.structured(&item.path),
-                                introduced_static_blockers: report
-                                    .introduced_static_blockers(baseline),
-                                error: super::static_check_error(item, candidate),
-                            },
-                        ),
-                        cached: item.cache.as_ref().map(|cache| Cached {
-                            candidate_spec: cache.path.to_string_lossy(),
-                            diff: cache.diff.as_ref().map(|(_, text)| text.as_str()),
-                            diff_file: cache.diff.as_ref().map(|(path, _)| path.to_string_lossy()),
-                        }),
-                    })),
-                    check => State::PendingEdit {
-                        error: check.and_then(|check| check.as_ref().err()),
-                    },
-                };
-                File {
-                    source: item.path.to_string_lossy(),
-                    draft: item.draft.as_ref().map(|path| path.to_string_lossy()),
-                    stage: item.stage_dir.to_string_lossy(),
-                    original_sha256: crate::utf8_file::sha256(item.snapshot.source()),
-                    selected_fields: item.snapshot.selection(),
-                    state,
-                }
-            })
-            .collect()
+        result.inputs.iter().map(File::from_edit).collect()
     });
     let error = match result {
         Ok(result) => result.publication.as_ref().err(),
@@ -264,29 +263,8 @@ pub(super) fn write_changes(
             finding.write_human(writer)?;
         }
     }
-    // Locations can shift after a replacement. Parser messages are presentation
-    // evidence only; they never decide whether publication is admissible.
-    let same_diagnostic = |a: &parser_diagnostic::Diagnostic, b: &parser_diagnostic::Diagnostic| {
-        a.code == b.code && a.severity == b.severity && a.message == b.message && a.notes == b.notes
-    };
-    let mut retained_parser = 0;
-    for (index, diagnostic) in candidate.diagnostics().iter().enumerate() {
-        if candidate.diagnostics()[..index]
-            .iter()
-            .filter(|other| same_diagnostic(diagnostic, other))
-            .count()
-            < baseline
-                .diagnostics()
-                .iter()
-                .filter(|other| same_diagnostic(diagnostic, other))
-                .count()
-            && diagnostic.severity == parser_diagnostic::Severity::Warning
-        {
-            retained_parser += 1;
-        }
-        // Parser recovery can hide a script section; retain its locations once.
-        parser_diagnostic::write(std::slice::from_ref(diagnostic), writer)?;
-    }
+    let retained_parser =
+        write_parser_changes(baseline.diagnostics(), candidate.diagnostics(), writer)?;
     let warning_count = |report: &CheckReport| {
         report
             .diagnostics()
@@ -333,6 +311,10 @@ pub(super) fn write_changes(
             ),
         )?;
     }
+    write_guidance(candidate, writer)
+}
+
+fn write_guidance(candidate: &CheckReport, writer: &mut impl Write) -> io::Result<()> {
     candidate.write_incomplete(writer)?;
     if candidate
         .findings()
@@ -357,6 +339,79 @@ pub(super) fn write_changes(
                 "Full candidate evidence: use edit --check --format toml with the same inputs; check reports the current SPEC."
             ),
         )?;
+    }
+    Ok(())
+}
+
+fn write_parser_changes(
+    baseline: &[parser_diagnostic::Diagnostic],
+    candidate: &[parser_diagnostic::Diagnostic],
+    writer: &mut impl Write,
+) -> io::Result<usize> {
+    // Locations can shift after a replacement. Parser messages are presentation
+    // evidence only; they never decide whether publication is admissible.
+    let same_diagnostic = |a: &parser_diagnostic::Diagnostic, b: &parser_diagnostic::Diagnostic| {
+        a.code == b.code && a.severity == b.severity && a.message == b.message && a.notes == b.notes
+    };
+    let mut retained_parser = 0;
+    for (index, diagnostic) in candidate.iter().enumerate() {
+        if candidate[..index]
+            .iter()
+            .filter(|other| same_diagnostic(diagnostic, other))
+            .count()
+            < baseline
+                .iter()
+                .filter(|other| same_diagnostic(diagnostic, other))
+                .count()
+            && diagnostic.severity == parser_diagnostic::Severity::Warning
+        {
+            retained_parser += 1;
+        }
+        // Parser recovery can hide a script section; retain its locations once.
+        parser_diagnostic::write(std::slice::from_ref(diagnostic), writer)?;
+    }
+    Ok(retained_parser)
+}
+
+pub(super) fn write_candidates(inputs: &[super::Edit], checked: bool) -> io::Result<()> {
+    for item in inputs {
+        let check = item.candidate.as_ref().expect("candidate attempted");
+        if let Ok(candidate) = check {
+            if let (Some(baseline), Some(report)) = (&item.baseline, &candidate.report) {
+                write_changes(&item.subject, baseline, report, &mut io::stderr().lock())?;
+            }
+            if !candidate.review_triggers.is_empty() {
+                output_cli::human(
+                    &mut io::stderr().lock(),
+                    HumanLevel::Warn,
+                    Some(&item.subject),
+                    format_args!(
+                        "review required after changing {}: source authenticity, unrefreshed digests, patch applicability and native build are not verified",
+                        candidate.review_triggers.join(", ")
+                    ),
+                )?;
+            }
+        }
+        if checked {
+            let admissible = matches!(check, Ok(candidate) if super::static_check_error(item, candidate).is_none());
+            output_cli::human(
+                &mut io::stderr().lock(),
+                if admissible {
+                    HumanLevel::Info
+                } else {
+                    HumanLevel::Error
+                },
+                Some(&item.subject),
+                format_args!(
+                    "{}",
+                    if admissible {
+                        "admissible"
+                    } else {
+                        "not admissible"
+                    }
+                ),
+            )?;
+        }
     }
     Ok(())
 }

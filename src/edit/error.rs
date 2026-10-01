@@ -35,7 +35,7 @@ pub(crate) struct EditError {
     path: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     selected_fields: Vec<String>,
-    #[serde(flatten, serialize_with = "cause_details")]
+    #[serde(flatten)]
     #[source]
     cause: Option<Box<Cause>>,
 }
@@ -117,62 +117,59 @@ impl From<&str> for EditError {
 }
 
 // Derive machine details from the same error retained for recovery decisions.
-fn cause_details<S: serde::Serializer>(
-    cause: &Option<Box<Cause>>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    use crate::file_output::OutputError as E;
-    use serde::ser::SerializeMap;
-    let mut error = match cause.as_deref() {
-        None => return serializer.serialize_map(Some(0))?.end(),
-        Some(Cause::SourceHash(error)) => return error.details().serialize(serializer),
-        Some(Cause::Publication(error)) => error,
-    };
-    while let E::Partial { source, .. } = error {
-        error = source;
-    }
-    let (reason, path, io) = match error {
-        E::Read { path, source } => ("read-failed", Some(path), Some(source)),
-        E::Write { path, source } => ("write-failed", Some(path), Some(source)),
-        E::Stdout(source) => ("stdout-failed", None, Some(source)),
-        E::Stderr(source) => ("stderr-failed", None, Some(source)),
-        E::Selection(_) => ("selection-failed", None, None),
-        E::Changed(path) => ("target-changed", Some(path), None),
-        E::SourceChanged(path) => ("source-changed", Some(path), None),
-        E::EditLayout(_) => ("invalid-layout", None, None),
-        E::DiffPath(path) => ("invalid-diff-path", Some(path), None),
-        E::DiffEncoding { path, .. } => ("invalid-diff-encoding", Some(path), None),
-        E::Partial { .. } => unreachable!("unwrapped above"),
-    };
-    #[derive(Serialize)]
-    struct Publication<'a> {
-        stage: &'static str,
-        reason: &'static str,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        path: Option<Cow<'a, str>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        io_kind: Option<&'static str>,
-    }
-    let io_kind = io.map(|io| {
-        use std::io::ErrorKind;
-        match io.kind() {
-            ErrorKind::PermissionDenied => "permission-denied",
-            ErrorKind::NotFound => "not-found",
-            ErrorKind::AlreadyExists => "already-exists",
-            ErrorKind::IsADirectory => "is-a-directory",
-            ErrorKind::NotADirectory => "not-a-directory",
-            ErrorKind::ReadOnlyFilesystem => "read-only-filesystem",
-            ErrorKind::StorageFull => "storage-full",
-            _ => "other",
+impl Serialize for Cause {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use crate::file_output::OutputError as E;
+        #[derive(Serialize)]
+        struct Publication<'a> {
+            stage: &'static str,
+            reason: &'static str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            path: Option<Cow<'a, str>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            io_kind: Option<&'static str>,
         }
-    });
-    Publication {
-        stage: "publication",
-        reason,
-        path: path.map(|path| path.to_string_lossy()),
-        io_kind,
+        let mut error = match self {
+            Self::SourceHash(error) => return error.details().serialize(serializer),
+            Self::Publication(error) => error,
+        };
+        while let E::Partial { source, .. } = error {
+            error = source;
+        }
+        let (reason, path, io) = match error {
+            E::Read { path, source } => ("read-failed", Some(path), Some(source)),
+            E::Write { path, source } => ("write-failed", Some(path), Some(source)),
+            E::Stdout(source) => ("stdout-failed", None, Some(source)),
+            E::Stderr(source) => ("stderr-failed", None, Some(source)),
+            E::Selection(_) => ("selection-failed", None, None),
+            E::Changed(path) => ("target-changed", Some(path), None),
+            E::SourceChanged(path) => ("source-changed", Some(path), None),
+            E::EditLayout(_) => ("invalid-layout", None, None),
+            E::DiffPath(path) => ("invalid-diff-path", Some(path), None),
+            E::DiffEncoding { path, .. } => ("invalid-diff-encoding", Some(path), None),
+            E::Partial { .. } => unreachable!("unwrapped above"),
+        };
+        let io_kind = io.map(|io| {
+            use std::io::ErrorKind;
+            match io.kind() {
+                ErrorKind::PermissionDenied => "permission-denied",
+                ErrorKind::NotFound => "not-found",
+                ErrorKind::AlreadyExists => "already-exists",
+                ErrorKind::IsADirectory => "is-a-directory",
+                ErrorKind::NotADirectory => "not-a-directory",
+                ErrorKind::ReadOnlyFilesystem => "read-only-filesystem",
+                ErrorKind::StorageFull => "storage-full",
+                _ => "other",
+            }
+        });
+        Publication {
+            stage: "publication",
+            reason,
+            path: path.map(|path| path.to_string_lossy()),
+            io_kind,
+        }
+        .serialize(serializer)
     }
-    .serialize(serializer)
 }
 
 #[cfg(test)]
@@ -204,7 +201,7 @@ mod tests {
         );
         assert!(
             std::iter::successors(Some(&error as &dyn std::error::Error), |e| e.source())
-                .any(|e| e.is::<crate::source::Error>())
+                .any(<dyn std::error::Error>::is::<crate::source::Error>)
         );
     }
 }

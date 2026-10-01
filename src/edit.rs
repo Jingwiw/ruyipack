@@ -51,6 +51,52 @@ impl Edit {
             .as_ref()
     }
 
+    fn assign(&mut self, options: &Options, inline: bool) -> Result<(), EditError> {
+        let path = self.draft.as_ref().expect("editing creates a stage");
+        let mut edited = stage::read_document_path(path)?;
+        fields::assign(&mut edited, &options.set).map_err(|error| {
+            EditError::at(
+                Kind::InvalidAssignment,
+                &self.path,
+                self.snapshot.selection(),
+                error,
+            )
+        })?;
+        if inline {
+            fields::edit_inline(&mut edited, &options.fields)?;
+        }
+        stage::save_document(path, &edited)?;
+        self.select_edit_input()?;
+        Ok(())
+    }
+
+    fn cache_candidate(&mut self, diff: bool, show_diff: bool) -> Result<(), EditError> {
+        if let Some(Ok(candidate)) = &self.candidate {
+            let stem = self
+                .path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .ok_or("SPEC stem must be UTF-8")?;
+            let path = stage::cache(&self.stage_dir, stem, candidate.spec.source())?;
+            let diff = if diff {
+                let text =
+                    stage::diff(&self.path, self.snapshot.source(), candidate.spec.source())?;
+                let diff_path = stage::save_diff(&self.stage_dir, stem, &text)?;
+                if show_diff {
+                    io::stdout()
+                        .lock()
+                        .write_all(text.as_bytes())
+                        .map_err(|error| format!("failed to write output to stdout: {error}"))?;
+                }
+                Some((diff_path, text))
+            } else {
+                None
+            };
+            self.cache = Some(Cached { path, diff });
+        }
+        Ok(())
+    }
+
     fn select_edit_input(&mut self) -> Result<(), EditError> {
         if let Some(area) = &mut self.development {
             // create/load return canonical draft paths. External prepared stages
@@ -224,79 +270,32 @@ fn load_inputs(options: &Options) -> Result<Vec<Edit>, EditError> {
                 .iter()
                 .map(|work| (PathBuf::from(work), Some(work.as_str()))),
         );
-        sources.map(|(path, work)| -> Result<Edit, EditError> {
-            let io_error = |error: io::Error| EditError::at(Kind::InputRead, &path, &fields, error.to_string());
-            let (requested, source, stage_dir, development, committed_main) = if let Some(work) = work {
-                let workspace = workspace::discover().map_err(io_error)?;
-                let mut area = workspace.development(work, options.pkgname.as_deref(), false).map_err(io_error)?;
-                let (requested, source, committed_main) = if options.checks_only() {
-                    let (requested, source, revision) = area.source().map_err(io_error)?;
-                    (requested, source, revision.is_some())
-                } else {
-                    area.create().map_err(io_error)?;
-                    let requested = area.spec().map_err(io_error)?;
-                    let source = utf8_file::read(&requested).map_err(|error|
-                        EditError::at(Kind::InputRead, &requested, &fields, error.to_string()))?;
-                    (requested, source, false)
-                };
-                let stage_dir = options.prepare.clone().unwrap_or_else(|| area.directory().join("stage"));
-                (requested, source, stage_dir, Some(area), committed_main)
-            } else {
-                let requested = fs::canonicalize(&path).map_err(io_error)?;
-                let source = utf8_file::read(&requested).map_err(|error|
-                    EditError::at(Kind::InputRead, &requested, &fields, error.to_string()))?;
-                let stem = requested.file_stem().ok_or("SPEC file has no stem")?;
-                let stage_dir = options.prepare.clone().unwrap_or_else(||
-                    requested.parent().expect("canonical path has parent").join(".ruyipack-stage").join(stem));
-                (requested, source, stage_dir, None, false)
-            };
-            let parsed = ParsedSpec::parse(source);
-            let safe = !options.all && fields.is_empty();
-            let mut selected = fields.clone();
-            if options.hash {
-                let remote = crate::source::remote_numbers(&parsed, &options.defines)
-                    .map_err(|error| EditError::source_hash(error, &requested, &selected))?;
-                for number in remote {
-                    let field = format!("sources.{number}.sha256");
-                    if !selected.contains(&field) { selected.push(field); }
-                }
-            }
-            // Resume existing values instead of replacing unfinished editor work.
-            let saved = if options.prepare.is_none() && stage_dir.join(".state/index.toml").exists() {
-                stage::load(&stage_dir)?.into_iter().find(|draft| draft.source == requested)
-            } else { None };
-            let (selected, draft, safe, expand_stage) = if let Some(draft) = saved {
-                if draft.original != parsed.source() {
-                    return Err(EditError::at(Kind::SourceChanged, &requested, &draft.fields,
-                        format!("{}: stage baseline no longer matches the source; prepare a fresh stage", requested.display())));
-                }
-                let previous = draft.fields.clone();
-                let mut union = draft.fields;
-                if options.all {
-                    // --all is an explicit full mapping, even when a narrow stage exists.
-                    union.clear();
-                } else if safe && (options.editor.is_some() || !options.generates_candidate()) {
-                    // Reopen unfinished selected TOML before trying to expand
-                    // its scope. An explicit new selection still requires repair.
-                    let pending = stage::read_text(&draft.path)?;
-                    if toml::from_str::<Table>(&pending).is_ok() {
-                        union = Snapshot::capture_supported(&parsed)
-                            .map_err(EditError::from)?.selection().to_vec();
-                    }
-                } else {
-                    for field in selected { if !union.contains(&field) { union.push(field); } }
-                }
-                let expand = union != previous;
-                (union, Some(draft.path), false, expand)
-            } else { (selected, None, safe, false) };
-            let mut item = input(requested, &parsed, &selected, safe, stage_dir, draft, checked)?;
-            item.development = development;
-            item.committed_main = committed_main;
-            item.expand_stage = expand_stage;
-            item.subject = work.map_or_else(|| item.path.clone(), PathBuf::from);
-            Ok(item)
-        }).collect::<Result<Vec<_>, _>>()?
+        sources
+            .map(|(path, work)| load_input(options, &path, work, &fields))
+            .collect::<Result<Vec<_>, _>>()?
     };
+    validate_inputs(&inputs, options)?;
+    // Existing selected stages may need more fields in their immutable mapping.
+    for item in &mut inputs {
+        if let Some(path) = &item.draft
+            && item.expand_stage
+        {
+            let mut document = stage::read_document_path(path).map_err(|error| {
+                EditError::at(
+                    Kind::InvalidDraft,
+                    path,
+                    item.snapshot.selection(),
+                    format!("{error}; repair saved TOML before expanding the field selection"),
+                )
+            })?;
+            stage::complete_missing(&mut document, item.snapshot.document());
+            stage::update(path, item.snapshot.selection(), &document, None)?;
+        }
+    }
+    Ok(inputs)
+}
+
+fn validate_inputs(inputs: &[Edit], options: &Options) -> Result<(), EditError> {
     if inputs.is_empty() {
         return Err("no SPEC files selected".into());
     }
@@ -327,7 +326,7 @@ fn load_inputs(options: &Options) -> Result<Vec<Edit>, EditError> {
     }
     // Reject destructive destinations before saving a new scope or selecting an input.
     if let Some(output) = &options.output {
-        for item in &inputs {
+        for item in inputs {
             if let Some(area) = &item.development {
                 area.protect_output(output).map_err(|error| {
                     EditError::at(
@@ -341,24 +340,127 @@ fn load_inputs(options: &Options) -> Result<Vec<Edit>, EditError> {
             stage::protect_output(output, item.draft.as_deref())?;
         }
     }
-    // Existing selected stages may need more fields in their immutable mapping.
-    for item in &mut inputs {
-        if let Some(path) = &item.draft
-            && item.expand_stage
-        {
-            let mut document = stage::read_document_path(path).map_err(|error| {
-                EditError::at(
-                    Kind::InvalidDraft,
-                    path,
-                    item.snapshot.selection(),
-                    format!("{error}; repair saved TOML before expanding the field selection"),
-                )
+    Ok(())
+}
+
+fn load_input(
+    options: &Options,
+    path: &Path,
+    work: Option<&str>,
+    fields: &[String],
+) -> Result<Edit, EditError> {
+    let io_error =
+        |error: io::Error| EditError::at(Kind::InputRead, path, fields, error.to_string());
+    let (requested, source, stage_dir, development, committed_main) = if let Some(work) = work {
+        let workspace = workspace::discover().map_err(io_error)?;
+        let mut area = workspace
+            .development(work, options.pkgname.as_deref(), false)
+            .map_err(io_error)?;
+        let (requested, source, committed_main) = if options.checks_only() {
+            let (requested, source, revision) = area.source().map_err(io_error)?;
+            (requested, source, revision.is_some())
+        } else {
+            area.create().map_err(io_error)?;
+            let requested = area.spec().map_err(io_error)?;
+            let source = utf8_file::read(&requested).map_err(|error| {
+                EditError::at(Kind::InputRead, &requested, fields, error.to_string())
             })?;
-            stage::complete_missing(&mut document, item.snapshot.document());
-            stage::update(path, item.snapshot.selection(), &document, None)?;
+            (requested, source, false)
+        };
+        let stage_dir = options
+            .prepare
+            .clone()
+            .unwrap_or_else(|| area.directory().join("stage"));
+        (requested, source, stage_dir, Some(area), committed_main)
+    } else {
+        let requested = fs::canonicalize(path).map_err(io_error)?;
+        let source = utf8_file::read(&requested).map_err(|error| {
+            EditError::at(Kind::InputRead, &requested, fields, error.to_string())
+        })?;
+        let stem = requested.file_stem().ok_or("SPEC file has no stem")?;
+        let stage_dir = options.prepare.clone().unwrap_or_else(|| {
+            requested
+                .parent()
+                .expect("canonical path has parent")
+                .join(".ruyipack-stage")
+                .join(stem)
+        });
+        (requested, source, stage_dir, None, false)
+    };
+    let parsed = ParsedSpec::parse(source);
+    let safe = !options.all && fields.is_empty();
+    let mut selected = fields.to_vec();
+    if options.hash {
+        let remote = crate::source::remote_numbers(&parsed, &options.defines)
+            .map_err(|error| EditError::source_hash(error, &requested, &selected))?;
+        for number in remote {
+            let field = format!("sources.{number}.sha256");
+            if !selected.contains(&field) {
+                selected.push(field);
+            }
         }
     }
-    Ok(inputs)
+    // Resume existing values instead of replacing unfinished editor work.
+    let saved = if options.prepare.is_none() && stage_dir.join(".state/index.toml").exists() {
+        stage::load(&stage_dir)?
+            .into_iter()
+            .find(|draft| draft.source == requested)
+    } else {
+        None
+    };
+    let (selected, draft, safe, expand_stage) = if let Some(draft) = saved {
+        if draft.original != parsed.source() {
+            return Err(EditError::at(
+                Kind::SourceChanged,
+                &requested,
+                &draft.fields,
+                format!(
+                    "{}: stage baseline no longer matches the source; prepare a fresh stage",
+                    requested.display()
+                ),
+            ));
+        }
+        let previous = draft.fields.clone();
+        let mut union = draft.fields;
+        if options.all {
+            // --all is an explicit full mapping, even when a narrow stage exists.
+            union.clear();
+        } else if safe && (options.editor.is_some() || !options.generates_candidate()) {
+            // Reopen unfinished selected TOML before trying to expand
+            // its scope. An explicit new selection still requires repair.
+            let pending = stage::read_text(&draft.path)?;
+            if toml::from_str::<Table>(&pending).is_ok() {
+                union = Snapshot::capture_supported(&parsed)
+                    .map_err(EditError::from)?
+                    .selection()
+                    .to_vec();
+            }
+        } else {
+            for field in selected {
+                if !union.contains(&field) {
+                    union.push(field);
+                }
+            }
+        }
+        let expand = union != previous;
+        (union, Some(draft.path), false, expand)
+    } else {
+        (selected, None, safe, false)
+    };
+    let mut item = input(
+        requested,
+        &parsed,
+        &selected,
+        safe,
+        stage_dir,
+        draft,
+        options.check || options.apply,
+    )?;
+    item.development = development;
+    item.committed_main = committed_main;
+    item.expand_stage = expand_stage;
+    item.subject = work.map_or_else(|| item.path.clone(), PathBuf::from);
+    Ok(item)
 }
 
 fn create_stages(inputs: &mut [Edit]) -> Result<(), EditError> {
@@ -462,23 +564,9 @@ fn execute(options: &Options) -> Result<EditResult, EditError> {
             item.select_edit_input()?;
         }
     }
-    for item in &mut inputs {
-        if inline || !options.set.is_empty() {
-            let path = item.draft.as_ref().expect("editing creates a stage");
-            let mut edited = stage::read_document_path(path)?;
-            fields::assign(&mut edited, &options.set).map_err(|error| {
-                EditError::at(
-                    Kind::InvalidAssignment,
-                    &item.path,
-                    item.snapshot.selection(),
-                    error,
-                )
-            })?;
-            if inline {
-                fields::edit_inline(&mut edited, &options.fields)?;
-            }
-            stage::save_document(path, &edited)?;
-            item.select_edit_input()?;
+    if inline || !options.set.is_empty() {
+        for item in &mut inputs {
+            item.assign(options, inline)?;
         }
     }
     if !matches!(options.format, Some(ReportFormat::Toml)) {
@@ -507,31 +595,10 @@ fn execute(options: &Options) -> Result<EditResult, EditError> {
     }
     if options.diff || options.stdout || options.apply {
         for item in &mut inputs {
-            if let Some(Ok(candidate)) = &item.candidate {
-                let stem = item
-                    .path
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .ok_or("SPEC stem must be UTF-8")?;
-                let path = stage::cache(&item.stage_dir, stem, candidate.spec.source())?;
-                let diff = if options.diff {
-                    let text =
-                        stage::diff(&item.path, item.snapshot.source(), candidate.spec.source())?;
-                    let diff_path = stage::save_diff(&item.stage_dir, stem, &text)?;
-                    if !matches!(options.format, Some(ReportFormat::Toml)) {
-                        io::stdout()
-                            .lock()
-                            .write_all(text.as_bytes())
-                            .map_err(|error| {
-                                format!("failed to write output to stdout: {error}")
-                            })?;
-                    }
-                    Some((diff_path, text))
-                } else {
-                    None
-                };
-                item.cache = Some(Cached { path, diff });
-            }
+            item.cache_candidate(
+                options.diff,
+                !matches!(options.format, Some(ReportFormat::Toml)),
+            )?;
         }
     }
     let publication = publish(options, &inputs);
@@ -648,47 +715,7 @@ fn error_message(error: &EditError, options: &Options) -> String {
 
 fn publish(options: &Options, inputs: &[Edit]) -> Result<Vec<file_output::EditOutcome>, EditError> {
     if !matches!(options.format, Some(ReportFormat::Toml)) {
-        for item in inputs {
-            let check = item.candidate.as_ref().expect("candidate attempted");
-            if let Ok(candidate) = check {
-                if let (Some(baseline), Some(report)) = (&item.baseline, &candidate.report) {
-                    report::write_changes(
-                        &item.subject,
-                        baseline,
-                        report,
-                        &mut io::stderr().lock(),
-                    )
-                    .map_err(|error| error.to_string())?;
-                }
-                if !candidate.review_triggers.is_empty() {
-                    output_cli::human(&mut io::stderr().lock(), HumanLevel::Warn, Some(&item.subject),
-                        format_args!("review required after changing {}: source authenticity, unrefreshed digests, patch applicability and native build are not verified", candidate.review_triggers.join(", ")))
-                        .map_err(|error| error.to_string())?;
-                }
-            }
-            if options.check {
-                let admissible =
-                    matches!(check, Ok(candidate) if static_check_error(item, candidate).is_none());
-                output_cli::human(
-                    &mut io::stderr().lock(),
-                    if admissible {
-                        HumanLevel::Info
-                    } else {
-                        HumanLevel::Error
-                    },
-                    Some(&item.subject),
-                    format_args!(
-                        "{}",
-                        if admissible {
-                            "admissible"
-                        } else {
-                            "not admissible"
-                        }
-                    ),
-                )
-                .map_err(|error| error.to_string())?;
-            }
-        }
+        report::write_candidates(inputs, options.check).map_err(|error| error.to_string())?;
     }
     let construction_errors = inputs
         .iter()
@@ -773,6 +800,17 @@ fn publish(options: &Options, inputs: &[Edit]) -> Result<Vec<file_output::EditOu
         }
     })
     .map_err(EditError::publication)?;
+    rebase_stages(inputs, &outcomes)?;
+    if !matches!(options.format, Some(ReportFormat::Toml)) {
+        for outcome in &outcomes {
+            output_cli::write_outcome(&mut io::stderr().lock(), outcome)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(outcomes)
+}
+
+fn rebase_stages(inputs: &[Edit], outcomes: &[file_output::EditOutcome]) -> Result<(), EditError> {
     // Only publication to the bound source advances its recovery baseline.
     // A copy output leaves the original binding and its pending edit intact.
     for item in inputs {
@@ -792,13 +830,7 @@ fn publish(options: &Options, inputs: &[Edit]) -> Result<Vec<file_output::EditOu
                 }))?;
         }
     }
-    if !matches!(options.format, Some(ReportFormat::Toml)) {
-        for outcome in &outcomes {
-            output_cli::write_outcome(&mut io::stderr().lock(), outcome)
-                .map_err(|error| error.to_string())?;
-        }
-    }
-    Ok(outcomes)
+    Ok(())
 }
 
 struct Cached {
