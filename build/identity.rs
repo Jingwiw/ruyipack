@@ -73,14 +73,14 @@ fn local(root: &Path) -> Option<(Option<String>, Option<String>)> {
     if root.join(".git").is_file() {
         println!("cargo::rerun-if-changed=.git");
     }
-    // Git resolves worktree metadata, loose refs and the common packed-ref store.
-    // Do not watch all of .git (objects/logs) or the source root (target/).
-    for name in ["HEAD", "index", "refs", "packed-refs"] {
+    // HEAD selects the branch; unrelated local/remote refs do not identify this build.
+    for name in ["HEAD", "index", "packed-refs"] {
         let path = git(root, &["rev-parse", "--git-path", name])?;
-        let path = root.join(path.trim());
-        if path.exists() {
-            println!("cargo::rerun-if-changed={}", path.display());
-        }
+        watch(&root.join(path.trim()), name);
+    }
+    if let Some(reference) = git(root, &["symbolic-ref", "-q", "HEAD"]) {
+        let path = git(root, &["rev-parse", "--git-path", reference.trim()])?;
+        watch(&root.join(path.trim()), "current-ref");
     }
     let revision = git(root, &["rev-parse", "--verify", "HEAD"])?;
     let revision = revision.trim().to_owned();
@@ -88,14 +88,39 @@ fn local(root: &Path) -> Option<(Option<String>, Option<String>)> {
         return None;
     }
     let files = git(root, &["ls-files", "-z"])?;
-    for file in files.split_terminator('\0') {
+    for (index, file) in files.split_terminator('\0').enumerate() {
         if file.contains(['\n', '\r']) {
             return Some((Some(revision), None));
         }
-        println!("cargo::rerun-if-changed={}", root.join(file).display());
+        watch(&root.join(file), &format!("file-{index}"));
     }
     // Like git describe --dirty, this records tracked changes, not unrelated untracked files.
     let dirty = git(root, &["status", "--porcelain", "--untracked-files=no"])
         .map(|status| (!status.is_empty()).to_string());
     Some((Some(revision), dirty))
+}
+
+fn watch(path: &Path, key: &str) {
+    #[cfg(unix)]
+    if !path.exists() {
+        // Cargo treats a missing file as perpetually dirty. A directory containing
+        // a dangling link remains stable, but Cargo follows it when the input returns.
+        // Never watch the real parent: it may contain target/ or unrelated Git refs.
+        let directory = std::path::PathBuf::from(env::var_os("OUT_DIR").expect("build output"))
+            .join("identity-watch")
+            .join(key);
+        fs::create_dir_all(&directory).expect("create identity watch directory");
+        let link = directory.join("input");
+        if fs::read_link(&link).ok().as_deref() != Some(path) {
+            if link.symlink_metadata().is_ok() {
+                fs::remove_file(&link).expect("replace identity watch link");
+            }
+            std::os::unix::fs::symlink(path, &link).expect("link identity input");
+        }
+        println!("cargo::rerun-if-changed={}", directory.display());
+        return;
+    }
+    #[cfg(not(unix))]
+    let _ = key;
+    println!("cargo::rerun-if-changed={}", path.display());
 }
