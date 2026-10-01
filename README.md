@@ -130,6 +130,15 @@ cargo clippy --workspace --all-targets --all-features --locked -- -W clippy::ped
 
 Fix the cause before suppressing a lint; any necessary exception should be local
 and explain the invariant. Keep the pinned toolchain for the commit gate.
+`scripts/check-tests` runs the full suite, then repeats only unit tests in a
+color-capable pseudo-terminal. It requires Python 3 on Linux/macOS (standard
+library only) and is shared by pre-commit, pinned CI and stable CI. Output stays
+terse; terminal failures propagate instead of being hidden by CI pipes.
+
+For refactors, inspect rust-analyzer references, implementations and callers up
+to CLI entry points; separate production consumers from tests. Reference counts
+are review evidence, not pass/fail thresholds.
+
 `scripts/check` additionally runs schema/gen comparisons, REUSE, and cargo-deny.
 Install Python 3.11+ with `reuse==6.2.0` and `jsonschema==4.26.0`, plus
 `cargo-deny` 0.20.2 separately. The smoke test exercises the

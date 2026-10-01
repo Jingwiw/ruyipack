@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+"""Run the full suite once, then unit contracts with real terminal descriptors."""
+
+import os
+from pathlib import Path
+import pty
+import subprocess
+import sys
+
+
+def command(target):
+    return [
+        "cargo", "test", "--workspace", target, "--all-features", "--locked",
+        "--", "--format", "terse",
+    ]
+
+
+os.chdir(Path(__file__).resolve().parent.parent)
+print("== Tests: all targets ==", flush=True)
+result = subprocess.call(command("--all-targets"), stdin=subprocess.DEVNULL)
+if result:
+    sys.exit(result if result > 0 else 128 - result)
+
+# CI pipes and a developer's NO_COLOR must not hide terminal-sensitive bugs.
+os.environ.pop("NO_COLOR", None)
+os.environ.update(TERM="xterm", CARGO_TERM_COLOR="never")
+print("== Tests: unit targets in a color-capable terminal ==", flush=True)
+status = pty.spawn(command("--bins") + ["--color", "never"], stdin_read=lambda _: b"")
+result = os.waitstatus_to_exitcode(status)
+sys.exit(result if result >= 0 else 128 - result)
