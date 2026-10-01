@@ -14,6 +14,7 @@ mod cli;
 mod edit;
 mod environment;
 mod file_digest;
+mod file_lock;
 mod file_output;
 mod generate;
 mod host_process;

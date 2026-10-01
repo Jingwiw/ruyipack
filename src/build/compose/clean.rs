@@ -227,15 +227,15 @@ fn perform(
     let root = target(path)?;
     let receipt_path = root.join("receipt.json");
     // Serialize cleanup with shell sessions and other cleanups until local deletion ends.
-    let mut file = fs::File::open(&receipt_path)?.into_file();
-    file.try_lock().map_err(|error| {
+    let file = fs::File::open(&receipt_path)?.into_file();
+    let lock = crate::file_lock::FileLock::try_lock(file).map_err(|error| {
         io::Error::other(format!(
             "{}: another shell or cleanup session owns this build: {error}",
             receipt_path.display()
         ))
     })?;
     let mut original = Vec::new();
-    file.read_to_end(&mut original)?;
+    lock.file().read_to_end(&mut original)?;
     let receipt: Value = serde_json::from_slice(&original).map_err(io::Error::other)?;
     let (project, daemon, context) = receipt_identity(&receipt, context)?;
     report.project = Some(project.to_owned());

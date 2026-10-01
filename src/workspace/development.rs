@@ -5,7 +5,7 @@
 //! A development area's package binding and cooperative operation lock.
 
 use super::{Workspace, checkout, directory, invalid};
-use crate::check::metadata::Field;
+use crate::{check::metadata::Field, file_lock::FileLock};
 use fs_err as fs;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -33,15 +33,6 @@ struct Binding {
     input: Option<GenerationInput>,
 }
 
-// A lock is released with its owner, even while forked descriptor copies remain.
-struct OperationLock(File);
-
-impl Drop for OperationLock {
-    fn drop(&mut self) {
-        let _ = self.0.unlock();
-    }
-}
-
 pub(crate) struct Development {
     path: PathBuf,
     binding: Binding,
@@ -49,7 +40,7 @@ pub(crate) struct Development {
     package_directory: PathBuf,
     plan: Option<checkout::Plan>,
     // This dedicated inode stays stable when the binding is atomically replaced.
-    lock: Option<OperationLock>,
+    lock: Option<FileLock>,
 }
 
 impl Workspace {
@@ -273,7 +264,7 @@ impl Development {
         let lock = self.lock.as_ref().ok_or_else(|| {
             invalid("cannot update a development area without the operation lock")
         })?;
-        verify_file(&self.path.join(".lock"), &lock.0)?;
+        verify_file(&self.path.join(".lock"), lock.file())?;
         let config = self.path.join(".config.toml");
         let current = read_config(&config)?;
         if self.binding_contents.as_deref() != Some(current.as_str()) {
@@ -330,7 +321,7 @@ fn read_binding(
     path: &Path,
     package: Option<&str>,
     preview: bool,
-) -> io::Result<(Binding, Option<OperationLock>, String)> {
+) -> io::Result<(Binding, Option<FileLock>, String)> {
     let config = path.join(".config.toml");
     regular_file(&config)?;
     let lock = if preview {
@@ -360,7 +351,7 @@ fn read_config(config: &Path) -> io::Result<String> {
     Ok(text)
 }
 
-fn open_lock(path: &Path) -> io::Result<OperationLock> {
+fn open_lock(path: &Path) -> io::Result<FileLock> {
     let lock_path = path.join(".lock");
     let file = loop {
         match regular_file(&lock_path) {
@@ -387,9 +378,13 @@ fn open_lock(path: &Path) -> io::Result<OperationLock> {
         }
     };
     verify_file(&lock_path, &file)?;
-    lock(&file, path)?;
-    let lock = OperationLock(file);
-    verify_file(&lock_path, &lock.0)?;
+    let lock = FileLock::try_lock(file).map_err(|error| {
+        io::Error::other(format!(
+            "cannot lock development area {}: {error}; another operation may be running",
+            path.display()
+        ))
+    })?;
+    verify_file(&lock_path, lock.file())?;
     Ok(lock)
 }
 
@@ -426,15 +421,6 @@ fn verify_file(path: &Path, file: &File) -> io::Result<()> {
     #[cfg(not(unix))]
     let _ = (metadata, file);
     Ok(())
-}
-
-fn lock(file: &File, path: &Path) -> io::Result<()> {
-    file.try_lock().map_err(|error| {
-        io::Error::other(format!(
-            "cannot lock development area {}: {error}; another operation may be running",
-            path.display()
-        ))
-    })
 }
 
 #[cfg(test)]
@@ -530,7 +516,13 @@ mod tests {
             "unfinished user draft\n"
         );
         #[cfg(unix)]
-        let inherited = development.lock.as_ref().unwrap().0.try_clone().unwrap();
+        let inherited = development
+            .lock
+            .as_ref()
+            .unwrap()
+            .file()
+            .try_clone()
+            .unwrap();
         drop(development);
         assert_eq!(
             open(path, false).generation_input(),

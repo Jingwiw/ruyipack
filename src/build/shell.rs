@@ -69,13 +69,13 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
     // Serialize shell sessions so a second opener cannot pass the stopped-worker
     // check just before the first starts it. Keep the lock until stop completes.
     let file = fs::File::open(&path)?.into_file();
-    file.try_lock().map_err(|error| {
+    let lock = crate::file_lock::FileLock::try_lock(file).map_err(|error| {
         io::Error::other(format!(
             "{}: another shell session owns this build: {error}",
             path.display()
         ))
     })?;
-    let receipt: Receipt = serde_json::from_reader(&file).map_err(io::Error::other)?;
+    let receipt: Receipt = serde_json::from_reader(lock.file()).map_err(io::Error::other)?;
     if receipt.format_version != 1 || receipt.package != package {
         return Err(invalid("build receipt does not identify this recipe"));
     }
