@@ -26,7 +26,7 @@ impl Runner<'_> {
     /// Build output streams directly to files; it is not buffered in memory.
     pub(super) fn run(
         &mut self,
-        argv: Vec<OsString>,
+        argv: &[OsString],
         stage: &str,
         budget: Duration,
     ) -> Result<usize, String> {
@@ -98,7 +98,13 @@ impl Runner<'_> {
         failure.map_or(Ok(index), Err)
     }
 
-    pub(super) fn stdout(&self, index: usize) -> Result<String, String> {
+    pub(super) fn capture(
+        &mut self,
+        argv: &[OsString],
+        stage: &str,
+        budget: Duration,
+    ) -> Result<String, String> {
+        let index = self.run(argv, stage, budget)?;
         fs::read_to_string(self.output.join(&self.commands[index].stdout))
             .map_err(|error| format!("read command output: {error}"))
     }

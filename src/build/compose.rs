@@ -124,7 +124,7 @@ impl Backend for Compose<'_> {
         let recovery_timeout = timeout.min(Duration::from_secs(60));
         let primary = (|| -> Result<(), String> {
             runner.run(
-                docker(
+                &docker(
                     self.context,
                     ["compose".into(), "version".into(), "--short".into()],
                 ),
@@ -132,7 +132,7 @@ impl Backend for Compose<'_> {
                 remaining(),
             )?;
             runner.run(
-                docker(
+                &docker(
                     self.context,
                     ["context".into(), "inspect".into()]
                         .into_iter()
@@ -141,17 +141,16 @@ impl Backend for Compose<'_> {
                 "context-identity",
                 remaining(),
             )?;
-            let daemon_command = runner.run(
-                docker(
+            let daemon_output = runner.capture(
+                &docker(
                     self.context,
                     ["info".into(), "--format".into(), "{{json .}}".into()],
                 ),
                 "daemon-identity",
                 remaining(),
             )?;
-            let daemon: serde_json::Value =
-                serde_json::from_str(&runner.stdout(daemon_command)?)
-                    .map_err(|error| format!("invalid daemon identity JSON: {error}"))?;
+            let daemon: serde_json::Value = serde_json::from_str(&daemon_output)
+                .map_err(|error| format!("invalid daemon identity JSON: {error}"))?;
             resources.daemon_id = Some(
                 daemon
                     .get("ID")
@@ -164,33 +163,32 @@ impl Backend for Compose<'_> {
                 return Err("the build worker requires a Linux Docker daemon".into());
             }
             runner.run(
-                self.compose(&project, &["config", "--quiet"]),
+                &self.compose(&project, &["config", "--quiet"]),
                 "config",
                 remaining(),
             )?;
             runner.run(
-                self.compose(&project, &["create", "--build", "worker"]),
+                &self.compose(&project, &["create", "--build", "worker"]),
                 "create",
                 remaining(),
             )?;
-            let id_command = runner.run(
-                self.compose(&project, &["ps", "--all", "--quiet", "worker"]),
+            let id_output = runner.capture(
+                &self.compose(&project, &["ps", "--all", "--quiet", "worker"]),
                 "container-id",
                 remaining(),
             )?;
-            let id = runner.stdout(id_command)?.trim().to_owned();
+            let id = id_output.trim().to_owned();
             if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                 return Err("Compose worker must resolve to exactly one container ID".to_owned());
             }
             resources.container_id = Some(id.clone());
-            let image_command = runner.run(
-                docker(self.context, ["inspect".into(), id.clone().into()]),
+            let image_output = runner.capture(
+                &docker(self.context, ["inspect".into(), id.clone().into()]),
                 "container-inspect",
                 remaining(),
             )?;
-            let inspect: serde_json::Value =
-                serde_json::from_str(&runner.stdout(image_command)?)
-                    .map_err(|error| format!("invalid container inspect JSON: {error}"))?;
+            let inspect: serde_json::Value = serde_json::from_str(&image_output)
+                .map_err(|error| format!("invalid container inspect JSON: {error}"))?;
             let image = inspect
                 .get(0)
                 .and_then(|item| item.get("Image"))
@@ -201,12 +199,12 @@ impl Backend for Compose<'_> {
             }
             resources.image_id = Some(image.to_owned());
             runner.run(
-                self.compose(&project, &["start", "worker"]),
+                &self.compose(&project, &["start", "worker"]),
                 "start",
                 remaining(),
             )?;
             runner.run(
-                docker(
+                &docker(
                     self.context,
                     [
                         "cp".into(),
@@ -219,7 +217,7 @@ impl Backend for Compose<'_> {
             )?;
             let mut command = docker(self.context, ["exec".into(), id.into()]);
             command.extend(invocation.iter().map(OsString::from));
-            runner.run(command, "engine", remaining())?;
+            runner.run(&command, "engine", remaining())?;
             Ok(())
         })();
         result.failure = primary.err();
@@ -233,10 +231,10 @@ impl Backend for Compose<'_> {
                 self.context,
                 ["stop".into(), "--time".into(), "0".into(), id.into()],
             );
-            if let Err(error) = runner.run(stop.clone(), "worker-stop", recovery_timeout) {
+            if let Err(error) = runner.run(&stop, "worker-stop", recovery_timeout) {
                 result.cleanup_failure = Some(error);
                 if let Err(error) = runner.run(
-                    docker(self.context, ["kill".into(), id.into()]),
+                    &docker(self.context, ["kill".into(), id.into()]),
                     "worker-kill",
                     recovery_timeout,
                 ) {
@@ -259,7 +257,7 @@ impl Backend for Compose<'_> {
                     output.join("engine").into_os_string(),
                 ],
             );
-            if let Err(error) = runner.run(copy.clone(), "artifact-copy", recovery_timeout) {
+            if let Err(error) = runner.run(&copy, "artifact-copy", recovery_timeout) {
                 result.artifact_error = Some(error);
                 if !self.remove {
                     result.recovery_commands.push(
@@ -271,8 +269,8 @@ impl Backend for Compose<'_> {
             }
         }
         result.cleanup_skipped = !self.remove;
-        if !result.cleanup_skipped {
-            if let Err(error) = runner.run(cleanup.clone(), "cleanup", recovery_timeout) {
+        if self.remove {
+            if let Err(error) = runner.run(&cleanup, "cleanup", recovery_timeout) {
                 result.cleanup_failure = Some(match result.cleanup_failure.take() {
                     Some(previous) => format!("{previous}; {error}"),
                     None => error,

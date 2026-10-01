@@ -55,9 +55,9 @@ pub(super) fn attach(
     argv.push(id.into());
     argv.extend(invocation.iter().map(Into::into));
     let outcome = (|| -> io::Result<std::process::ExitStatus> {
-        let index = runner
-            .run(
-                docker(
+        let captured = runner
+            .capture(
+                &docker(
                     context,
                     ["info".into(), "--format".into(), "{{json .}}".into()],
                 ),
@@ -65,22 +65,20 @@ pub(super) fn attach(
                 timeout,
             )
             .map_err(io::Error::other)?;
-        let info: Value = serde_json::from_str(&runner.stdout(index).map_err(io::Error::other)?)
-            .map_err(io::Error::other)?;
+        let info: Value = serde_json::from_str(&captured).map_err(io::Error::other)?;
         if info["ID"].as_str() != Some(daemon) {
             return Err(invalid(
                 "Docker daemon identity differs from the build receipt",
             ));
         }
-        let index = runner
-            .run(
-                docker(context, ["inspect".into(), id.into()]),
+        let captured = runner
+            .capture(
+                &docker(context, ["inspect".into(), id.into()]),
                 &format!("{attempt}-inspect"),
                 timeout,
             )
             .map_err(io::Error::other)?;
-        let inspect: Value = serde_json::from_str(&runner.stdout(index).map_err(io::Error::other)?)
-            .map_err(io::Error::other)?;
+        let inspect: Value = serde_json::from_str(&captured).map_err(io::Error::other)?;
         if inspect[0]["Config"]["Labels"]["com.docker.compose.project"].as_str()
             != Some(&resources.project)
         {
@@ -94,7 +92,7 @@ pub(super) fn attach(
         started = true;
         runner
             .run(
-                docker(context, ["start".into(), id.into()]),
+                &docker(context, ["start".into(), id.into()]),
                 &format!("{attempt}-start"),
                 timeout,
             )
@@ -110,7 +108,7 @@ pub(super) fn attach(
     let cleanup_error = if started {
         runner
             .run(
-                docker(
+                &docker(
                     context,
                     ["stop".into(), "--time".into(), "0".into(), id.into()],
                 ),
@@ -121,11 +119,14 @@ pub(super) fn attach(
     } else {
         None
     };
-    let success = outcome.as_ref().is_ok_and(|s| s.success()) && cleanup_error.is_none();
+    let success = outcome
+        .as_ref()
+        .is_ok_and(std::process::ExitStatus::success)
+        && cleanup_error.is_none();
     let report = json!({"format_version": 1, "operation": "shell", "success": success,
         "project": resources.project, "container_id": id,
         "argv": argv.iter().map(|s| s.to_string_lossy()).collect::<Vec<_>>(),
-        "exit_code": outcome.as_ref().ok().and_then(|s| s.code()),
+        "exit_code": outcome.as_ref().ok().and_then(std::process::ExitStatus::code),
         "exit_status": outcome.as_ref().ok().map(ToString::to_string),
         "error": outcome.as_ref().err().map(ToString::to_string), "cleanup_error": cleanup_error, "commands": runner.commands});
     let record = output.join("host").join(format!("{attempt}.json"));

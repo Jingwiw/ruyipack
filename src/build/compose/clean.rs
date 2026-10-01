@@ -64,10 +64,9 @@ fn docker(
     args: &[&str],
 ) -> io::Result<String> {
     let argv = super::docker(context, args.iter().map(OsString::from));
-    let index = runner
-        .run(argv, stage, timeout.saturating_sub(start.elapsed()))
-        .map_err(io::Error::other)?;
-    runner.stdout(index).map_err(io::Error::other)
+    runner
+        .capture(&argv, stage, timeout.saturating_sub(start.elapsed()))
+        .map_err(io::Error::other)
 }
 
 fn perform(
@@ -217,9 +216,9 @@ fn perform(
                     )));
                 }
                 if kind == "volume"
-                    && !labels["com.docker.compose.volume"]
+                    && labels["com.docker.compose.volume"]
                         .as_str()
-                        .is_some_and(|name| !name.is_empty())
+                        .is_none_or(str::is_empty)
                 {
                     report.retained_volumes.push(name.to_owned());
                 } else {
