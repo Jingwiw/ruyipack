@@ -12,7 +12,8 @@ Write, check, and edit openRuyi SPEC files without rewriting unrelated content.
 
 This is an early **source preview** for maintainer-reviewed work. It generates
 SPECs from TOML and edits supported fields in existing SPECs; it does not discover
-complete dependencies. Generation downloads Sources with missing digests
+complete dependencies. The experimental `build` command delegates prepared SPECs and
+materials to Mock through Docker Compose. Generation downloads Sources with missing digests
 unless `--offline` is set. CLI, manifest, and
 report formats may change; platform support is experimental.
 
@@ -53,17 +54,20 @@ with `edit --hash`. Static success is not a native package build.
 | Command | Use | Important boundary |
 | --- | --- | --- |
 | `init [PATH]` | Initialize `.ruyiconfig` in an empty directory | Offline; repeated initialization never overwrites configuration |
+| `build WORK` | Build the bound checkout using Mock and Docker’s current context | Experimental; prepared SPEC paths are also supported; see [build setup](docs/build.md) |
+| `shell WORK` | Enter its retained Mock chroot at the RPM build directory | Requires a build without `--rm`; debugging changes are not a verified rebuild |
 | `new WORK [--pkgname PKG]` | Create a development checkout and TOML scaffold | Requires committed main; implicit PKG must match SPECS/PKG/PKG.spec |
 | `gen WORK` | Generate from WORK's selected authoring TOML or edit stage | Cached outputs by default; `--spec=auto` publishes checkout |
 | `inspect WORK` | Read facts; `--editable --field FIELD` prints TOML | No macro execution; first read creates a binding, not checkout |
 | `check WORK` | Selected offline rules; optional material inventory | Static pass is not a package build |
 | `source hash WORK` / `source verify WORK` | Calculate a digest / compare all declared digests | Network, read-only; never replace declarations |
 | `edit WORK` | Stage edits through TOML, inline `--field`/`--menu`, or `--set` | Only `--apply` publishes; unselected SPEC bytes preserved |
+| `clean WORK` | Remove build results and resources | Keeps checkout, manifest and development branch |
 | `schema manifest` / `schema edit WORK --field FIELD` | Full authoring / narrow editing schema | Structural assistance, not native validation |
 
 Source downloads use Rust HTTP/TLS, without curl, RPM, or a container.
-Native RPM runs only in the separate developer cross-check below; static commands
-require neither RPM nor Docker.
+Native RPM runs inside the embedded or explicitly overridden build environment, or the separate
+developer cross-check below; static commands still require neither RPM nor Docker.
 
 WORK is the same object across commands. First use defaults PKG to WORK and
 requires committed `SPECS/PKG/PKG.spec`; use `--pkgname PKG` to bind a different or
@@ -81,7 +85,8 @@ ruyipack check ed-test
 
 Use `--spec PATH` for independent SPEC files, not a guessed positional path.
 `edit --spec PATH` is repeatable for batches. `gen` only accepts WORK, selected by
-its saved binding and current input (`--input authoring|edit` selects explicitly). Completion preserves author input; `--offline` disables downloads. Complex recipes use selected editing, not full conversion.
+its saved binding and current input (`--input authoring|edit` selects explicitly). Completion preserves author input; `--offline` disables downloads. Build consumes SPEC, never
+implicitly runs gen. Complex recipes use selected editing, not full conversion.
 
 ## Documentation
 
@@ -128,4 +133,7 @@ input, and complete output. Remove credentials and private data before sharing.
 [MulanPSL-2.0](LICENSE). File-level declarations and license texts are recorded in
 [LICENSES](LICENSES).
 
-Machine reports use `--format toml`; JSON Schema retains its standard JSON format.
+Machine reports use `--format toml`, including build outcomes and clean results.
+A build outcome links the complete saved `receipt.json`; it does not serialize
+that receipt into TOML. JSON Schema remains JSON; persistent backend/engine/host
+receipt protocols are unchanged and their TOML migration is still pending.

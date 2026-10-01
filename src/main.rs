@@ -6,8 +6,10 @@
 
 //! Command-line entry point for `RuyiPack`.
 
+mod build;
 mod check;
 mod check_report;
+mod clean;
 mod cli;
 mod edit;
 mod environment;
@@ -43,7 +45,10 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Init(options) => exit_for(workspace::run(&options).map(|()| true)),
+        Command::Build(options) => exit_for(build::run(&options)),
+        Command::Shell(options) => exit_for(build::shell::run(&options)),
         Command::Schema(options) => exit_for(schema::run(&options)),
+        Command::Clean(options) => exit_for(clean::run(&options)),
         Command::New(options) => exit_for(new::run(&options).map(|()| true)),
         Command::Edit(options) => exit_for(edit::run(options)),
         Command::Source(command) => match command {

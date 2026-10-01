@@ -582,6 +582,7 @@ mod tests {
             assert!(output.status.success(), "{output:?}");
         }
         let workspace = Workspace {
+            root: root.to_path_buf(),
             recipes,
             work: root.join("work"),
             specs: PathBuf::from("SPECS"),

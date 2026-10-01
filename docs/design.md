@@ -33,6 +33,8 @@ workspace database or a persistent package-wide mode to do so.
 
 | Producer | Value | Consumer |
 | --- | --- | --- |
+| `build::Engine` | Staged invocation and engine-specific result verification | `build` composes it with a backend |
+| `build::Backend` | Execution, input/output transfer, cleanup and transport evidence | `build` then asks the engine to validate returned artifacts |
 | `render` | Generated contents, static report, selected build contract | `generate` previews, reports, or publishes |
 | `spec::document::Snapshot` | Original bytes, selected fields and replacement ranges | `spec::candidate` calculates and validates an edit |
 | `spec::candidate` | Candidate contents, optional static report, review triggers | `edit` checks, previews, or publishes |

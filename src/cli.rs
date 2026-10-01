@@ -22,6 +22,10 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// Initializes workspace configuration, optionally cloning a recipe Git repository.
     Init(crate::workspace::Options),
+    /// Builds a prepared SPEC in the embedded openRuyi environment.
+    Build(crate::build::Options),
+    /// Enters a retained package build inside its Mock chroot.
+    Shell(crate::build::shell::Options),
     /// Creates a named package development checkout and authoring scaffold.
     New(new::Options),
     /// Prints editor schemas for manifests or selected editable SPEC fields.
@@ -32,6 +36,8 @@ pub(crate) enum Command {
     /// Calculates or verifies remote Source digests without changing recipes.
     #[command(subcommand)]
     Source(SourceCommand),
+    /// Removes retained build results and resources without deleting authoring files.
+    Clean(crate::clean::Options),
     /// Checks package metadata and optionally staged Source/Patch files, without downloading.
     Check(crate::check::Options),
     /// Inspects SPEC facts or prints selected editable fields.

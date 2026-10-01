@@ -41,9 +41,16 @@ struct Config {
 }
 
 pub(crate) struct Workspace {
+    root: PathBuf,
     recipes: PathBuf,
     work: PathBuf,
     specs: PathBuf,
+}
+
+impl Workspace {
+    pub(crate) fn build_config(&self) -> PathBuf {
+        self.root.join(".ruyiconfig/build/compose.yaml")
+    }
 }
 
 /// Stop at the nearest marker, including an interrupted or invalid workspace.
@@ -183,6 +190,7 @@ fn load(root: &Path) -> io::Result<Workspace> {
         }
     }
     Ok(Workspace {
+        root: root.to_path_buf(),
         recipes,
         work,
         specs: config

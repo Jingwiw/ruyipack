@@ -162,6 +162,19 @@ fn reap(child: &mut Child) -> io::Result<ExitStatus> {
     }
 }
 
+/// A check can impose a caller-specific output limit; any error ends the same lifetime.
+/// Linux/macOS cleanup stops same-group descendants even after the root exits.
+/// Other platforms stop the direct child only.
+/// Children that create a new session are outside the process-group guarantee.
+pub(crate) fn run(
+    command: &mut Command,
+    budget: Duration,
+    cancellable: bool,
+    check: impl FnMut() -> io::Result<()>,
+) -> Outcome {
+    run_inner(command, budget, cancellable, true, check)
+}
+
 fn run_inner(
     command: &mut Command,
     budget: Duration,
@@ -355,7 +368,7 @@ mod tests {
         command.arg("-c").arg(
             "import os, sys, time; os.setpgid(0, os.getpgid(os.getppid())); open(sys.argv[1], 'w').write('ready'); time.sleep(2); open(sys.argv[2], 'w').write('survived')",
         ).arg(&ready).arg(&marker).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        let outcome = run_inner(&mut command, Duration::from_secs(1), false, true, || Ok(()));
+        let outcome = run(&mut command, Duration::from_secs(1), false, || Ok(()));
         assert!(
             ready.exists(),
             "fixture did not reach process-group migration"
@@ -464,7 +477,7 @@ mod tests {
         let mut command = shell(r#"printf launched > "$1""#);
         command.arg(&marker);
         let mut checks = 0;
-        let outcome = run_inner(&mut command, Duration::ZERO, false, true, || {
+        let outcome = run(&mut command, Duration::ZERO, false, || {
             checks += 1;
             Ok(())
         });

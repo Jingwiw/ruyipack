@@ -6,6 +6,7 @@
 
 //! CLI boundaries share one executable; each domain remains independently filterable.
 
+mod build;
 mod checks;
 mod cli;
 mod diagnostic_locations;

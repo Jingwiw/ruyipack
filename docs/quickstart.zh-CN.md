@@ -87,6 +87,8 @@ ruyipack source verify example
 ruyipack inspect busybox --editable --field package.version
 ruyipack edit busybox --set package.version=1.37.1 --diff
 ruyipack edit busybox --apply
+ruyipack build busybox
+ruyipack shell busybox
 ```
 
 首次同名绑定要求已提交 main 中存在 `SPECS/NAME/NAME.spec`；
@@ -94,7 +96,8 @@ ruyipack edit busybox --apply
 读 main（TOML 记录 commit），不建 checkout。写入时才建立稀疏 checkout。
 已有开发区始终用保存绑定和当前分支，不重置或复制未提交的配方。
 `edit busybox-test --pkgname busybox` 初次绑定后，后续只用 `busybox-test`。
-外部文件必须显式指定：
+构建结果在 `work/WORK/build`；`clean WORK` 不删作者 TOML、checkout 或分支。
+详见 [构建说明](build.md)。外部文件必须显式指定：
 
 ```sh
 ruyipack inspect --spec package.spec --editable --field package.version
@@ -144,3 +147,4 @@ Version/Source URL 变化会产生复核提醒；TOML 的 `review_required` 是�
 
 机器报告使用 `--format toml`，整份 stdout 是一个 TOML 文档；可选的未观测字段不输出，
 编号 Source 观测用带 `number` 的记录数组。JSON Schema 仍遵循 JSON 标准；
+build 的 TOML outcome 链接完整 `receipt.json`；backend/engine/host 等持久 JSON 回执迁移尚未实现，Docker 的 JSON 边界不变。

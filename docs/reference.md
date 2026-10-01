@@ -80,7 +80,7 @@ empty contributor list and a warning. Fill in package facts, sources, dependenci
 stages and files; `gen` uses saved values, not the current identity or date.
 Use `gen WORK` to read its saved `PKG.toml` and explicitly generate
 `checkout/SPECS/PKG/PKG.spec`. A new generation never imports an existing SPEC
-back into TOML, without implicit native generation.
+back into TOML, and build never implicitly generates a recipe.
 
 ## Common SPEC selection
 
@@ -583,11 +583,14 @@ updated. No Source operation proves patch applicability or package build success
 
 ## TOML and inspection
 
-`inspect`, `check`, checked `gen`, `edit`, and `source hash/verify` use
+`inspect`, `check`, checked `gen`, `edit`, `source hash/verify`, build outcomes, and clean results use
 `--format toml` for machine reports; `json` is not an alias for these commands.
 Optional unobserved values are omitted rather than represented by null. Numbered
 source observations are arrays of records with an explicit `number` field.
-Authoring schemas remain standard JSON Schema. The standalone native gate's legacy structured JSON receipts are outside this CLI report migration; its human progress goes to stderr.
+Build outcomes link the full saved `receipt.json`, rather than re-encoding it.
+Authoring schemas remain standard JSON Schema. Persistent build/backend/engine/host receipts
+still use their existing JSON protocols; their TOML migration is not implemented
+by this report change. Docker's JSON transport remains an external boundary. The standalone native gate's legacy structured JSON receipts are outside this CLI report migration; its human progress goes to stderr.
 
 `inspect --format toml` returns main-preamble tag/conditional records, input SHA-256, parser identity,
 and diagnostics, not macro definitions or section bodies. It does not evaluate
