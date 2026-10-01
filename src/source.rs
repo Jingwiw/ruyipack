@@ -18,14 +18,16 @@ use std::{
 };
 use url::{SyntaxViolation, Url};
 
+const INVALID_URL: &str =
+    "expected an absolute HTTP or HTTPS URL without whitespace or repaired syntax";
+
 /// Checks URL syntax independently of the generator's HTTPS-only publishing policy.
 pub(crate) fn validate_url(value: &str) -> Result<Url, String> {
-    let invalid = || {
-        "expected an absolute HTTP or HTTPS URL without whitespace or repaired syntax".to_owned()
-    };
-    if value.is_empty() || value.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err(invalid());
-    }
+    remote_url(value)?.ok_or_else(|| INVALID_URL.to_owned())
+}
+
+/// Classify and validate the same parse; ordinary local filenames are not URLs.
+fn remote_url(value: &str) -> Result<Option<Url>, String> {
     let repaired = Cell::new(false);
     let capture = |violation| {
         if matches!(
@@ -40,15 +42,19 @@ pub(crate) fn validate_url(value: &str) -> Result<Url, String> {
     };
     let parsed = Url::options()
         .syntax_violation_callback(Some(&capture))
-        .parse(value)
-        .map_err(|_| invalid())?;
-    if repaired.get() || parsed.host().is_none() {
-        return Err(invalid());
+        .parse(value);
+    let parsed = match parsed {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => url,
+        _ if value.contains("://") || value.contains('%') => return Err(INVALID_URL.into()),
+        _ => return Ok(None),
+    };
+    if value.chars().any(|c| c.is_whitespace() || c.is_control())
+        || repaired.get()
+        || parsed.host().is_none()
+    {
+        return Err(INVALID_URL.into());
     }
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(invalid());
-    }
-    Ok(parsed)
+    Ok(Some(parsed))
 }
 
 /// Parse once, then apply authoring policy without exposing credentials in errors.
@@ -104,19 +110,19 @@ pub(crate) struct SourceHashes {
     pub(crate) sources: std::collections::BTreeMap<u32, Download>,
 }
 
-/// Validate the complete selection before starting any downloads.
-pub(crate) fn download_selected(
-    resolved: &spec::sources::Resolution,
+/// Explicit selections require every entry to be a downloadable remote Source.
+pub(crate) fn prepare_selected<'a>(
+    resolved: &'a spec::sources::Resolution,
     numbers: &[u32],
-) -> Result<std::collections::BTreeMap<u32, Download>, Error> {
+) -> Result<std::collections::BTreeMap<u32, RemoteSource<'a>>, Error> {
     if let Some(reason) = &resolved.incomplete {
         return Err(Error::resolution(reason));
     }
-    let sources = &resolved.sources;
-    let urls = numbers
+    numbers
         .iter()
         .map(|number| {
-            let source = sources
+            let source = resolved
+                .sources
                 .get(number)
                 .ok_or_else(|| Error::resolution("declaration unavailable").at(*number))?;
             let url = source
@@ -127,7 +133,33 @@ pub(crate) fn download_selected(
                 .map(|url| (*number, url))
                 .map_err(|error| error.at(*number))
         })
-        .collect::<Result<std::collections::BTreeMap<_, _>, Error>>()?;
+        .collect()
+}
+
+/// Prepare the complete remote set, retaining checked URLs instead of just their numbers.
+pub(crate) fn prepare_remote(
+    resolved: &spec::sources::Resolution,
+) -> Result<std::collections::BTreeMap<u32, RemoteSource<'_>>, Error> {
+    if let Some(reason) = &resolved.incomplete {
+        return Err(Error::resolution(reason));
+    }
+    let mut urls = std::collections::BTreeMap::new();
+    for (number, source) in &resolved.sources {
+        let value = source
+            .url
+            .as_ref()
+            .map_err(|e| Error::resolution(e).at(*number))?;
+        if let Some(url) = RemoteSource::classify(value).map_err(|e| e.at(*number))? {
+            urls.insert(*number, url);
+        }
+    }
+    Ok(urls)
+}
+
+/// The complete map is checked before the first download can start.
+pub(crate) fn download_prepared(
+    urls: std::collections::BTreeMap<u32, RemoteSource<'_>>,
+) -> Result<std::collections::BTreeMap<u32, Download>, Error> {
     urls.into_iter()
         .map(|(number, url)| {
             url.download()
@@ -137,33 +169,16 @@ pub(crate) fn download_selected(
         .collect()
 }
 
+pub(crate) fn download_selected(
+    resolved: &spec::sources::Resolution,
+    numbers: &[u32],
+) -> Result<std::collections::BTreeMap<u32, Download>, Error> {
+    download_prepared(prepare_selected(resolved, numbers)?)
+}
+
 /// Classifies normalized URL schemes; uppercase HTTP(S) is still remote.
 pub(crate) fn is_remote_url(value: &str) -> bool {
     url::Url::parse(value).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
-}
-
-/// Resolve the complete Source set before attempting any download; local files are excluded.
-pub(crate) fn remote_numbers(resolved: &spec::sources::Resolution) -> Result<Vec<u32>, Error> {
-    if let Some(reason) = &resolved.incomplete {
-        return Err(Error::resolution(reason));
-    }
-    let mut numbers = Vec::new();
-    for (number, source) in &resolved.sources {
-        let url = source
-            .url
-            .as_ref()
-            .map_err(|e| Error::resolution(e).at(*number))?;
-        if is_remote_url(url) {
-            RemoteSource::parse(url).map_err(|e| e.at(*number))?;
-            numbers.push(*number);
-        } else if url.contains("://") || url.contains('%') {
-            return Err(
-                Error::resolution("remote Source scheme or expression cannot be resolved")
-                    .at(*number),
-            );
-        }
-    }
-    Ok(numbers)
 }
 
 /// A checked remote URL retains its original spelling for evidence.
@@ -175,10 +190,16 @@ pub(crate) struct RemoteSource<'url> {
 
 impl<'url> RemoteSource<'url> {
     pub(crate) fn parse(original: &'url str) -> Result<Self, Error> {
-        Ok(Self {
-            original,
-            url: validate_authoring_url(original).map_err(|e| Error::new(Reason::UrlPolicy, e))?,
+        Self::classify(original)?.ok_or_else(|| Error::new(Reason::UrlPolicy, INVALID_URL))
+    }
+
+    fn classify(original: &'url str) -> Result<Option<Self>, Error> {
+        let url = remote_url(original).map_err(|e| Error::new(Reason::UrlPolicy, e))?;
+        url.map(|url| {
+            credentials(&url).map_err(|e| Error::new(Reason::UrlPolicy, e))?;
+            Ok(Self { original, url })
         })
+        .transpose()
     }
 
     /// Hash archive bytes directly. No HTTP content decoding or temporary archive.

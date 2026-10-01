@@ -486,6 +486,72 @@ fn edit_hashes_the_pending_candidate_and_keeps_drafts_and_stale_guards() {
 }
 
 #[test]
+fn edit_hash_all_repairs_old_urls_and_preflights_the_complete_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = Server::new(false, |path| response(path.as_bytes()));
+    let replacement = format!("{}/replacement", server.url).replacen("http:", "HTTP:", 1);
+    let fixture = include_str!("../fixtures/ed.spec");
+    let run = |input: &std::path::Path| {
+        server
+            .command()
+            .args([
+                "edit",
+                "--spec",
+                input.to_str().unwrap(),
+                "--set",
+                &format!("sources.0.url={replacement}"),
+                "--hash",
+                "--check",
+                "--format",
+                "toml",
+            ])
+            .output()
+            .unwrap()
+    };
+    for (index, old) in [
+        "https://fixture-user:fixture-secret@example.invalid/archive",
+        "https:/example.invalid/archive",
+        "%{unknown_source}",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let input = dir.path().join(format!("repair-{index}.spec"));
+        let source = fixture
+            .replace("https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz", old)
+            .replace("%description", "Source1: local.tar\n%description");
+        fs::write(&input, &source).unwrap();
+        server.calls.lock().unwrap().clear();
+        let output = run(&input);
+        success(&output);
+        assert_eq!(
+            machine_report(&output)["files"][0]["source_hashes"]["sources"][0]["sha256"].as_str(),
+            Some(sha(b"/replacement").as_str())
+        );
+        assert_eq!(*server.calls.lock().unwrap(), ["/replacement"]);
+        assert_file(&input, &source);
+    }
+    for (index, bad) in [
+        "#!RemoteAsset\nSource1: https://fixture-user:fixture-secret@example.invalid/archive\n",
+        "#!RemoteAsset\nSource1: %{unknown_source}\n",
+        "%include unresolved.spec\n",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let input = dir.path().join(format!("invalid-{index}.spec"));
+        let source = fixture.replace("%description", &format!("{bad}%description"));
+        fs::write(&input, &source).unwrap();
+        server.calls.lock().unwrap().clear();
+        let output = run(&input);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(server.calls.lock().unwrap().is_empty());
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("fixture-secret"));
+        assert_file(&input, &source);
+    }
+}
+
+#[test]
 fn generation_hash_completion_uses_edited_urls_and_never_backfills_stale_baseline_digest() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();

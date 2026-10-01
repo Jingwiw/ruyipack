@@ -391,20 +391,19 @@ fn load_input(
     let safe = !options.all && fields.is_empty();
     let mut selected = fields.to_vec();
     if options.hash {
-        let resolved =
-            crate::spec::sources::resolve(&parsed, &options.defines).map_err(|error| {
-                EditError::source_hash(
-                    crate::source::Error::resolution(error),
-                    &requested,
-                    &selected,
-                )
-            })?;
-        let remote = crate::source::remote_numbers(&resolved)
-            .map_err(|error| EditError::source_hash(error, &requested, &selected))?;
-        for number in remote {
-            let field = format!("sources.{number}.sha256");
-            if !selected.contains(&field) {
-                selected.push(field);
+        // Field discovery proves replacement locations, not that old URLs can be downloaded.
+        let editable = Snapshot::capture_supported(&parsed)
+            .map_err(|error| EditError::at(Kind::UnmappableFields, &requested, &selected, error))?;
+        if let Some(sources) = editable
+            .document()
+            .get("sources")
+            .and_then(|value| value.as_table())
+        {
+            for number in sources.keys() {
+                let field = format!("sources.{number}.sha256");
+                if !selected.contains(&field) {
+                    selected.push(field);
+                }
             }
         }
     }
@@ -667,13 +666,13 @@ fn complete_hashes(
             item.snapshot.selection(),
         )
     })?;
-    let numbers = if options.hash {
-        crate::source::remote_numbers(&resolved)
-            .map_err(|error| EditError::source_hash(error, &item.path, item.snapshot.selection()))?
+    let urls = if options.hash {
+        crate::source::prepare_remote(&resolved)
     } else {
-        options.hash_sources.clone()
-    };
-    for number in &numbers {
+        crate::source::prepare_selected(&resolved, &options.hash_sources)
+    }
+    .map_err(|error| EditError::source_hash(error, &item.path, item.snapshot.selection()))?;
+    for number in urls.keys() {
         let field = format!("sources.{number}.sha256");
         if options.set.iter().any(|(key, _)| key == &field) {
             return Err(EditError::at(
@@ -695,7 +694,7 @@ fn complete_hashes(
     let hashes = crate::source::SourceHashes {
         input_sha256: utf8_file::sha256(pending.source()),
         defines: options.defines.clone(),
-        sources: crate::source::download_selected(&resolved, &numbers).map_err(|error| {
+        sources: crate::source::download_prepared(urls).map_err(|error| {
             EditError::source_hash(error, &item.path, item.snapshot.selection())
         })?,
     };
