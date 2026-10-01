@@ -265,7 +265,7 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
     let source_dir = &input.source_dir;
     let output = &input.output;
     let custom_config = &input.custom_config;
-    let package = BuildInput::package(input.development.as_ref(), spec)?;
+    let package = &input.package;
     let root = output
         .parent()
         .ok_or_else(|| invalid("build result needs a parent"))?;
@@ -362,7 +362,8 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
 
 // Resolves paths once and owns the cooperative WORK lock for the complete operation.
 struct BuildInput {
-    development: Option<crate::workspace::Development>,
+    package: String,
+    _development: Option<crate::workspace::Development>,
     spec: PathBuf,
     source_dir: PathBuf,
     output: PathBuf,
@@ -429,10 +430,17 @@ impl BuildInput {
             .ok_or_else(|| invalid("SPEC filename must be UTF-8"))?;
         let source_dir = directory(&requested_sources)?;
         // Named builds consume the saved PKG binding; explicit paths retain their recipe stem.
-        let package = Self::package(development.as_ref(), &spec)?;
+        let package = development
+            .as_ref()
+            .map_or_else(
+                || spec.file_stem().and_then(|name| name.to_str()),
+                |area| Some(area.package()),
+            )
+            .ok_or_else(|| invalid("SPEC stem must be UTF-8"))?;
         crate::check::metadata::Field::Name
             .validate(package)
             .map_err(invalid)?;
+        let package = package.to_owned();
         let output = if let Some(output) = managed_output {
             output
         } else {
@@ -452,29 +460,17 @@ impl BuildInput {
                         .ok_or_else(|| invalid("build directory needs a name"))?,
                 )
             };
-            root.join(package)
+            root.join(&package)
         };
         Ok(Self {
-            development,
+            package,
+            _development: development,
             spec,
             source_dir,
             output,
             custom_config,
             workspace_config,
         })
-    }
-
-    fn package<'a>(
-        development: Option<&'a crate::workspace::Development>,
-        spec: &'a Path,
-    ) -> io::Result<&'a str> {
-        match development {
-            Some(area) => Ok(area.package()),
-            None => spec
-                .file_stem()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| invalid("SPEC stem must be UTF-8")),
-        }
     }
 
     fn stage(
