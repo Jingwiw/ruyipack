@@ -18,7 +18,9 @@ trap 'exit 143' TERM
 # index also removes assume-unchanged/skip-worktree flags without touching ours.
 mkdir "$scratch/source"
 GIT_INDEX_FILE="$scratch/index" git read-tree "$tree"
-GIT_INDEX_FILE="$scratch/index" git checkout-index --all --prefix="$scratch/source/"
+# Read attributes from the snapshot too, not from unstaged working files.
+GIT_INDEX_FILE="$scratch/index" git --git-dir="$(git rev-parse --absolute-git-dir)" \
+    --work-tree="$scratch/source" -C "$scratch/source" checkout-index --all
 
 # Keep staged builds separate from the developer's debug/release binaries.
 target=${CARGO_TARGET_DIR:-"$root/target/pre-commit"}
