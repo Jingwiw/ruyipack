@@ -112,9 +112,12 @@ git config --local core.hooksPath .githooks
 
 `scripts/lint` is the shared pre-commit and CI Rust gate: formatting and Clippy
 across the workspace, all targets and all features, with warnings denied. The
-hook rejects unstaged or non-ignored untracked files rather than checking content
-that differs from the commit; it never stashes or rewrites files. The local Git
-configuration above enables it for this clone (review any existing hooks first).
+hook checks a fixed snapshot of the staged files, so partial staging and unrelated
+working changes are allowed. It never stashes or rewrites your files or index;
+if staged contents change during checks, it refuses the commit and asks you to
+retry. Staged builds use `target/pre-commit` unless `CARGO_TARGET_DIR` is set.
+The local Git configuration above enables it for this clone (review existing hooks
+first).
 
 `Cargo.toml` owns the lint policy: default Clippy rules plus selected checks for
 unnecessary ownership/cloning, avoidable string allocations, and lossy integer

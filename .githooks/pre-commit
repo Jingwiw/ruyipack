@@ -6,10 +6,41 @@
 # SPDX-License-Identifier: MulanPSL-2.0
 
 set -eu
-# Check exactly the staged source without hiding or rewriting local changes.
-if ! git diff --quiet --ignore-submodules -- ||
-    [ -n "$(git ls-files --others --exclude-standard)" ]; then
-    echo "pre-commit: stage or set aside all non-ignored changes before checking the commit." >&2
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+tree=$(git write-tree)
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/ruyipack-pre-commit.XXXXXX")
+trap 'rm -rf -- "$scratch"' 0
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Export the fixed index, not the possibly different working tree. A private
+# index also removes assume-unchanged/skip-worktree flags without touching ours.
+mkdir "$scratch/source"
+GIT_INDEX_FILE="$scratch/index" git read-tree "$tree"
+GIT_INDEX_FILE="$scratch/index" git checkout-index --all --prefix="$scratch/source/"
+
+# Keep staged builds separate from the developer's debug/release binaries.
+target=${CARGO_TARGET_DIR:-"$root/target/pre-commit"}
+case "$target" in /*) ;; *) target="$root/$target" ;; esac
+revision=$(git rev-parse --verify HEAD 2>/dev/null || :)
+dirty=true
+if [ -n "$revision" ] && [ "$tree" = "$(git rev-parse "$revision^{tree}")" ]; then
+    dirty=false
+fi
+local_git_env=$(git rev-parse --local-env-vars)
+(
+    # Hooks inherit Git variables; they must not redirect the tests' Git fixtures.
+    for name in $local_git_env; do unset "$name"; done
+    unset RUYIPACK_SOURCE_REVISION RUYIPACK_SOURCE_DIRTY
+    if [ -n "$revision" ]; then
+        export RUYIPACK_SOURCE_REVISION="$revision" RUYIPACK_SOURCE_DIRTY="$dirty"
+    fi
+    export CARGO_TARGET_DIR="$target"
+    cd "$scratch/source"
+    ./scripts/lint
+)
+if [ "$tree" != "$(git write-tree)" ]; then
+    echo "pre-commit: staged contents changed during checks; review the index and retry." >&2
     exit 1
 fi
-exec ./scripts/lint
