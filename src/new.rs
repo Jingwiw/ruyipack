@@ -7,8 +7,8 @@
 //! Package authoring scaffolds in named Git development areas.
 
 use crate::{file_output, output_cli, spec_metadata, workspace};
+use askama::Template;
 use clap::{Args, ValueEnum};
-use minijinja::{Environment, UndefinedBehavior, context};
 use std::{
     io::{self, Write},
     path::Path,
@@ -114,31 +114,29 @@ fn git_author(directory: &Path) -> io::Result<Option<String>> {
     })())
 }
 
+#[derive(Template)]
+#[template(path = "new.toml.j2", escape = "none")]
+struct Scaffold<'a> {
+    name: &'a str,
+    year: &'a str,
+    author: Option<&'a str>,
+    system: Option<&'a str>,
+    requirements: &'a [String],
+    stages: &'a [crate::profile::buildsystems::StageAction],
+    full: bool,
+}
+
+fn toml_string(value: &str) -> String {
+    toml::Value::String(value.to_owned()).to_string()
+}
+
 fn render(
     options: &Options,
     name: &str,
     year: &str,
     author: Option<&str>,
-) -> Result<String, minijinja::Error> {
+) -> Result<String, askama::Error> {
     let system = options.build_system.as_deref();
-    let mut env = Environment::new();
-    env.set_undefined_behavior(UndefinedBehavior::Strict);
-    env.set_trim_blocks(true);
-    env.set_lstrip_blocks(true);
-    env.add_filter("toml", |value: String| {
-        toml::Value::String(value).to_string()
-    });
-    env.add_template("new", include_str!("../templates/new.toml.j2"))?;
-    // Two build layouts only: "plain" for no declared system, and one
-    // data-driven template shared by every real build system.
-    env.add_template(
-        "plain",
-        include_str!("../templates/buildsystems/plain.toml.j2"),
-    )?;
-    env.add_template(
-        "buildsystem",
-        include_str!("../templates/buildsystems/buildsystem.toml.j2"),
-    )?;
     let contract = system.and_then(crate::profile::buildsystems::contract);
     let requirements = contract
         .map(|contract| contract.build_requires.as_slice())
@@ -146,15 +144,16 @@ fn render(
     let stages = contract
         .map(|contract| contract.stages.as_slice())
         .unwrap_or_default();
-    env.get_template("new")?.render(context!(
+    Scaffold {
         name,
         year,
         author,
         system,
         requirements,
         stages,
-        full => matches!(options.comments, Comments::Full),
-    ))
+        full: matches!(options.comments, Comments::Full),
+    }
+    .render()
 }
 
 fn warning(message: &str) -> Result<(), NewError> {
@@ -166,7 +165,7 @@ pub(crate) enum NewError {
     #[error("{0}")]
     Workspace(#[source] io::Error),
     #[error("failed to render manifest template: {0}")]
-    Template(#[from] minijinja::Error),
+    Template(#[from] askama::Error),
     #[error("{0}")]
     Output(#[source] file_output::OutputError),
     #[error("failed to write warning: {0}")]

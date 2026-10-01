@@ -6,33 +6,34 @@ SPDX-License-Identifier: MulanPSL-2.0
 This template renders identically for every build system. The per-stage default
 actions and notes come from the selected profile contract under
 profiles/openruyi/buildsystems/, which records their openRuyi provenance.
-#}
-{% set titles = {"conf": "Configure", "build": "Build", "install": "Install", "check": "Check"} %}
+-#}
 [build]
-system = {{ system | toml }}
+system = {{ self::toml_string(system) }}
 # Keep stages commented to use the build system's defaults.
 # options pass arguments to the default action; replace supplies a complete alternative script.
 # Choose options OR replace for a stage. An empty replace disables its default action.
 # prepend/append emit %stage -p/-a and run before/after its main action.
 # Bodies use shell/RPM syntax without section headers; triple single quotes preserve backslashes.
-{% if full %}
+{% if full -%}
 # Default actions come from the target RPM environment, not scripts copied into this manifest.
 # Custom compiler/linker commands should retain %{optflags} and %{build_ldflags}.
 # https://openruyi.cn/docs/guide/packaging-guidelines/
-{% endif %}
+{% endif -%}
 
 # Prep options are passed to RPM's default preparation action; e.g. ["-p0"] changes patch stripping.
 # [build.stages.prep]
 # options = []
-{% for stage in stages %}
+{% for stage in stages -%}
 
-# {{ titles[stage.name] }}: {{ stage.action }}{% if stage.inline_note %}; {{ stage.inline_note }}{% endif %}.
+# {% match stage.name.as_str() %}{% when "conf" %}Configure{% when "build" %}Build{% when "install" %}Install{% when "check" %}Check{% else %}{{ stage.name }}{% endmatch %}: {{ stage.action }}{% if let Some(note) = stage.inline_note %}; {{ note }}{% endif %}.
 # [build.stages.{{ stage.name }}]
 # options = []
-{% if full and stage.full_note %}
-# {{ stage.full_note }}
-{% endif %}
-{% endfor %}
+{% if full -%}
+{% if let Some(note) = stage.full_note -%}
+# {{ note }}
+{% endif -%}
+{% endif -%}
+{% endfor -%}
 
 # Optional for each stage, in that stage's table:
 # prepend = '''

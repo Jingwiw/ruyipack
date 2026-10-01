@@ -2,22 +2,22 @@
 SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
 SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
 SPDX-License-Identifier: MulanPSL-2.0
-#}
+-#}
 # Authoring scaffold: fill the package facts; existing SPEC contents are not imported.
 # SPEC authorship --------------------------------------------------------------
 [spec]
 # Year or year range for the packaging work, for example "2026" or "2024-2026".
-copyright-years = {{ year | toml }}
+copyright-years = {{ self::toml_string(year) }}
 # People maintaining this SPEC, in "Name <email>" form; edit the Git default as needed.
-contributors = [{% if author %}{{ author | toml }}{% endif %}]
-{% if full %}
+contributors = [{% if let Some(author) = author %}{{ self::toml_string(author) }}{% endif %}]
+{% if full -%}
 # This identifies the packaging work, not the authors or license of the upstream software.
 # The SPEC file license and distribution copyright holders are supplied separately.
-{% endif %}
+{% endif -%}
 
 # Upstream package -------------------------------------------------------------
 [package]
-name = {{ name | toml }}
+name = {{ self::toml_string(name) }}
 # Upstream version. Use RPM version characters: letters, digits, . _ + ~ ^.
 version = ""
 # Write a concise English summary; do not end it with a period.
@@ -30,11 +30,11 @@ url = ""
 # Describe what the software does. Write plain text, without SPEC section headers.
 description = '''
 '''
-{% if full %}
+{% if full -%}
 # Check licenses in the source tree; the package name or hosting site is not evidence.
 # Join applicable licenses with uppercase AND/OR; use WITH for an SPDX exception.
 # https://openruyi.cn/docs/guide/packaging-guidelines/
-{% endif %}
+{% endif -%}
 # Runtime dependencies of the installed package (not build tools); one RPM
 # expression per string. Uncomment when the package needs them.
 # requires = ["coreutils", "%{name}-libs = %{version}-%{release}"]
@@ -42,12 +42,12 @@ description = '''
 # provides = ["%{name}-devel = %{version}-%{release}"]
 # Set only for architecture-independent packages; renders BuildArch: noarch.
 # noarch = true
-{% if full %}
+{% if full -%}
 # requires is what the installed package needs at runtime; build-requires is what
 # the build needs. This manifest supports noarch, not arbitrary BuildArch values.
 # These fields apply to the main package; subpackages declare
 # their own requires and provides below.
-{% endif %}
+{% endif -%}
 
 [package.vcs]
 # Leave empty while unconfirmed; gen warns without claiming no repository exists.
@@ -55,10 +55,10 @@ description = '''
 # git = "https://example.org/owner/project.git"
 # same-as-url = true
 # no-public-repository = true  # Only after confirming this, not after a failed lookup.
-{% if full %}
+{% if full -%}
 # A source archive URL or project web page is not necessarily a Git clone URL.
 # Do not select no-public-repository just because the repository address is not yet known.
-{% endif %}
+{% endif -%}
 
 # Sources and patches ---------------------------------------------------------
 [sources.0]
@@ -67,7 +67,7 @@ url = ""
 # Fill a known SHA-256 (64 hexadecimal digits), or let gen calculate it automatically.
 # sha256 = ""
 # Add sources.1, sources.2, ... for additional remote archives.
-{% if full %}
+{% if full -%}
 # gen tries missing digests automatically; failures warn with a reason. Use --offline to skip downloads.
 # A supplied empty/invalid digest fails. openRuyi requires SHA-256 for HTTP(S) sources.
 # https://openruyi.cn/docs/guide/packaging-guidelines/SourceURL/
@@ -77,27 +77,27 @@ url = ""
 # Patch declaration order is application order; document its purpose in the patch header.
 # [patches.0]
 # path = "0000-fix-build.patch"
-{% endif %}
+{% endif -%}
 
 # Build dependencies -----------------------------------------------------------
 [build-requires]
 # Direct build requirements, one RPM expression per string; examples: "make", "pkgconfig(zlib)".
-rpm = [{% for dependency in requirements %}{{ dependency | toml }}{% if not loop.last %}, {% endif %}{% endfor %}]
-{% if system %}
+rpm = [{% for dependency in requirements %}{{ self::toml_string(dependency) }}{% if !loop.last %}, {% endif %}{% endfor %}]
+{% if let Some(system) = system -%}
 # Build-system requirements, if any, are prefilled; add package-specific dependencies.
 # https://openruyi.cn/docs/guide/packaging-guidelines/
-{% endif %}
-{% if full %}
+{% endif -%}
+{% if full -%}
 # Versioned requirements use RPM expressions, for example "pkgconfig(zlib) >= 1.3".
 # List the tools and libraries used by the scripts below. This list does not install them locally.
-{% endif %}
+{% endif -%}
 
 # Build stages -----------------------------------------------------------------
-{% if system %}
-{% include "buildsystem" %}
-{% else %}
-{% include "plain" %}
-{% endif %}
+{% if let Some(system) = system -%}
+{% include "buildsystems/buildsystem.toml.j2" %}
+{% else -%}
+{% include "buildsystems/plain.toml.j2" %}
+{% endif -%}
 
 
 # Packaged files ---------------------------------------------------------------
@@ -109,7 +109,7 @@ rpm = [{% for dependency in requirements %}{{ dependency | toml }}{% if not loop
 # entries = ["%{_bindir}/%{name}", "%config(noreplace) %{_sysconfdir}/example.conf"]
 entries = []
 # Generated file lists (not read by gen): lists = ["%{name}.lang"]
-{% if full %}
+{% if full -%}
 # Inspect the installation result and list the files owned by this package; do not guess from the source tree.
 # A nonempty license/doc list also contributes packaged files, but does not replace the installed payload.
 
@@ -128,4 +128,4 @@ entries = []
 # provides = ["%{name}-development = %{version}-%{release}"]
 # [subpackages.devel.files]
 # entries = ["%{_includedir}/%{name}.h"]
-{% endif %}
+{% endif -%}

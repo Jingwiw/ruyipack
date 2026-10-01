@@ -13,7 +13,7 @@
 //! Each TOML records its policy/macro source. An empty requirement list means
 //! this tool has no common requirement contract, not that the system needs no tools.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::LazyLock;
 
 #[derive(Deserialize)]
@@ -26,8 +26,8 @@ pub(crate) struct Contract {
     pub(crate) stages: Vec<StageAction>,
 }
 
-/// Stage guidance for new. Missing notes serialize as null for strict templates.
-#[derive(Deserialize, Serialize)]
+/// Stage guidance borrowed by the authoring scaffold.
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StageAction {
     pub(crate) name: String,
