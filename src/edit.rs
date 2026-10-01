@@ -699,9 +699,7 @@ fn complete_hashes(
         })?,
     };
     item.ensure_unchanged()?;
-    for (number, download) in &hashes.sources {
-        crate::spec::document::table::set_digest(document, *number, download.sha256.clone())?;
-    }
+    stage::complete_digests(document, &hashes.sources)?;
     if let Some(path) = &item.draft {
         stage::save_document(path, document)?;
         item.select_edit_input()?;

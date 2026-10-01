@@ -26,13 +26,6 @@ pub(crate) fn lookup_mut<'a>(table: &'a mut Table, field: &str) -> Option<&'a mu
     }
 }
 
-pub(crate) fn set_digest(table: &mut Table, number: u32, digest: String) -> Result<(), String> {
-    let field = format!("sources.{number}.sha256");
-    *lookup_mut(table, &field).ok_or_else(|| format!("{field}: digest mapping unavailable"))? =
-        Value::String(digest);
-    Ok(())
-}
-
 pub(super) fn insert(table: &mut Table, field: &str, value: Value) -> Result<(), String> {
     if let Some((head, tail)) = field.split_once('.') {
         let child = table

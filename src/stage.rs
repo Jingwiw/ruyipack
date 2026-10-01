@@ -303,6 +303,20 @@ pub(crate) fn save_document(path: &Path, document: &toml::Table) -> Result<(), S
     crate::file_output::write_artifact(path, text.as_bytes()).map_err(|e| e.to_string())
 }
 
+/// Fill only digest fields already admitted by the stage's fixed mapping.
+pub(crate) fn complete_digests(
+    document: &mut toml::Table,
+    downloads: &std::collections::BTreeMap<u32, crate::source::Download>,
+) -> Result<(), String> {
+    for (number, download) in downloads {
+        let field = format!("sources.{number}.sha256");
+        *crate::spec::document::table::lookup_mut(document, &field)
+            .ok_or_else(|| format!("{field}: digest mapping unavailable"))? =
+            toml::Value::String(download.sha256.clone());
+    }
+    Ok(())
+}
+
 /// Restore omitted keys, not explicit empty or invalid values supplied by the author.
 pub(crate) fn complete_missing(document: &mut toml::Table, baseline: &toml::Table) {
     for (key, value) in baseline {

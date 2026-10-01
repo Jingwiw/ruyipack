@@ -659,8 +659,24 @@ fn from_stage(
         snapshot = Snapshot::capture_selected(&parsed, &fields).map_err(GenerateError::Invalid)?;
         stage::complete_missing(&mut input.document, snapshot.document());
     }
-    complete_stage_digests(&mut input.document, &numbers, &resolved, hashes, failures)?;
     if !numbers.is_empty() {
+        let downloads = hashes.as_mut().expect("downloads enabled");
+        for number in &numbers {
+            // Adding digest fields cannot change these already resolved URLs.
+            let url = resolved.sources[number]
+                .url
+                .as_ref()
+                .expect("selected resolved URL");
+            match source::RemoteSource::parse(url).and_then(source::RemoteSource::download) {
+                Ok(download) => {
+                    downloads.insert(*number, download);
+                }
+                Err(error) => {
+                    failures.insert(*number, error.at(*number));
+                }
+            }
+        }
+        stage::complete_digests(&mut input.document, downloads).map_err(GenerateError::Invalid)?;
         input.unchanged()?;
         if options.hash && !failures.is_empty() {
             return Err(GenerateError::HashFailed);
@@ -748,43 +764,6 @@ fn stage_downloads(
         }
     }
     Ok(numbers)
-}
-
-fn complete_stage_digests(
-    document: &mut Table,
-    numbers: &[u32],
-    resolved: &crate::spec::sources::Resolution,
-    hashes: &mut Option<BTreeMap<u32, source::Download>>,
-    failures: &mut BTreeMap<u32, source::Error>,
-) -> Result<(), GenerateError> {
-    if !numbers.is_empty() {
-        for number in numbers {
-            // Selection already proved these URLs against the edited candidate;
-            // adding digest fields does not change URL resolution.
-            let url = resolved.sources[number]
-                .url
-                .as_ref()
-                .expect("selected resolved URL");
-            match source::RemoteSource::parse(url).and_then(source::RemoteSource::download) {
-                Ok(download) => {
-                    crate::spec::document::table::set_digest(
-                        document,
-                        *number,
-                        download.sha256.clone(),
-                    )
-                    .map_err(GenerateError::Invalid)?;
-                    hashes
-                        .as_mut()
-                        .expect("downloads enabled")
-                        .insert(*number, download);
-                }
-                Err(error) => {
-                    failures.insert(*number, error.at(*number));
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 /// A read-only view of the same prepared facts used to render the candidate.
