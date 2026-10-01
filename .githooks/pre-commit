@@ -1,0 +1,15 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: (C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
+#
+# SPDX-License-Identifier: MulanPSL-2.0
+
+set -eu
+# Check exactly the staged source without hiding or rewriting local changes.
+if ! git diff --quiet --ignore-submodules -- ||
+    [ -n "$(git ls-files --others --exclude-standard)" ]; then
+    echo "pre-commit: stage or set aside all non-ignored changes before checking the commit." >&2
+    exit 1
+fi
+exec ./scripts/lint

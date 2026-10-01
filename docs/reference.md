@@ -503,8 +503,8 @@ repeated warnings for ordinary native build macros; submit explains it as incomp
 Both policies are **static checks only**, not submission or release approval:
 source-content verification, native RPM validation and builds remain unperformed.
 Use `source verify` separately to compare downloaded bytes. Neither policy fully
-validates Source URLs or refreshes archive digests. Static commands
-do not download sources or expand native RPM macros. No command resolves dependencies, verifies patches, or builds packages.
+validates Source URLs or refreshes archive digests. Neither check policy downloads sources, expands native RPM macros, resolves
+dependencies, verifies patches, or builds packages.
 
 ## Source downloads and static resolution
 

@@ -53,7 +53,7 @@ with `edit --hash`. Static success is not a native package build.
 
 | Command | Use | Important boundary |
 | --- | --- | --- |
-| `init [PATH]` | Initialize `.ruyiconfig` in an empty directory | Offline; repeated initialization never overwrites configuration |
+| `init [PATH]` | Initialize `.ruyiconfig` in an empty directory | Offline unless `--clone`; repeated initialization never overwrites configuration |
 | `build WORK` | Build the bound checkout using Mock and Docker’s current context | Experimental; prepared SPEC paths are also supported; see [build setup](docs/build.md) |
 | `shell WORK` | Enter its retained Mock chroot at the RPM build directory | Requires a build without `--rm`; debugging changes are not a verified rebuild |
 | `new WORK [--pkgname PKG]` | Create a development checkout and TOML scaffold | Requires committed main; implicit PKG must match SPECS/PKG/PKG.spec |
@@ -79,7 +79,7 @@ a sparse checkout; existing checkouts retain their current branch and edits.
 ruyipack new ed-test --pkgname ed
 # Fill work/ed-test/ed.toml.
 ruyipack gen ed-test --diff
-ruyipack gen ed-test --force
+ruyipack gen ed-test --spec=auto --force
 ruyipack check ed-test
 ```
 
@@ -104,11 +104,29 @@ See [local material checks](docs/reference.md#local-build-materials) for scope a
 ## Development
 
 ```sh
+git config --local core.hooksPath .githooks
+./scripts/lint
 ./scripts/check
 ./scripts/smoke-test "${CARGO_HOME:-$HOME/.cargo}/bin/ruyipack"
 ```
 
-The gate runs formatting, locked tests, schema/gen comparisons, Clippy, REUSE, and cargo-deny.
+`scripts/lint` is the shared pre-commit and CI Rust gate: formatting and Clippy
+across the workspace, all targets and all features, with warnings denied. The
+hook rejects unstaged or non-ignored untracked files rather than checking content
+that differs from the commit; it never stashes or rewrites files. The local Git
+configuration above enables it for this clone (review any existing hooks first).
+
+`Cargo.toml` owns the lint policy: default Clippy rules plus selected checks for
+unnecessary ownership/cloning, avoidable string allocations, and lossy integer
+conversions. Broad `pedantic` is an advisory review, not a zero-warning target:
+
+```sh
+cargo clippy --workspace --all-targets --all-features --locked -- -W clippy::pedantic
+```
+
+Fix the cause before suppressing a lint; any necessary exception should be local
+and explain the invariant. Keep the pinned toolchain for the commit gate.
+`scripts/check` additionally runs locked tests, schema/gen comparisons, REUSE, and cargo-deny.
 Install Python 3.11+ with `reuse==6.2.0` and `jsonschema==4.26.0`, plus
 `cargo-deny` 0.20.2 separately. The smoke test exercises the
 installed binary in temporary files.
