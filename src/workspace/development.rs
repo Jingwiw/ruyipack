@@ -33,6 +33,15 @@ struct Binding {
     input: Option<GenerationInput>,
 }
 
+// A lock is released with its owner, even while forked descriptor copies remain.
+struct OperationLock(File);
+
+impl Drop for OperationLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 pub(crate) struct Development {
     path: PathBuf,
     binding: Binding,
@@ -40,7 +49,7 @@ pub(crate) struct Development {
     package_directory: PathBuf,
     plan: Option<checkout::Plan>,
     // This dedicated inode stays stable when the binding is atomically replaced.
-    lock: Option<File>,
+    lock: Option<OperationLock>,
 }
 
 impl Workspace {
@@ -264,7 +273,7 @@ impl Development {
         let lock = self.lock.as_ref().ok_or_else(|| {
             invalid("cannot update a development area without the operation lock")
         })?;
-        verify_file(&self.path.join(".lock"), lock)?;
+        verify_file(&self.path.join(".lock"), &lock.0)?;
         let config = self.path.join(".config.toml");
         let current = read_config(&config)?;
         if self.binding_contents.as_deref() != Some(current.as_str()) {
@@ -321,7 +330,7 @@ fn read_binding(
     path: &Path,
     package: Option<&str>,
     preview: bool,
-) -> io::Result<(Binding, Option<File>, String)> {
+) -> io::Result<(Binding, Option<OperationLock>, String)> {
     let config = path.join(".config.toml");
     regular_file(&config)?;
     let lock = if preview {
@@ -351,7 +360,7 @@ fn read_config(config: &Path) -> io::Result<String> {
     Ok(text)
 }
 
-fn open_lock(path: &Path) -> io::Result<File> {
+fn open_lock(path: &Path) -> io::Result<OperationLock> {
     let lock_path = path.join(".lock");
     let file = loop {
         match regular_file(&lock_path) {
@@ -379,8 +388,9 @@ fn open_lock(path: &Path) -> io::Result<File> {
     };
     verify_file(&lock_path, &file)?;
     lock(&file, path)?;
-    verify_file(&lock_path, &file)?;
-    Ok(file)
+    let lock = OperationLock(file);
+    verify_file(&lock_path, &lock.0)?;
+    Ok(lock)
 }
 
 fn regular_file(path: &Path) -> io::Result<std::fs::Metadata> {
@@ -519,11 +529,15 @@ mod tests {
             fs::read_to_string(path.join("stage/ed.toml")).unwrap(),
             "unfinished user draft\n"
         );
+        #[cfg(unix)]
+        let inherited = development.lock.as_ref().unwrap().0.try_clone().unwrap();
         drop(development);
         assert_eq!(
             open(path, false).generation_input(),
             GenerationInput::Authoring
         );
+        #[cfg(unix)]
+        drop(inherited);
     }
 
     #[test]
