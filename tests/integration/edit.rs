@@ -326,4 +326,29 @@ fn invalid_cli_combinations_fail_before_editing() {
         assert_eq!(output.status.code(), Some(2), "{output:?}");
         unchanged(directory.path());
     }
+    let output = command(directory.path())
+        .args(["--spec=ed.spec", "--format=toml"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(!directory.path().join(".ruyipack-stage").exists());
+    unchanged(directory.path());
+    let output = command(directory.path())
+        .args([
+            "--spec=ed.spec",
+            "--field=package.version",
+            "--prepare=.ruyipack-stage/ed",
+        ])
+        .output()
+        .unwrap();
+    success(&output);
+    let draft = directory.path().join(".ruyipack-stage/ed/ed.toml");
+    let saved = fs::read(&draft).unwrap();
+    let output = command(directory.path())
+        .args(["--spec=ed.spec", "--all", "--format=toml"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(fs::read(draft).unwrap(), saved);
+    unchanged(directory.path());
 }

@@ -235,7 +235,7 @@ fn load_inputs(options: &Options) -> Result<Vec<Edit>, EditError> {
         return Err("--pkgname requires exactly one development area".into());
     }
     let checked = options.check || options.apply;
-    let mut inputs = if let Some(dir) = &options.from {
+    let inputs = if let Some(dir) = &options.from {
         stage::load(dir)?
             .into_iter()
             .map(|draft| {
@@ -275,23 +275,6 @@ fn load_inputs(options: &Options) -> Result<Vec<Edit>, EditError> {
             .collect::<Result<Vec<_>, _>>()?
     };
     validate_inputs(&inputs, options)?;
-    // Existing selected stages may need more fields in their immutable mapping.
-    for item in &mut inputs {
-        if let Some(path) = &item.draft
-            && item.expand_stage
-        {
-            let mut document = stage::read_document_path(path).map_err(|error| {
-                EditError::at(
-                    Kind::InvalidDraft,
-                    path,
-                    item.snapshot.selection(),
-                    format!("{error}; repair saved TOML before expanding the field selection"),
-                )
-            })?;
-            stage::complete_missing(&mut document, item.snapshot.document());
-            stage::update(path, item.snapshot.selection(), &document, None)?;
-        }
-    }
     Ok(inputs)
 }
 
@@ -471,6 +454,23 @@ fn load_input(
 }
 
 fn create_stages(inputs: &mut [Edit]) -> Result<(), EditError> {
+    // Existing selected stages may need more fields in their immutable mapping.
+    for item in inputs.iter_mut() {
+        if let Some(path) = &item.draft
+            && item.expand_stage
+        {
+            let mut document = stage::read_document_path(path).map_err(|error| {
+                EditError::at(
+                    Kind::InvalidDraft,
+                    path,
+                    item.snapshot.selection(),
+                    format!("{error}; repair saved TOML before expanding the field selection"),
+                )
+            })?;
+            stage::complete_missing(&mut document, item.snapshot.document());
+            stage::update(path, item.snapshot.selection(), &document, None)?;
+        }
+    }
     for index in 0..inputs.len() {
         if inputs[index].draft.is_some() {
             continue;
@@ -535,14 +535,6 @@ fn execute(options: &Options) -> Result<EditResult, EditError> {
     let mut inputs = load_inputs(options)?;
     let pure_check = options.checks_only();
     let resumes = inputs.iter().all(|item| item.draft.is_some());
-    if !pure_check {
-        create_stages(&mut inputs)?;
-        if options.prepare.is_some() {
-            for item in &mut inputs {
-                item.select_edit_input()?;
-            }
-        }
-    }
     let requested_operation = options.generates_candidate();
     let opens_editor = options.editor.is_some()
         || (options.from.is_none()
@@ -555,6 +547,14 @@ fn execute(options: &Options) -> Result<EditResult, EditError> {
             && !(resumes && requested_operation && options.fields.is_empty() && !options.all));
     if opens_editor && matches!(options.format, Some(ReportFormat::Toml)) {
         return Err("TOML reports require an explicit non-interactive action: --set, --hash, --prepare, --from, or --check".into());
+    }
+    if !pure_check {
+        create_stages(&mut inputs)?;
+        if options.prepare.is_some() {
+            for item in &mut inputs {
+                item.select_edit_input()?;
+            }
+        }
     }
     if opens_editor {
         let paths = inputs
