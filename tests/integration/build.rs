@@ -11,7 +11,7 @@
 use std::{
     fs,
     os::unix::fs::{PermissionsExt, symlink},
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Output,
 };
 
@@ -186,15 +186,9 @@ impl Fixture {
         let outcome = support::machine_report(output);
         assert_eq!(outcome["operation"].as_str(), Some("build"));
         assert_eq!(outcome["success"].as_bool(), Some(true));
-        assert_eq!(
-            Path::new(outcome["receipt"].as_str().unwrap())
-                .canonicalize()
-                .unwrap(),
-            self.output.join("receipt.json").canonicalize().unwrap()
-        );
-        let receipt: Value =
-            serde_json::from_slice(&fs::read(outcome["receipt"].as_str().unwrap()).unwrap())
-                .unwrap();
+        let path = self.output.join("receipt.json").canonicalize().unwrap();
+        assert_eq!(outcome["receipt"].as_str().unwrap(), path.to_string_lossy());
+        let receipt: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(receipt, self.receipt());
         receipt
     }
