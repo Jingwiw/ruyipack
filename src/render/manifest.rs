@@ -674,25 +674,40 @@ fn validate_subpackages(
 fn deserialize_materials<'de, D, T>(deserializer: D) -> Result<Vec<(u32, T)>, D::Error>
 where
     D: Deserializer<'de>,
-    T: serde::de::DeserializeOwned,
+    T: Deserialize<'de>,
 {
-    // TOML preserve_order retains the author's Patch sequence. A sorted map
-    // would silently reorder %autopatch even though the numbers stayed intact.
-    let entries = toml::Table::deserialize(deserializer)?;
-    let mut seen = BTreeSet::new();
-    let mut materials = Vec::with_capacity(entries.len());
-    for (key, value) in entries {
-        let number = key.parse::<u32>().map_err(|_| {
-            D::Error::custom(format!("{key}: expected a non-negative material number"))
-        })?;
-        if !seen.insert(number) {
-            return Err(D::Error::custom(format!(
-                "duplicate material number {number}"
-            )));
+    struct Materials<T>(std::marker::PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Materials<T> {
+        type Value = Vec<(u32, T)>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a table keyed by non-negative material numbers")
         }
-        materials.push((number, value.try_into().map_err(D::Error::custom)?));
+
+        fn visit_map<M: serde::de::MapAccess<'de>>(
+            self,
+            mut map: M,
+        ) -> Result<Self::Value, M::Error> {
+            let mut seen = BTreeSet::new();
+            let mut materials = Vec::with_capacity(map.size_hint().unwrap_or(0));
+            // Consume declaration order; only Source entries are sorted by resolve.
+            while let Some(key) = map.next_key::<String>()? {
+                let number = key.parse::<u32>().map_err(|_| {
+                    M::Error::custom(format!("{key}: expected a non-negative material number"))
+                })?;
+                if !seen.insert(number) {
+                    return Err(M::Error::custom(format!(
+                        "duplicate material number {number}"
+                    )));
+                }
+                materials.push((number, map.next_value()?));
+            }
+            Ok(materials)
+        }
     }
-    Ok(materials)
+
+    deserializer.deserialize_map(Materials(std::marker::PhantomData))
 }
 
 /// Arrays retain the validated Source order and the original Patch application
