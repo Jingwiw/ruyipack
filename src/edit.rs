@@ -391,7 +391,15 @@ fn load_input(
     let safe = !options.all && fields.is_empty();
     let mut selected = fields.to_vec();
     if options.hash {
-        let remote = crate::source::remote_numbers(&parsed, &options.defines)
+        let resolved =
+            crate::spec::sources::resolve(&parsed, &options.defines).map_err(|error| {
+                EditError::source_hash(
+                    crate::source::Error::resolution(error),
+                    &requested,
+                    &selected,
+                )
+            })?;
+        let remote = crate::source::remote_numbers(&resolved)
             .map_err(|error| EditError::source_hash(error, &requested, &selected))?;
         for number in remote {
             let field = format!("sources.{number}.sha256");
@@ -652,8 +660,15 @@ fn complete_hashes(
                 error,
             )
         })?;
+    let resolved = crate::spec::sources::resolve(&pending, &options.defines).map_err(|error| {
+        EditError::source_hash(
+            crate::source::Error::resolution(error),
+            &item.path,
+            item.snapshot.selection(),
+        )
+    })?;
     let numbers = if options.hash {
-        crate::source::remote_numbers(&pending, &options.defines)
+        crate::source::remote_numbers(&resolved)
             .map_err(|error| EditError::source_hash(error, &item.path, item.snapshot.selection()))?
     } else {
         options.hash_sources.clone()
@@ -677,13 +692,16 @@ fn complete_hashes(
             ));
         }
     }
-    let hashes = crate::source::calculate(&pending, &numbers, &options.defines)
-        .map_err(|error| EditError::source_hash(error, &item.path, item.snapshot.selection()))?;
+    let hashes = crate::source::SourceHashes {
+        input_sha256: utf8_file::sha256(pending.source()),
+        defines: options.defines.clone(),
+        sources: crate::source::download_selected(&resolved, &numbers).map_err(|error| {
+            EditError::source_hash(error, &item.path, item.snapshot.selection())
+        })?,
+    };
     item.ensure_unchanged()?;
     for (number, download) in &hashes.sources {
-        *crate::spec::document::table::lookup_mut(document, &format!("sources.{number}.sha256"))
-            .expect("digest mapping checked before download") =
-            toml::Value::String(download.sha256.clone());
+        crate::spec::document::table::set_digest(document, *number, download.sha256.clone())?;
     }
     if let Some(path) = &item.draft {
         stage::save_document(path, document)?;

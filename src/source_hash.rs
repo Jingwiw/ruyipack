@@ -37,12 +37,11 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
                 .map_err(|e| HashError::Input(e.to_string()))?,
         );
         let input = input.as_ref().expect("resolved input");
-        let result = source::calculate(
-            &crate::spec::ParsedSpec::parse(&input.source),
-            &[options.source_number],
-            &options.defines,
-        )
-        .map_err(HashError::Source)?;
+        let parsed = crate::spec::ParsedSpec::parse(&input.source);
+        let resolved = crate::spec::sources::resolve(&parsed, &options.defines)
+            .map_err(|error| HashError::Source(source::Error::resolution(error)))?;
+        let result = source::download_selected(&resolved, &[options.source_number])
+            .map_err(HashError::Source)?;
         if !input
             .is_unchanged()
             .map_err(|e| HashError::Input(e.to_string()))?
@@ -51,15 +50,13 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         }
         Ok::<_, HashError>(result)
     })();
+    let input_sha256 = input
+        .as_ref()
+        .map(|input| crate::utf8_file::sha256(&input.source));
     let valid = result.is_ok();
     let mut stdout = io::stdout().lock();
     if matches!(options.format, ReportFormat::Toml) {
         let display = options.input.display();
-        let failed_input_sha256 = result
-            .as_ref()
-            .err()
-            .and(input.as_ref())
-            .map(|input| crate::utf8_file::sha256(&input.source));
         let report = HashReport {
             format_version: 2,
             tool: crate::tool::identity(),
@@ -69,18 +66,14 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
                 display_path: input
                     .as_ref()
                     .map_or_else(|| display.into(), |input| input.path.to_string_lossy()),
-                sha256: result
-                    .as_ref()
-                    .ok()
-                    .map(|value| value.input_sha256.as_str())
-                    .or(failed_input_sha256.as_deref()),
+                sha256: input_sha256.as_deref(),
                 revision: input.as_ref().and_then(|input| input.revision.as_deref()),
             },
             defines: &options.defines,
             download: result
                 .as_ref()
                 .ok()
-                .map(|value| &value.sources[&options.source_number]),
+                .map(|value| &value[&options.source_number]),
             error: result.as_ref().err().map(|error| match error {
                 HashError::Source(error) => error.report("source-hash-failed"),
                 HashError::Input(_) => {
@@ -95,7 +88,8 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
     } else {
         let value = result.map_err(|error| error.to_string())?;
         let input = input.as_ref().expect("successful input");
-        let digest = &value.sources[&options.source_number].sha256;
+        let digest = &value[&options.source_number].sha256;
+        let input_sha256 = input_sha256.as_deref().expect("successful input");
         writeln!(stdout, "{digest}").map_err(|e| e.to_string())?;
         let target = if let Some(work) = &options.input.work {
             shell_words::quote(work).into_owned()
@@ -107,7 +101,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         };
         let assignment = format!("sources.{}.sha256={digest}", options.source_number);
         writeln!(io::stderr().lock(),
-            "SHA-256 calculated; SPEC unchanged. For an adjacent RemoteAsset marker:\nPreview: ruyipack edit --expect-sha256 {} --set {assignment} --diff {target}\nApply: ruyipack edit --apply --expect-sha256 {} --set {assignment} {target}", value.input_sha256, value.input_sha256)
+            "SHA-256 calculated; SPEC unchanged. For an adjacent RemoteAsset marker:\nPreview: ruyipack edit --expect-sha256 {} --set {assignment} --diff {target}\nApply: ruyipack edit --apply --expect-sha256 {} --set {assignment} {target}", input_sha256, input_sha256)
             .map_err(|e| e.to_string())?;
     }
     Ok(valid)

@@ -767,10 +767,12 @@ fn complete_stage_digests(
                 .expect("selected resolved URL");
             match source::RemoteSource::parse(url).and_then(source::RemoteSource::download) {
                 Ok(download) => {
-                    let field = format!("sources.{number}.sha256");
-                    *crate::spec::document::table::lookup_mut(document, &field).ok_or_else(
-                        || GenerateError::Invalid(format!("{field}: digest mapping unavailable")),
-                    )? = Value::String(download.sha256.clone());
+                    crate::spec::document::table::set_digest(
+                        document,
+                        *number,
+                        download.sha256.clone(),
+                    )
+                    .map_err(GenerateError::Invalid)?;
                     hashes
                         .as_mut()
                         .expect("downloads enabled")

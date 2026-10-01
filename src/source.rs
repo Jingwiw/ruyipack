@@ -7,7 +7,7 @@
 //! Source URL policy and downloads, shared by generation and editing.
 //! Static resolution never executes macros; downloads hash the response stream.
 
-use crate::{spec, utf8_file};
+use crate::spec;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -104,13 +104,11 @@ pub(crate) struct SourceHashes {
     pub(crate) sources: std::collections::BTreeMap<u32, Download>,
 }
 
-/// Resolve the complete selection before starting any downloads.
-pub(crate) fn calculate(
-    parsed: &spec::ParsedSpec<'_>,
+/// Validate the complete selection before starting any downloads.
+pub(crate) fn download_selected(
+    resolved: &spec::sources::Resolution,
     numbers: &[u32],
-    defines: &[String],
-) -> Result<SourceHashes, Error> {
-    let resolved = spec::sources::resolve(parsed, defines).map_err(Error::resolution)?;
+) -> Result<std::collections::BTreeMap<u32, Download>, Error> {
     if let Some(reason) = &resolved.incomplete {
         return Err(Error::resolution(reason));
     }
@@ -130,19 +128,13 @@ pub(crate) fn calculate(
                 .map_err(|error| error.at(*number))
         })
         .collect::<Result<std::collections::BTreeMap<_, _>, Error>>()?;
-    let sources = urls
-        .into_iter()
+    urls.into_iter()
         .map(|(number, url)| {
             url.download()
                 .map(|download| (number, download))
                 .map_err(|error| error.at(number))
         })
-        .collect::<Result<_, _>>()?;
-    Ok(SourceHashes {
-        input_sha256: utf8_file::sha256(parsed.source()),
-        defines: defines.to_vec(),
-        sources,
-    })
+        .collect()
 }
 
 /// Classifies normalized URL schemes; uppercase HTTP(S) is still remote.
@@ -151,11 +143,7 @@ pub(crate) fn is_remote_url(value: &str) -> bool {
 }
 
 /// Resolve the complete Source set before attempting any download; local files are excluded.
-pub(crate) fn remote_numbers(
-    parsed: &spec::ParsedSpec<'_>,
-    defines: &[String],
-) -> Result<Vec<u32>, Error> {
-    let resolved = spec::sources::resolve(parsed, defines).map_err(Error::resolution)?;
+pub(crate) fn remote_numbers(resolved: &spec::sources::Resolution) -> Result<Vec<u32>, Error> {
     if let Some(reason) = &resolved.incomplete {
         return Err(Error::resolution(reason));
     }
