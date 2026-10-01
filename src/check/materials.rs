@@ -130,69 +130,11 @@ pub(crate) fn analyze(
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        for (identity, material) in declarations {
-            let mut local = None;
-            let checked = (|| {
-                let value = material
-                    .url
-                    .as_ref()
-                    .map_err(|e| failure("unresolved", e))?;
-                let name = filename(value)?;
-                let path = local.insert(root.join(name));
-                if let Some(message) = collisions.get(name) {
-                    return Err(failure("name-collision", message));
-                }
-                let declared = material
-                    .digest
-                    .as_ref()
-                    .map_err(|e| failure("invalid-digest", e))?;
-                if let Some(hash) = declared {
-                    source::validate_sha256(hash).map_err(|e| failure("invalid-digest", e))?;
-                }
-                file_digest::read(path).map_err(|error| {
-                    let code = match &error {
-                        file_digest::Error::Io(error)
-                            if error.kind() == io::ErrorKind::NotFound =>
-                        {
-                            "missing-file"
-                        }
-                        file_digest::Error::Io(_) => "io-error",
-                        file_digest::Error::NotRegular(_) => "not-regular-file",
-                        file_digest::Error::Changed(_) => "material-changed",
-                    };
-                    failure(code, error)
-                })
-            })();
-            let declared_sha256 = material.digest.ok().flatten();
-            let outcome = match checked {
-                Ok(content)
-                    if declared_sha256
-                        .as_ref()
-                        .is_none_or(|hash| hash.eq_ignore_ascii_case(&content.sha256)) =>
-                {
-                    Outcome::Ready { content }
-                }
-                Ok(content) => Outcome::Error {
-                    content: Some(content),
-                    error: failure(
-                        "digest-mismatch",
-                        "staged bytes do not match the declared SHA-256; neither was changed",
-                    ),
-                },
-                Err(error) => Outcome::Error {
-                    content: None,
-                    error,
-                },
-            };
-            records.push(Record {
-                identity,
-                expression: material.expression,
-                resolved: material.url.ok(),
-                path: local.map(|path| path.to_string_lossy().into_owned()),
-                declared_sha256,
-                outcome,
-            });
-        }
+        records.extend(
+            declarations
+                .into_iter()
+                .map(|(identity, material)| check_material(&root, &collisions, identity, material)),
+        );
         if let Some(reason) = resolved.incomplete {
             return Err(failure("material-resolution", reason));
         }
@@ -207,6 +149,73 @@ pub(crate) fn analyze(
         source_dir: directory,
         files: records,
         error: result.err(),
+    }
+}
+
+fn check_material(
+    root: &Path,
+    collisions: &BTreeMap<String, String>,
+    identity: String,
+    material: spec::sources::Source,
+) -> Record {
+    let mut local = None;
+    let checked = (|| {
+        let value = material
+            .url
+            .as_ref()
+            .map_err(|e| failure("unresolved", e))?;
+        let name = filename(value)?;
+        let path = local.insert(root.join(name));
+        if let Some(message) = collisions.get(name) {
+            return Err(failure("name-collision", message));
+        }
+        let declared = material
+            .digest
+            .as_ref()
+            .map_err(|e| failure("invalid-digest", e))?;
+        if let Some(hash) = declared {
+            source::validate_sha256(hash).map_err(|e| failure("invalid-digest", e))?;
+        }
+        file_digest::read(path).map_err(|error| {
+            let code = match &error {
+                file_digest::Error::Io(error) if error.kind() == io::ErrorKind::NotFound => {
+                    "missing-file"
+                }
+                file_digest::Error::Io(_) => "io-error",
+                file_digest::Error::NotRegular(_) => "not-regular-file",
+                file_digest::Error::Changed(_) => "material-changed",
+            };
+            failure(code, error)
+        })
+    })();
+    let declared_sha256 = material.digest.ok().flatten();
+    let outcome = match checked {
+        Ok(content)
+            if declared_sha256
+                .as_ref()
+                .is_none_or(|hash| hash.eq_ignore_ascii_case(&content.sha256)) =>
+        {
+            Outcome::Ready { content }
+        }
+        Ok(content) => Outcome::Error {
+            content: Some(content),
+            error: failure(
+                "digest-mismatch",
+                "staged bytes do not match the declared SHA-256; neither was changed",
+            ),
+        },
+        Err(error) => Outcome::Error {
+            content: None,
+            error,
+        },
+    };
+    Record {
+        identity,
+        expression: material.expression,
+        resolved: material.url.ok(),
+        path: local.map(|path| path.to_string_lossy().into_owned()),
+        declared_sha256,
+        outcome,
     }
 }
 

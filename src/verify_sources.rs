@@ -114,6 +114,30 @@ impl Comparison {
     }
 }
 
+impl std::fmt::Display for Comparison {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.outcome {
+            Outcome::Match { download } => write!(formatter, "match {}", download.sha256),
+            Outcome::Mismatch { download } => write!(
+                formatter,
+                "mismatch declared={} downloaded={}",
+                self.declared_sha256.as_deref().unwrap_or(""),
+                download.sha256
+            ),
+            Outcome::Missing { download } => {
+                write!(
+                    formatter,
+                    "missing declared SHA-256; downloaded={}",
+                    download.sha256
+                )
+            }
+            Outcome::Unresolved { error } => write!(formatter, "unresolved: {error}"),
+            Outcome::Error { error } => write!(formatter, "error: {error}"),
+            Outcome::NotApplicable { reason } => write!(formatter, "not-applicable: {reason}"),
+        }
+    }
+}
+
 pub(crate) fn run(options: &Options) -> Result<bool, String> {
     let mut display_path = options.manifest.as_ref().map_or_else(
         || options.input.display(),
@@ -154,45 +178,9 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         };
         input_sha256 = Some(utf8_file::sha256(original));
         if options.manifest.is_some() {
-            let manifest =
-                manifest::parse(original).map_err(|e| ("invalid-manifest", e.to_string()))?;
-            let package = &manifest.package;
-            for (number, material) in manifest.sources {
-                let comparison = match material {
-                    manifest::Source::Local { path } => Comparison {
-                        expression: path,
-                        declared_sha256: None,
-                        outcome: Outcome::NotApplicable {
-                            reason: "local material; remote verification only",
-                        },
-                    },
-                    manifest::Source::Remote { url, sha256 } => {
-                        let resolved = manifest::resolve_source(
-                            &url,
-                            &package.name,
-                            &package.version,
-                            &package.url,
-                        );
-                        Comparison::compare(url, resolved, Ok(sha256))
-                    }
-                };
-                sources.insert(number, comparison);
-            }
+            compare_manifest(original, &mut sources)?;
         } else {
-            let parsed = spec::ParsedSpec::parse(original);
-            let resolved = spec::sources::resolve(&parsed, &options.defines)
-                .map_err(|e| ("source-resolution", e))?;
-            incomplete.clone_from(&resolved.incomplete);
-            for (&number, source) in &resolved.sources {
-                sources.insert(
-                    number,
-                    Comparison::compare(
-                        source.expression.clone(),
-                        source.url.clone(),
-                        source.digest.clone(),
-                    ),
-                );
-            }
+            incomplete = compare_spec(original, &options.defines, &mut sources)?;
         }
         let unchanged = if let Some((path, source)) = &manifest_input {
             utf8_file::is_unchanged(path, source)
@@ -246,26 +234,59 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         crate::report::write(&mut stdout, &report).map_err(|e| e.to_string())?;
     } else {
         for (number, item) in &sources {
-            let detail = match &item.outcome {
-                Outcome::Match { download } => format!("match {}", download.sha256),
-                Outcome::Mismatch { download } => format!(
-                    "mismatch declared={} downloaded={}",
-                    item.declared_sha256.as_deref().unwrap_or(""),
-                    download.sha256
-                ),
-                Outcome::Missing { download } => {
-                    format!("missing declared SHA-256; downloaded={}", download.sha256)
-                }
-                Outcome::Unresolved { error } => format!("unresolved: {error}"),
-                Outcome::Error { error } => format!("error: {error}"),
-                Outcome::NotApplicable { reason } => format!("not-applicable: {reason}"),
-            };
-            writeln!(stdout, "Source{number}: {detail}").map_err(|e| e.to_string())?;
+            writeln!(stdout, "Source{number}: {item}").map_err(|e| e.to_string())?;
         }
         result.map_err(|(_, message)| message)?;
         writeln!(stdout, "Input unchanged; no digests written. Matching bytes do not prove upstream authenticity.").map_err(|e| e.to_string())?;
     }
     Ok(valid)
+}
+
+fn compare_manifest(
+    original: &str,
+    sources: &mut BTreeMap<u32, Comparison>,
+) -> Result<(), (&'static str, String)> {
+    let manifest = manifest::parse(original).map_err(|e| ("invalid-manifest", e.to_string()))?;
+    let package = &manifest.package;
+    for (number, material) in manifest.sources {
+        let comparison = match material {
+            manifest::Source::Local { path } => Comparison {
+                expression: path,
+                declared_sha256: None,
+                outcome: Outcome::NotApplicable {
+                    reason: "local material; remote verification only",
+                },
+            },
+            manifest::Source::Remote { url, sha256 } => {
+                let resolved =
+                    manifest::resolve_source(&url, &package.name, &package.version, &package.url);
+                Comparison::compare(url, resolved, Ok(sha256))
+            }
+        };
+        sources.insert(number, comparison);
+    }
+    Ok(())
+}
+
+fn compare_spec(
+    original: &str,
+    defines: &[String],
+    sources: &mut BTreeMap<u32, Comparison>,
+) -> Result<Option<String>, (&'static str, String)> {
+    let parsed = spec::ParsedSpec::parse(original);
+    let resolved =
+        spec::sources::resolve(&parsed, defines).map_err(|e| ("source-resolution", e))?;
+    for (&number, source) in &resolved.sources {
+        sources.insert(
+            number,
+            Comparison::compare(
+                source.expression.clone(),
+                source.url.clone(),
+                source.digest.clone(),
+            ),
+        );
+    }
+    Ok(resolved.incomplete.clone())
 }
 
 #[derive(Serialize)]

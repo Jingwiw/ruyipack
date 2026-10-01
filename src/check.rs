@@ -206,23 +206,31 @@ pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
             )
         });
         let mut inventory = materials::analyze(directory, &parsed, &options.defines);
-        let unchanged = spec_input.as_ref().map_or_else(
-            || {
-                fs_err::canonicalize(path)
-                    .and_then(|path| crate::utf8_file::is_unchanged(&path, original))
-            },
-            |input| input.is_unchanged(),
-        );
+        let unchanged = if let Some(input) = &spec_input {
+            input.is_unchanged()
+        } else {
+            fs_err::canonicalize(path)
+                .and_then(|path| crate::utf8_file::is_unchanged(&path, original))
+        };
         match unchanged {
             Ok(true) => {}
             Ok(false) => {
-                inventory.invalidate("input-changed", "recipe changed during inventory; retry")
+                inventory.invalidate("input-changed", "recipe changed during inventory; retry");
             }
             Err(error) => inventory.invalidate("input-read", error),
         }
         report.materials = Some(inventory);
     }
-    match options.format {
+    write_report(&report, path, options.format)?;
+    Ok(report.is_success())
+}
+
+fn write_report(
+    report: &CheckReport,
+    path: &Path,
+    format: ReportFormat,
+) -> Result<(), ReportError> {
+    match format {
         ReportFormat::Human => {
             report
                 .write_human(path, &mut io::stderr().lock())
@@ -237,5 +245,5 @@ pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
             .write_toml(path, &mut io::stdout().lock())
             .map_err(ReportError::Stdout)?,
     }
-    Ok(report.is_success())
+    Ok(())
 }

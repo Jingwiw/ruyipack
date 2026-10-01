@@ -306,7 +306,7 @@ impl<'url> RemoteSource<'url> {
         let mut reader = response.body_mut().as_reader();
         let mut digest = Sha256::new();
         let mut bytes = 0_u64;
-        let mut buffer = [0_u8; 64 * 1024];
+        let mut buffer = vec![0_u8; 64 * 1024];
         loop {
             if Instant::now() >= deadline {
                 return Err(Error::new(Reason::Timeout, "download body: total timeout"));
@@ -360,7 +360,7 @@ impl Reason {
             )
         {
             Self::Timeout
-        } else if inner.is_some_and(|e| e.is::<rustls::Error>()) {
+        } else if matches!(inner, Some(error) if error.is::<rustls::Error>()) {
             Self::Tls
         } else {
             fallback

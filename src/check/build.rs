@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Direct BuildRequires checks against the selected profile build-system contract.
+//! Direct `BuildRequires` checks against the selected profile build-system contract.
 
 use super::RuleResult;
 use crate::{

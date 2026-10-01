@@ -24,23 +24,22 @@ pub(crate) fn check(
     literal: Option<&str>,
     span: SourceLocation,
 ) {
-    let (severity, message) = match literal {
-        Some(value) => match validate_expression(value) {
+    let (severity, message) = if let Some(value) = literal {
+        match validate_expression(value) {
             Ok(()) => return,
             Err(error) => (
                 RULE.severity,
                 format!("{field}: invalid or unrecognized SPDX expression: {error}"),
             ),
-        },
-        None => {
-            result
-                .incomplete_reasons
-                .push(IncompleteReason::UnresolvedLicense);
-            (
-                Severity::Warn,
-                format!("{field}: SPDX validation requires an evaluated License value"),
-            )
         }
+    } else {
+        result
+            .incomplete_reasons
+            .push(IncompleteReason::UnresolvedLicense);
+        (
+            Severity::Warn,
+            format!("{field}: SPDX validation requires an evaluated License value"),
+        )
     };
     result.findings.push(Finding {
         producer: "ruyipack",
