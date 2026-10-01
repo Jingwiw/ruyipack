@@ -15,10 +15,7 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-use crate::{
-    output_cli::{self, HumanLevel},
-    utf8_file,
-};
+use crate::utf8_file;
 
 #[derive(Clone, Copy)]
 pub(crate) enum ConflictAction {
@@ -28,58 +25,22 @@ pub(crate) enum ConflictAction {
     Skip,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum OutputMode {
-    Write,
-    Diff,
-    Stdout,
-}
-
-/// Outputs validated text without silently replacing different content.
+/// Publishes validated text without silently replacing different content.
 /// A selection authorizes an action, not stale bytes: revalidation stays here.
-pub(crate) fn run(
+pub(crate) fn publish(
     path: &Path,
     contents: &str,
-    mode: OutputMode,
     mut choose: impl FnMut(&Path) -> Result<ConflictAction, OutputError>,
-) -> Result<(), OutputError> {
-    if matches!(mode, OutputMode::Stdout) {
-        return io::stdout()
-            .lock()
-            .write_all(contents.as_bytes())
-            .map_err(OutputError::Stdout);
-    }
-
-    if matches!(mode, OutputMode::Diff) {
-        return match fs::read(path) {
-            Ok(existing) => show_diff(path, Some(&existing), contents),
-            Err(source) if source.kind() == io::ErrorKind::NotFound => {
-                show_diff(path, None, contents)
-            }
-            Err(source) => Err(OutputError::Read {
-                path: path.to_path_buf(),
-                source,
-            }),
-        };
-    }
-
+) -> Result<EditOutcome, OutputError> {
     let existing = read_optional_target(path)?;
-    let outcome = publish_one(
+    publish_one(
         path,
         contents,
         existing.as_deref(),
         None,
         &mut choose,
         || Ok(()),
-    )?;
-    if matches!(outcome, EditOutcome::Skipped(_))
-        || matches!(&outcome, EditOutcome::Written(copy) if copy != path)
-    {
-        outcome
-            .write_human(&mut io::stderr().lock())
-            .map_err(OutputError::Stderr)?;
-    }
-    Ok(())
+    )
 }
 
 /// One validated candidate and the exact source bytes from which it was prepared.
@@ -95,22 +56,6 @@ pub(crate) enum EditOutcome {
     Written(PathBuf),
     Unchanged(PathBuf),
     Skipped(PathBuf),
-}
-
-impl EditOutcome {
-    pub(crate) fn write_human(&self, writer: &mut impl Write) -> io::Result<()> {
-        let (action, path) = match self {
-            Self::Written(path) => ("Wrote", path),
-            Self::Unchanged(path) => ("Unchanged", path),
-            Self::Skipped(path) => ("Kept", path),
-        };
-        output_cli::human(
-            writer,
-            HumanLevel::Info,
-            None,
-            format_args!("{action} {}", output_cli::human_path(path).display()),
-        )
-    }
 }
 
 /// Publishes checked candidates, retaining exact paths on partial failure.
@@ -323,7 +268,11 @@ fn read_target(path: &Path) -> Result<Vec<u8>, OutputError> {
     })
 }
 
-fn show_diff(path: &Path, existing: Option<&[u8]>, contents: &str) -> Result<(), OutputError> {
+pub(crate) fn show_diff(
+    path: &Path,
+    existing: Option<&[u8]>,
+    contents: &str,
+) -> Result<(), OutputError> {
     io::stdout()
         .lock()
         .write_all(diff_text(path, existing, contents)?.as_bytes())

@@ -66,22 +66,6 @@ fn stage_artifacts_refuse_symlink_and_hardlink_aliases_without_changing_bytes() 
 }
 
 #[test]
-fn publication_log_paths_are_relative_and_remain_distinguishable() {
-    let current = std::env::current_dir().unwrap();
-    let mut output = Vec::new();
-    for name in ["first/pkg.spec", "second/pkg.spec"] {
-        EditOutcome::Written(current.join(name))
-            .write_human(&mut output)
-            .unwrap();
-    }
-    let output = String::from_utf8(output).unwrap();
-    assert_eq!(
-        dialoguer::console::strip_ansi_codes(&output),
-        "[INFO] Wrote first/pkg.spec\n[INFO] Wrote second/pkg.spec\n"
-    );
-}
-
-#[test]
 fn diff_headers_preserve_data_paths_and_terminate_spaced_filenames() {
     let path = Path::new("dir with spaces/pkg.spec");
     let diff = diff_text(path, Some(b"old\n"), "new\n").unwrap();
@@ -115,7 +99,7 @@ fn copy_selection_is_unreachable_for_directories_or_nameless_targets() {
         contents: "candidate\n",
     }];
     for target in [directory.path(), Path::new(""), Path::new("/")] {
-        assert!(run(target, "candidate\n", OutputMode::Write, no_prompt).is_err());
+        assert!(publish(target, "candidate\n", no_prompt).is_err());
         assert!(run_edits(&files, Some(target), no_prompt).is_err());
     }
     assert_eq!(fs::read_to_string(input).unwrap(), "original\n");
@@ -165,10 +149,7 @@ fn copy_selection_preserves_extensions_and_existing_sidecars() {
                 [EditOutcome::Written(copy.canonicalize().unwrap())]
             );
         } else {
-            run(&target, "candidate\n", OutputMode::Write, |_| {
-                Ok(ConflictAction::Copy)
-            })
-            .unwrap();
+            publish(&target, "candidate\n", |_| Ok(ConflictAction::Copy)).unwrap();
         }
         for (path, expected) in [
             (&input, "original\n"),
@@ -252,7 +233,7 @@ fn generated_diff_returns_to_selection_and_rechecks_the_target() {
     let directory = tempfile::tempdir().unwrap();
     let target = source(directory.path(), "output.spec", "other\n");
     let mut selections = 0;
-    let result = run(&target, "candidate\n", OutputMode::Write, |path| {
+    let result = publish(&target, "candidate\n", |path| {
         selections += 1;
         if selections == 1 {
             Ok(ConflictAction::Diff)

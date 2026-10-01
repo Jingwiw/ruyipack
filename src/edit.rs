@@ -794,8 +794,7 @@ fn publish(options: &Options, inputs: &[Edit]) -> Result<Vec<file_output::EditOu
     }
     if !matches!(options.format, Some(ReportFormat::Toml)) {
         for outcome in &outcomes {
-            outcome
-                .write_human(&mut io::stderr().lock())
+            output_cli::write_outcome(&mut io::stderr().lock(), outcome)
                 .map_err(|error| error.to_string())?;
         }
     }

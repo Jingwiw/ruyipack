@@ -14,7 +14,7 @@ use std::{
 
 use clap::{Args, ValueEnum};
 
-use crate::file_output::{self, ConflictAction, OutputError, OutputMode};
+use crate::file_output::{self, ConflictAction, EditOutcome, OutputError};
 
 /// Human diagnostics only: structured reports retain their original paths and levels.
 #[derive(Clone, Copy)]
@@ -140,6 +140,21 @@ fn relative_path(path: &Path, current: &Path) -> PathBuf {
     relative
 }
 
+/// Display an observed publication result; the publisher owns paths and outcomes.
+pub(crate) fn write_outcome(writer: &mut impl Write, outcome: &EditOutcome) -> io::Result<()> {
+    let (action, path) = match outcome {
+        EditOutcome::Written(path) => ("Wrote", path),
+        EditOutcome::Unchanged(path) => ("Unchanged", path),
+        EditOutcome::Skipped(path) => ("Kept", path),
+    };
+    human(
+        writer,
+        HumanLevel::Info,
+        None,
+        format_args!("{action} {}", human_path(path).display()),
+    )
+}
+
 /// Presentation choice shared by check, inspect, generation and edit reports.
 #[derive(Clone, Copy, ValueEnum)]
 pub(crate) enum ReportFormat {
@@ -233,14 +248,32 @@ pub(crate) struct OutputActionOptions {
 
 impl OutputActionOptions {
     pub(crate) fn emit(&self, path: &Path, contents: &str) -> Result<(), OutputError> {
-        let mode = if self.stdout {
-            OutputMode::Stdout
-        } else if self.diff {
-            OutputMode::Diff
-        } else {
-            OutputMode::Write
-        };
-        file_output::run(path, contents, mode, |path| self.choose(path))
+        if self.stdout {
+            return io::stdout()
+                .lock()
+                .write_all(contents.as_bytes())
+                .map_err(OutputError::Stdout);
+        }
+        if self.diff {
+            let existing = match std::fs::read(path) {
+                Ok(existing) => Some(existing),
+                Err(source) if source.kind() == io::ErrorKind::NotFound => None,
+                Err(source) => {
+                    return Err(OutputError::Read {
+                        path: path.to_owned(),
+                        source,
+                    });
+                }
+            };
+            return file_output::show_diff(path, existing.as_deref(), contents);
+        }
+        let outcome = file_output::publish(path, contents, |path| self.choose(path))?;
+        if matches!(outcome, EditOutcome::Skipped(_))
+            || matches!(&outcome, EditOutcome::Written(copy) if copy != path)
+        {
+            write_outcome(&mut io::stderr().lock(), &outcome).map_err(OutputError::Stderr)?;
+        }
+        Ok(())
     }
 
     /// Generation has an input file too: reuse publication's conflict-time source checks.
@@ -262,8 +295,7 @@ impl OutputActionOptions {
         file_output::run_edits(&[file], Some(path), |path| self.choose(path)).and_then(|outcomes| {
             for outcome in &outcomes {
                 if matches!(outcome, file_output::EditOutcome::Skipped(_)) {
-                    outcome
-                        .write_human(&mut io::stderr().lock())
+                    write_outcome(&mut io::stderr().lock(), outcome)
                         .map_err(OutputError::Stderr)?;
                 }
             }
@@ -385,6 +417,20 @@ impl From<SelectionError> for OutputError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publication_log_paths_are_relative_and_remain_distinguishable() {
+        let current = std::env::current_dir().unwrap();
+        let mut output = Vec::new();
+        for name in ["first/pkg.spec", "second/pkg.spec"] {
+            write_outcome(&mut output, &EditOutcome::Written(current.join(name))).unwrap();
+        }
+        let output = String::from_utf8(output).unwrap();
+        assert_eq!(
+            dialoguer::console::strip_ansi_codes(&output),
+            "[INFO] Wrote first/pkg.spec\n[INFO] Wrote second/pkg.spec\n"
+        );
+    }
 
     #[test]
     fn machine_failures_are_complete_toml_and_encoding_errors_write_nothing() {
