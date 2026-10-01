@@ -81,7 +81,7 @@ pub(crate) fn validate_sha256(value: &str) -> Result<(), &'static str> {
 }
 
 /// New manifests require HTTPS; existing SPEC editing also accepts HTTP.
-pub(crate) fn require_https(field: &str, url: Url) -> Result<(), String> {
+pub(crate) fn require_https(field: &str, url: &Url) -> Result<(), String> {
     if url.scheme() != "https" {
         return Err(format!("{field}: expected an HTTPS URL"));
     }
@@ -256,7 +256,7 @@ impl<'url> RemoteSource<'url> {
                 .timeout_global(Some(remaining))
                 .build()
                 .call()
-                .map_err(Error::request)?;
+                .map_err(Error::from)?;
             match response.status().as_u16() {
                 301 | 302 | 303 | 307 | 308 => {
                     if redirects == 10 {
@@ -463,8 +463,10 @@ impl Error {
             source_number: self.source_number,
         }
     }
+}
 
-    fn request(error: ureq::Error) -> Self {
+impl From<ureq::Error> for Error {
+    fn from(error: ureq::Error) -> Self {
         let reason = match &error {
             ureq::Error::StatusCode(status) => Reason::HttpStatus(*status),
             ureq::Error::Timeout(_) => Reason::Timeout,

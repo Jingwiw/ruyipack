@@ -150,7 +150,7 @@ pub fn response(body: &[u8]) -> Vec<u8> {
 }
 
 // Test-only key and certificate chain, valid until 2126; never used by the product.
-const CA: &str = r#"-----BEGIN CERTIFICATE-----
+const CA: &str = r"-----BEGIN CERTIFICATE-----
 MIIDKTCCAhGgAwIBAgIUI57UjPmWrNW3SamZzc3MiOVEOqUwDQYJKoZIhvcNAQEL
 BQAwGzEZMBcGA1UEAwwQUnV5aVBhY2sgdGVzdCBDQTAgFw0yNjA5MjgwNjQ5NDBa
 GA8yMTI2MDkwNDA2NDk0MFowGzEZMBcGA1UEAwwQUnV5aVBhY2sgdGVzdCBDQTCC
@@ -169,8 +169,8 @@ h1nBdqhlyNSAJSdzxOaiBYUmhwMQOsTDoPFsXHVeyktDNyGQ2h2wnl8FO4dEfxbo
 cjrgzksgBvG6Gi4z7BWtzpVn5CnopEUWetbAgOvuGhtdsP30tuD0za7we+XiB8U5
 G+JkJAMo+0jlPEONLW4yGgixCTOwEd9u6jCQAQ3hKG2d4R3ohgPAWjtFHMAj
 -----END CERTIFICATE-----
-"#;
-const CERT: &str = r#"-----BEGIN CERTIFICATE-----
+";
+const CERT: &str = r"-----BEGIN CERTIFICATE-----
 MIIDUjCCAjqgAwIBAgIUHsm5/ishsF0T3WOVsPX0MOHUzkYwDQYJKoZIhvcNAQEL
 BQAwGzEZMBcGA1UEAwwQUnV5aVBhY2sgdGVzdCBDQTAgFw0yNjA5MjgwNjQ5NDBa
 GA8yMTI2MDkwNDA2NDk0MFowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkq
@@ -190,8 +190,8 @@ llHEH9d14GnxzumW6AoOxxQfL0SLAgx6S6VwEaK6uCADom36ANFodnjE+9l3Tj4X
 kQ8xIlJ/dshcJfJiZpGRciFCoBEMK3cqctyEypGNhKaoE92t5DhYAzC0lEqAIHn1
 JNm9JDLs3TLzvUoTvituJajnOo/XSRhKoxqbLodSNCU7M/zx84E=
 -----END CERTIFICATE-----
-"#;
-const KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+";
+const KEY: &str = r"-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDNH7uOfGl/It4S
 DU/0U12dsmWedN33khMlprlM9inhpvJg9dnZ4M0o07m7NAp5/6eTgUqXnhN893Ke
 RIvT/iM7vmqwQHij7JyIwK7SxrxhrZtILTztKk8EvNeuLGRyjMomexm9isdBSpKW
@@ -219,4 +219,4 @@ wI7WHoyVOLZaE83ZL0gkyfK/yPFIHw+hwi/J01KKP2cNHUvOGcg3EGIFLDqVRpi+
 xCVDlGQcOVsINi+UKyx7AbvQ4wi0OPc/YklaHa3lBc0cDK8loYQ5pi2tFM61ocj6
 IXNAzgxWEmUX1SmQwc/Udbg=
 -----END PRIVATE KEY-----
-"#;
+";

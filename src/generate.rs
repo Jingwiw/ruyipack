@@ -277,7 +277,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, GenerateError> {
         if options.spec.is_none() {
             input.unchanged()?;
         }
-        let document = resolved_document(&input, generated, &hashes, &failures)?;
+        let document = resolved_document(&input, generated, hashes.as_ref(), &failures)?;
         file_output::write_artifact(&resolved_path, document.as_bytes()).map_err(|source| {
             GenerateError::ArtifactWrite {
                 path: resolved_path.clone(),
@@ -696,7 +696,7 @@ fn from_stage(
 fn resolved_document(
     input: &Input,
     generated: &Generated,
-    hashes: &Option<BTreeMap<u32, source::Download>>,
+    hashes: Option<&BTreeMap<u32, source::Download>>,
     failures: &BTreeMap<u32, source::Error>,
 ) -> Result<String, GenerateError> {
     #[derive(Serialize)]
@@ -742,7 +742,7 @@ fn resolved_document(
             fields: &bound.fields,
             values: &input.document,
         }),
-        downloads: hashes.as_ref().map(crate::report::Numbered),
+        downloads: hashes.map(crate::report::Numbered),
         download_failures: crate::report::Numbered(failures),
     };
     toml::to_string_pretty(&resolved).map_err(|error| GenerateError::Invalid(error.to_string()))
@@ -867,9 +867,10 @@ impl GenerateError {
             Self::ManifestNotForPackage { .. } => "package-mismatch",
             Self::InputIsTarget(_) => "input-is-target",
             Self::Output(_) => "publication-failed",
-            Self::ArtifactWrite { .. } => "output-write",
             Self::AfterPublication { source, .. } => source.code(),
-            Self::Report(_) | Self::Stdout(_) | Self::Stderr(_) => "output-write",
+            Self::ArtifactWrite { .. } | Self::Report(_) | Self::Stdout(_) | Self::Stderr(_) => {
+                "output-write"
+            }
             Self::CheckFailed => "static-check-failed",
             Self::HashFailed => "source-hash-failed",
         }

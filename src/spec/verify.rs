@@ -101,7 +101,7 @@ pub(crate) fn run(
     }
     dependency_tags(
         &mut tags,
-        Tag::BuildRequires,
+        &Tag::BuildRequires,
         &manifest.build_requires.rpm,
         "build-requires.rpm",
     )?;
@@ -246,13 +246,13 @@ fn body_tags(body: &PackageBody, field: &str) -> Result<Vec<ExpectedTag>, Render
     let mut tags = vec![(Tag::Summary, None, TagValue::Text(text(&body.summary)?))];
     dependency_tags(
         &mut tags,
-        Tag::Requires,
+        &Tag::Requires,
         &body.requires,
         &format!("{field}.requires"),
     )?;
     dependency_tags(
         &mut tags,
-        Tag::Provides,
+        &Tag::Provides,
         &body.provides,
         &format!("{field}.provides"),
     )?;
@@ -261,7 +261,7 @@ fn body_tags(body: &PackageBody, field: &str) -> Result<Vec<ExpectedTag>, Render
 
 fn dependency_tags(
     tags: &mut Vec<ExpectedTag>,
-    tag: Tag,
+    tag: &Tag,
     values: &[String],
     field: &str,
 ) -> Result<(), RenderError> {
@@ -375,9 +375,8 @@ fn file_section(
             check(words.next() == Some("-n"), field)?;
         }
         let name = words.next().ok_or_else(|| mismatch(field))?;
-        let expected = match expected {
-            SubpkgRef::Relative(t) | SubpkgRef::Absolute(t) => t,
-            _ => return Err(mismatch(field)),
+        let (SubpkgRef::Relative(expected) | SubpkgRef::Absolute(expected)) = expected else {
+            return Err(mismatch(field));
         };
         check(text(name)? == *expected, field)?;
     }

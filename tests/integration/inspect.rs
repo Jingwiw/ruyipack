@@ -222,8 +222,8 @@ fn text_diagnostics_do_not_present_body_local_offsets_as_source_locations() {
         .find(|d| d["code"].as_str() == Some("rpmspec/W0017"))
         .unwrap();
     let span = &boolean["span"];
-    let start = span["start_byte"].as_integer().unwrap() as usize;
-    let end = span["end_byte"].as_integer().unwrap() as usize;
+    let start = usize::try_from(span["start_byte"].as_integer().unwrap()).unwrap();
+    let end = usize::try_from(span["end_byte"].as_integer().unwrap()).unwrap();
     assert_eq!(&source[start..end], "AutoReq:        invalid\n");
     let boolean_line = source[..start].lines().count() + 1;
     assert_eq!(
@@ -231,8 +231,8 @@ fn text_diagnostics_do_not_present_body_local_offsets_as_source_locations() {
         Some(i64::try_from(boolean_line).unwrap())
     );
     let version = &inspected["preamble"][1]["span"];
-    let start = version["start_byte"].as_integer().unwrap() as usize;
-    let end = version["end_byte"].as_integer().unwrap() as usize;
+    let start = usize::try_from(version["start_byte"].as_integer().unwrap()).unwrap();
+    let end = usize::try_from(version["end_byte"].as_integer().unwrap()).unwrap();
     assert_eq!(&source[start..end], "Version:        %{unfinished\n");
     for action in ["inspect", "check"] {
         let human = support::command()

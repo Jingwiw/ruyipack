@@ -76,7 +76,10 @@ fn verification_distinguishes_missing_mismatch_and_uncertainty_without_writing()
     .iter()
     .enumerate()
     {
-        assert_eq!(report["sources"][n]["number"].as_integer(), Some(n as i64));
+        assert_eq!(
+            report["sources"][n]["number"].as_integer(),
+            Some(i64::try_from(n).unwrap())
+        );
         assert_eq!(
             report["sources"][n]["status"].as_str(),
             Some(*expected),

@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn capture_preserves_binary_bytes_and_exact_per_stream_limit() {
         let output = capture(
-            &mut shell(r#"printf '\000\377A\000'; printf '\376\000B\377' >&2"#),
+            &mut shell(r"printf '\000\377A\000'; printf '\376\000B\377' >&2"),
             Duration::from_secs(2),
             4,
         )

@@ -188,7 +188,7 @@ fn directory(path: &Path) -> io::Result<PathBuf> {
 fn copy_sources(source: &Path, destination: &Path) -> io::Result<()> {
     fs::create_dir(destination)?;
     let mut entries = fs::read_dir(source)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
+    entries.sort_by_key(fs_err::DirEntry::file_name);
     for entry in entries {
         let from = entry.path();
         let to = destination.join(entry.file_name());
@@ -210,7 +210,7 @@ fn copy_sources(source: &Path, destination: &Path) -> io::Result<()> {
 fn inventory(root: &Path, directory: &Path, files: &mut Vec<InputFile>) -> io::Result<()> {
     normalize_mode(directory, &fs::symlink_metadata(directory)?)?;
     let mut entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
+    entries.sort_by_key(fs_err::DirEntry::file_name);
     for entry in entries {
         let path = entry.path();
         if entry.file_type()?.is_dir() {

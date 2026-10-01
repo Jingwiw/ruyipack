@@ -24,7 +24,7 @@ use tempfile::TempDir;
 use super::support;
 use super::support::git;
 
-const DOCKER: &str = r#"#!/usr/bin/env python3
+const DOCKER: &str = r"#!/usr/bin/env python3
 import hashlib, json, os, pathlib, shutil, sys, time
 args = sys.argv[1:]
 state = pathlib.Path(os.environ['RPK_FAKE_STATE'])
@@ -92,7 +92,7 @@ elif args[0] in ('container', 'network', 'volume'):
     elif operation != 'rm': raise AssertionError(args)
 elif args[0] in ('start', 'kill', 'stop'): pass
 else: raise AssertionError(args)
-"#;
+";
 
 struct Fixture {
     root: TempDir,
@@ -1147,7 +1147,7 @@ fn shell_reuses_the_owned_worker_and_stops_it_without_rewriting_the_build_receip
             .unwrap();
         assert_eq!(
             result.status.code(),
-            Some(if mode.is_empty() { 0 } else { 1 }),
+            Some(i32::from(!mode.is_empty())),
             "{result:?}"
         );
         assert_eq!(

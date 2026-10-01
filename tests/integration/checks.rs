@@ -39,8 +39,8 @@ fn spec_license_uses_spdx_checks_without_changing_the_package_license() {
             .contains("spec.license")
     );
     let span = &finding["span"];
-    let start = span["start_byte"].as_integer().unwrap() as usize;
-    let end = span["end_byte"].as_integer().unwrap() as usize;
+    let start = usize::try_from(span["start_byte"].as_integer().unwrap()).unwrap();
+    let end = usize::try_from(span["end_byte"].as_integer().unwrap()).unwrap();
     assert_eq!(
         &invalid[start..end],
         SPEC_LICENSE.replace("MulanPSL-2.0", "not-a-real-license")
@@ -615,7 +615,7 @@ fn static_policy_changes_admission_without_inventing_source_facts() {
             true,
             true,
         ),
-        ("".into(), false, false),
+        (String::new(), false, false),
     ] {
         let source = format!("{}{}{}", &SPEC[..start], declarations, &SPEC[end..]);
         let _ = fs::remove_dir_all(dir.path().join(".ruyipack-stage"));
@@ -688,8 +688,8 @@ fn static_policy_changes_admission_without_inventing_source_facts() {
                 );
                 let span = &findings[0]["span"];
                 assert!(
-                    source[span["start_byte"].as_integer().unwrap() as usize
-                        ..span["end_byte"].as_integer().unwrap() as usize]
+                    source[usize::try_from(span["start_byte"].as_integer().unwrap()).unwrap()
+                        ..usize::try_from(span["end_byte"].as_integer().unwrap()).unwrap()]
                         .starts_with("Source0:")
                 );
             }

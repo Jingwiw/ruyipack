@@ -145,29 +145,29 @@ pub(crate) fn run(mut options: Options) -> Result<bool, EditError> {
 
 fn input(
     path: PathBuf,
-    parsed: ParsedSpec<'_>,
-    fields: Vec<String>,
+    parsed: &ParsedSpec<'_>,
+    fields: &[String],
     safe: bool,
     stage_dir: PathBuf,
     draft: Option<PathBuf>,
     checked: bool,
 ) -> Result<Edit, EditError> {
     let snapshot = if safe {
-        Snapshot::capture_supported(&parsed)
+        Snapshot::capture_supported(parsed)
     } else {
-        Snapshot::capture_selected(&parsed, &fields)
+        Snapshot::capture_selected(parsed, fields)
     }
     .map_err(|error| {
         EditError::at(
             Kind::UnmappableFields,
             &path,
-            &fields,
+            fields,
             format!("{}: {error}", path.display()),
         )
     })?
     .into_owned();
     let baseline =
-        checked.then(|| crate::check::analyze(&parsed, crate::check::Policy::Authoring, &[]));
+        checked.then(|| crate::check::analyze(parsed, crate::check::Policy::Authoring, &[]));
     Ok(Edit {
         subject: path.clone(),
         path,
@@ -200,8 +200,8 @@ fn load_inputs(options: &Options) -> Result<Vec<Edit>, EditError> {
                     .to_owned();
                 input(
                     draft.source,
-                    ParsedSpec::parse(draft.original),
-                    draft.fields,
+                    &ParsedSpec::parse(draft.original),
+                    &draft.fields,
                     false,
                     stage_dir,
                     Some(draft.path),
@@ -289,7 +289,7 @@ fn load_inputs(options: &Options) -> Result<Vec<Edit>, EditError> {
                 let expand = union != previous;
                 (union, Some(draft.path), false, expand)
             } else { (selected, None, safe, false) };
-            let mut item = input(requested, parsed, selected, safe, stage_dir, draft, checked)?;
+            let mut item = input(requested, &parsed, &selected, safe, stage_dir, draft, checked)?;
             item.development = development;
             item.committed_main = committed_main;
             item.expand_stage = expand_stage;

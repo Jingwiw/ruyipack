@@ -71,7 +71,7 @@ fn resolve_with_patches(
     {
         return Err("parser errors prevent Source resolution".into());
     }
-    let mut walk = Sources {
+    let mut walk = Resolver {
         spec,
         context: Context::from_defines(defines)?,
         next: Some(0),
@@ -90,7 +90,7 @@ fn resolve_with_patches(
     })
 }
 
-struct Sources<'a> {
+struct Resolver<'a> {
     spec: &'a ParsedSpec<'a>,
     context: Context,
     next: Option<u32>,
@@ -102,7 +102,7 @@ struct Sources<'a> {
     seen: BTreeSet<&'static str>,
 }
 
-impl Sources<'_> {
+impl Resolver<'_> {
     fn items(&mut self, items: &[SpecItem<Span>]) -> Result<(), String> {
         for item in items {
             match item {

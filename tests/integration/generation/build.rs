@@ -226,14 +226,14 @@ fn explicit_stages_work_without_build_system_defaults() {
     let source = MANIFEST
         .replace("system = \"autotools\"\n", "")
         .replace("\"autoconf\", \"automake\", \"libtool\", ", "");
-    let extra = r#"
+    let extra = r"
 [build.stages.prep]
 replace = '%autosetup -p1'
 [build.stages.install]
 prepend = 'echo before-install'
 replace = '%make_install'
 append = 'echo after-install'
-"#;
+";
     let expected = SPEC.replace("BuildSystem:    autotools\n", "").replace(
         "BuildRequires:  autoconf\nBuildRequires:  automake\nBuildRequires:  libtool\n",
         "",

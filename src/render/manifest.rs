@@ -691,14 +691,14 @@ fn validate_source_url(field: &str, value: &str, package: &PackageInput) -> Resu
     let url = resolve_source(value, &package.name, &package.version, &package.url)
         .and_then(|resolved| crate::source::validate_authoring_url(&resolved))
         .map_err(|reason| format!("{field}: {reason}"))?;
-    crate::source::require_https(field, url)
+    crate::source::require_https(field, &url)
 }
 
 fn validate_https_url(field: &str, value: &str) -> Result<(), String> {
     validate_single_line(field, value)?;
     let url = crate::source::validate_authoring_url(value)
         .map_err(|reason| format!("{field}: {reason}"))?;
-    crate::source::require_https(field, url)
+    crate::source::require_https(field, &url)
 }
 
 /// The authoring manifest exposes only these package fields to Source expressions.

@@ -26,7 +26,7 @@ pub(crate) fn check(
 ) {
     let (severity, message) = match literal {
         Some(value) => match validate_expression(value) {
-            Ok(_) => return,
+            Ok(()) => return,
             Err(error) => (
                 RULE.severity,
                 format!("{field}: invalid or unrecognized SPDX expression: {error}"),
