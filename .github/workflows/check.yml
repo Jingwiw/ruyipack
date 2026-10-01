@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 30
     env:
       DENY_VERSION: 0.20.2
+      MACHETE_VERSION: 0.9.2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,7 +31,22 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-bin: false
-      # Cache the tool, not advisory data or successful audit results.
+      # Cache tools, not advisory data or successful audit results.
+      - name: Cache cargo-machete
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cargo-machete
+          key: cargo-machete-${{ runner.os }}-${{ runner.arch }}-ubuntu-24.04-${{ env.MACHETE_VERSION }}-${{ hashFiles('rust-toolchain.toml') }}
+      - name: Install cargo-machete
+        run: |
+          tool="$RUNNER_TEMP/cargo-machete/bin/cargo-machete"
+          if [ "$("$tool" --version 2>/dev/null || true)" != "$MACHETE_VERSION" ]; then
+            cargo install cargo-machete --version "=$MACHETE_VERSION" --locked --force --root "$RUNNER_TEMP/cargo-machete"
+          fi
+          test "$("$tool" --version)" = "$MACHETE_VERSION"
+          echo "$RUNNER_TEMP/cargo-machete/bin" >> "$GITHUB_PATH"
+      - name: Check unused dependencies
+        run: cargo machete
       - name: Cache cargo-deny
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

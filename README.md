@@ -147,6 +147,13 @@ Install Python 3.11+ with `reuse==6.2.0` and `jsonschema==4.26.0`, plus
 `cargo-deny` 0.20.2 separately. The smoke test exercises the
 installed binary in temporary files.
 
+CI also runs `cargo machete`, pinned in the Check workflow. Only the tool is
+cached; every run scans dependencies without `--fix`. Pre-commit does not require
+it. Review findings before removing dependencies: use
+`package.metadata.cargo-machete.renamed` for import-name mismatches. Any necessary
+`package.metadata.cargo-machete.ignored` entry must have an adjacent comment
+identifying its real consumer and why the scanner misses it.
+
 In a trusted target environment with Python 3, `rpm`, `rpmspec`, and
 `rpm-config-openruyi`, `./scripts/check-native-sources` checks native Source
 numbering and records RPM/macro identities. Pass prepared SPEC paths and
