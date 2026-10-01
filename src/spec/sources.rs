@@ -9,7 +9,7 @@
 
 use super::{ParsedSpec, expression::Context};
 use rpm_spec::{
-    ast::{CommentStyle, PreambleContent, Section, Span, SpecItem, Tag},
+    ast::{CommentStyle, Conditional, PreambleContent, PreambleItem, Section, Span, SpecItem, Tag},
     parse_result::Severity,
 };
 use std::{
@@ -108,153 +108,18 @@ impl Resolver<'_> {
             match item {
                 SpecItem::MacroDef(definition) => {
                     if let Err(reason) = self.context.define(definition) {
-                        self.unknown = Some(reason);
-                        self.next = None;
-                        self.next_patch = None;
+                        self.invalidate(reason);
                     }
                 }
-                SpecItem::Preamble(item) => {
-                    let raw = self
-                        .spec
-                        .source
-                        .get(item.data.start_byte..item.data.end_byte)
-                        .ok_or("invalid Source AST range")?;
-                    let expression = raw.split_once(':').ok_or("preamble has no colon")?.1.trim();
-                    // The full AST may recover a malformed macro with only a warning.
-                    // Strict expression parsing must not turn that recovery into a URL.
-                    let value = self.context.expand_str(expression).and_then(|value| {
-                        if value.contains(['\n', '\r', '\0']) {
-                            Err("preamble expansion changes line structure".into())
-                        } else {
-                            Ok(value)
-                        }
-                    });
-                    let material = match item.tag {
-                        Tag::Source(number) => Some((false, number)),
-                        Tag::Patch(number) if self.include_patches => Some((true, number)),
-                        _ => None,
-                    };
-                    if let Some((patch, explicit)) = material {
-                        let number = super::source_number(
-                            if patch {
-                                &mut self.next_patch
-                            } else {
-                                &mut self.next
-                            },
-                            explicit,
-                        )
-                        .ok_or(if patch {
-                            "implicit Patch number is uncertain or overflowed"
-                        } else {
-                            "implicit Source number is uncertain or overflowed"
-                        })?;
-                        if item.lang.is_some() || !item.qualifiers.is_empty() {
-                            return Err(format!(
-                                "qualified {} declarations are unsupported",
-                                if patch { "Patch" } else { "Source" }
-                            ));
-                        }
-                        let url = self
-                            .unknown
-                            .as_ref()
-                            .map_or(value, |reason| Err(reason.clone()));
-                        let source = Source {
-                            span: super::diagnostic::location(item.data),
-                            expression: expression.to_owned(),
-                            digest: self.digest(item.data.start_byte),
-                            url,
-                        };
-                        let unresolved = source.url.as_ref().err().cloned();
-                        if (if patch {
-                            &mut self.patches
-                        } else {
-                            &mut self.sources
-                        })
-                        .insert(number, source)
-                        .is_some()
-                        {
-                            return Err(format!(
-                                "duplicate {}{number}",
-                                if patch { "Patch" } else { "Source" }
-                            ));
-                        }
-                        if let Some(reason) = unresolved {
-                            self.unknown = Some(reason);
-                            self.next = None;
-                            self.next_patch = None;
-                        }
-                    } else {
-                        // Unknown expansions can emit declarations or change macros. The
-                        // shipped Release convention is emitted, not evaluated by this tool.
-                        if let Err(reason) = &value
-                            && !(matches!(item.tag, Tag::Release)
-                                && expression == crate::profile::load().release)
-                        {
-                            self.unknown = Some(reason.clone());
-                            self.next = None;
-                            self.next_patch = None;
-                        }
-                        let name = match item.tag {
-                            Tag::Name => Some("name"),
-                            Tag::Version => Some("version"),
-                            Tag::URL => Some("url"),
-                            Tag::Release => Some("release"),
-                            _ => None,
-                        };
-                        if let Some(name) = name {
-                            let value = if !self.seen.insert(name)
-                                || item.lang.is_some()
-                                || !item.qualifiers.is_empty()
-                            {
-                                Err(format!("ambiguous package field {name}"))
-                            } else {
-                                value
-                            };
-                            self.context.literal(name, value);
-                        }
-                    }
-                }
-                SpecItem::Conditional(condition) => {
-                    let mut selected = condition.otherwise.as_deref();
-                    for branch in &condition.branches {
-                        match self.context.condition(branch.kind, &branch.expr) {
-                            Ok(true) => {
-                                selected = Some(&branch.body);
-                                break;
-                            }
-                            Ok(false) => {}
-                            Err(reason) => {
-                                let reason = format!(
-                                    "line {}: conditional is unresolved: {reason}",
-                                    condition.data.start_line
-                                );
-                                self.unknown = Some(reason.clone());
-                                self.next = None;
-                                self.next_patch = None;
-                                for branch in &condition.branches {
-                                    self.uncertain(&branch.body, &reason)?;
-                                }
-                                if let Some(body) = &condition.otherwise {
-                                    self.uncertain(body, &reason)?;
-                                }
-                                selected = None;
-                                break;
-                            }
-                        }
-                    }
-                    if let Some(body) = selected {
-                        self.items(body)?;
-                    }
-                }
+                SpecItem::Preamble(item) => self.preamble(item)?,
+                SpecItem::Conditional(condition) => self.conditional(condition)?,
                 SpecItem::Statement(reference)
                     if self
                         .context
                         .expand(&rpm_spec::ast::Text::from(reference.as_ref().clone()))
                         .is_ok_and(|value| value.is_empty()) => {}
                 SpecItem::Include(_) | SpecItem::Statement(_) => {
-                    self.unknown = Some("Source context is unavailable or ambiguous after an include or top-level invocation; not executed".into());
-                    self.next = None;
-                    self.next_patch = None;
+                    self.invalidate("Source context is unavailable or ambiguous after an include or top-level invocation; not executed".into());
                 }
                 SpecItem::Comment(comment)
                     if comment.style == CommentStyle::Hash
@@ -267,10 +132,9 @@ impl Resolver<'_> {
                         .expand(&comment.text)
                         .is_ok_and(|text| !text.contains(['\n', '\r', '\0']))
                     {
-                        self.unknown =
-                            Some("macro-bearing comment has unknown effects; not executed".into());
-                        self.next = None;
-                        self.next_patch = None;
+                        self.invalidate(
+                            "macro-bearing comment has unknown effects; not executed".into(),
+                        );
                     }
                 }
                 SpecItem::BuildCondition(condition) => {
@@ -280,10 +144,7 @@ impl Resolver<'_> {
                             .expand(default)
                             .is_ok_and(|text| !text.contains(['\n', '\r', '\0']))
                     {
-                        self.unknown =
-                            Some("build condition default has unknown macro effects".into());
-                        self.next = None;
-                        self.next_patch = None;
+                        self.invalidate("build condition default has unknown macro effects".into());
                     }
                 }
                 SpecItem::Section(section) if matches!(section.as_ref(), Section::Package { content, .. } if subpackage_sources(content, self.include_patches)) =>
@@ -306,6 +167,143 @@ impl Resolver<'_> {
             }
         }
         Ok(())
+    }
+
+    fn preamble(&mut self, item: &PreambleItem<Span>) -> Result<(), String> {
+        let raw = self
+            .spec
+            .source
+            .get(item.data.start_byte..item.data.end_byte)
+            .ok_or("invalid Source AST range")?;
+        let expression = raw.split_once(':').ok_or("preamble has no colon")?.1.trim();
+        // The full AST may recover a malformed macro with only a warning.
+        // Strict expression parsing must not turn that recovery into a URL.
+        let value = self.context.expand_str(expression).and_then(|value| {
+            if value.contains(['\n', '\r', '\0']) {
+                Err("preamble expansion changes line structure".into())
+            } else {
+                Ok(value)
+            }
+        });
+        let material = match item.tag {
+            Tag::Source(number) => Some((false, number)),
+            Tag::Patch(number) if self.include_patches => Some((true, number)),
+            _ => None,
+        };
+        if let Some((patch, explicit)) = material {
+            let number = super::source_number(
+                if patch {
+                    &mut self.next_patch
+                } else {
+                    &mut self.next
+                },
+                explicit,
+            )
+            .ok_or(if patch {
+                "implicit Patch number is uncertain or overflowed"
+            } else {
+                "implicit Source number is uncertain or overflowed"
+            })?;
+            if item.lang.is_some() || !item.qualifiers.is_empty() {
+                return Err(format!(
+                    "qualified {} declarations are unsupported",
+                    if patch { "Patch" } else { "Source" }
+                ));
+            }
+            let url = self
+                .unknown
+                .as_ref()
+                .map_or(value, |reason| Err(reason.clone()));
+            let source = Source {
+                span: super::diagnostic::location(item.data),
+                expression: expression.to_owned(),
+                digest: self.digest(item.data.start_byte),
+                url,
+            };
+            let unresolved = source.url.as_ref().err().cloned();
+            if (if patch {
+                &mut self.patches
+            } else {
+                &mut self.sources
+            })
+            .insert(number, source)
+            .is_some()
+            {
+                return Err(format!(
+                    "duplicate {}{number}",
+                    if patch { "Patch" } else { "Source" }
+                ));
+            }
+            if let Some(reason) = unresolved {
+                self.invalidate(reason);
+            }
+        } else {
+            // Unknown expansions can emit declarations or change macros. The
+            // shipped Release convention is emitted, not evaluated by this tool.
+            if let Err(reason) = &value
+                && !(matches!(item.tag, Tag::Release)
+                    && expression == crate::profile::load().release)
+            {
+                self.invalidate(reason.clone());
+            }
+            let name = match item.tag {
+                Tag::Name => Some("name"),
+                Tag::Version => Some("version"),
+                Tag::URL => Some("url"),
+                Tag::Release => Some("release"),
+                _ => None,
+            };
+            if let Some(name) = name {
+                let value = if !self.seen.insert(name)
+                    || item.lang.is_some()
+                    || !item.qualifiers.is_empty()
+                {
+                    Err(format!("ambiguous package field {name}"))
+                } else {
+                    value
+                };
+                self.context.literal(name, value);
+            }
+        }
+        Ok(())
+    }
+
+    fn conditional(&mut self, condition: &Conditional<Span, SpecItem<Span>>) -> Result<(), String> {
+        let mut selected = condition.otherwise.as_deref();
+        for branch in &condition.branches {
+            match self.context.condition(branch.kind, &branch.expr) {
+                Ok(true) => {
+                    selected = Some(&branch.body);
+                    break;
+                }
+                Ok(false) => {}
+                Err(reason) => {
+                    let reason = format!(
+                        "line {}: conditional is unresolved: {reason}",
+                        condition.data.start_line
+                    );
+                    self.invalidate(reason.clone());
+                    for branch in &condition.branches {
+                        self.uncertain(&branch.body, &reason)?;
+                    }
+                    if let Some(body) = &condition.otherwise {
+                        self.uncertain(body, &reason)?;
+                    }
+                    selected = None;
+                    break;
+                }
+            }
+        }
+        if let Some(body) = selected {
+            self.items(body)?;
+        }
+        Ok(())
+    }
+
+    fn invalidate(&mut self, reason: String) {
+        self.unknown = Some(reason);
+        self.next = None;
+        self.next_patch = None;
     }
 
     fn uncertain(&mut self, items: &[SpecItem<Span>], reason: &str) -> Result<(), String> {
@@ -331,9 +329,7 @@ impl Resolver<'_> {
                     }
                 }
                 SpecItem::Include(_) | SpecItem::Statement(_) => {
-                    self.unknown = Some(reason.to_owned());
-                    self.next = None;
-                    self.next_patch = None;
+                    self.invalidate(reason.to_owned());
                 }
                 _ => {}
             }

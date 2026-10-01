@@ -6,7 +6,13 @@
 
 //! The six required-tag rules, without constructing the analyzer's full registry.
 
-use rpm_spec_analyzer::{Lint, rules::missing_tag::*};
+use rpm_spec_analyzer::{
+    Lint,
+    rules::missing_tag::{
+        MissingLicenseTag, MissingNameTag, MissingReleaseTag, MissingSummaryTag, MissingUrlTag,
+        MissingVersionTag,
+    },
+};
 
 use crate::check_report::{Finding, SelectedRule, Severity};
 

@@ -53,12 +53,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
     let parsed = ParsedSpec::parse(&input.source);
     let mut output = io::stdout().lock();
     if options.editable {
-        let selection = if options.all {
-            &[][..]
-        } else {
-            &options.fields
-        };
-        let snapshot = Snapshot::capture_selected(&parsed, selection).map_err(|error| {
+        let snapshot = Snapshot::capture_selected(&parsed, &options.fields).map_err(|error| {
             ReportError::Projection(format!("{}: {error}", input.path.display()))
         })?;
         let document = toml::to_string_pretty(snapshot.document())

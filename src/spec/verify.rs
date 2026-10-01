@@ -22,7 +22,7 @@ use rpm_spec::{
         FilesContent, PackageName, PreambleContent, PreambleItem, Section, Span, SpecItem,
         SubpkgRef, Tag, TagValue, Text, TextSegment,
     },
-    parser::{Input, ParserState, deps::parse_dep_expr, text::parse_text},
+    parser::{ParserState, deps::parse_dep_expr},
 };
 
 type ExpectedTag = (Tag, Option<&'static str>, TagValue);
@@ -47,65 +47,7 @@ pub(crate) fn run(
         )));
     }
 
-    let package = &manifest.package;
-    let mut tags = Vec::new();
-    for (tag, value) in [
-        (Tag::Name, package.name.as_str()),
-        (Tag::Version, &package.version),
-        (Tag::Release, &profile.release),
-        (Tag::License, &package.license),
-        (Tag::URL, &package.url),
-    ] {
-        tags.push((tag, None, TagValue::Text(text(value)?)));
-    }
-    if manifest.package.noarch {
-        tags.push((
-            Tag::BuildArch,
-            None,
-            TagValue::ArchList(vec![text("noarch")?]),
-        ));
-    }
-    if let Some(system) = &manifest.build.system {
-        tags.push((
-            Tag::Other("BuildSystem".into()),
-            None,
-            TagValue::Text(text(system)?),
-        ));
-    }
-    if let Vcs::Git(url) = &package.vcs {
-        tags.push((Tag::VCS, None, TagValue::Text(text(&format!("git:{url}"))?)));
-    }
-    for (number, source) in &manifest.sources {
-        tags.push((
-            Tag::Source(Some(*number)),
-            None,
-            TagValue::Text(text(source.value())?),
-        ));
-    }
-    for (number, patch) in &manifest.patches {
-        tags.push((
-            Tag::Patch(Some(*number)),
-            None,
-            TagValue::Text(text(&patch.path)?),
-        ));
-    }
-    for (stage, config) in &manifest.build.stages {
-        for option in &config.options {
-            // rpm-spec stores an unknown tag's parenthesized argument in `lang`.
-            tags.push((
-                Tag::Other("BuildOption".into()),
-                Some(stage.as_str()),
-                TagValue::Text(text(option)?),
-            ));
-        }
-    }
-    dependency_tags(
-        &mut tags,
-        &Tag::BuildRequires,
-        &manifest.build_requires.rpm,
-        "build-requires.rpm",
-    )?;
-    tags.extend(body_tags(&package.body, "package")?);
+    let mut tags = expected_tags(manifest, profile)?;
 
     let mut patch_order = manifest.patches.iter().map(|(number, _)| *number);
     let mut comments = Vec::new();
@@ -149,33 +91,23 @@ pub(crate) fn run(
     }
     check(tags.is_empty(), "missing main-package tags")?;
 
-    let mut expected_comments = Vec::new();
-    for holder in &profile.copyright_holders {
-        expected_comments.push(text(&format!(
-            "SPDX-FileCopyrightText: (C) {} {holder}",
-            manifest.spec.copyright_years
-        ))?);
-    }
-    for contributor in &manifest.spec.contributors {
-        expected_comments.push(text(&format!("SPDX-FileContributor: {contributor}"))?);
-    }
-    // Keep the generated marker split so REUSE does not read it as this source file's license.
-    expected_comments.push(text(
-        &["SPDX-License-", "Identifier: ", &profile.spec_license].concat(),
-    )?);
-    if matches!(package.vcs, Vcs::NoPublicRepository) {
-        expected_comments.push(comment_text(&profile.no_public_vcs_comment)?);
-    }
-    for (_, source) in &manifest.sources {
-        if let Source::Remote { sha256, .. } = source {
-            expected_comments.push(comment_text(&profile.remote_asset(sha256.as_deref()))?);
-        }
-    }
     check(
-        comments.iter().copied().eq(expected_comments.iter()),
+        comments
+            .iter()
+            .copied()
+            .eq(expected_comments(manifest, profile)?.iter()),
         "SPEC metadata",
     )?;
+    verify_sections(sections, source, manifest, profile)
+}
 
+fn verify_sections(
+    sections: Vec<&Section<Span>>,
+    source: &str,
+    manifest: &Manifest,
+    profile: &Profile,
+) -> Result<(), RenderError> {
+    let package = &manifest.package;
     // Consume the complete generated sequence. Extra sections are not ignored,
     // and every subpackage reference must retain its declared naming form.
     let mut sections = sections.into_iter();
@@ -240,6 +172,96 @@ pub(crate) fn run(
         "changelog",
     )?;
     check(sections.next().is_none(), "unexpected sections")
+}
+
+fn expected_tags(manifest: &Manifest, profile: &Profile) -> Result<Vec<ExpectedTag>, RenderError> {
+    let package = &manifest.package;
+    let mut tags = Vec::new();
+    for (tag, value) in [
+        (Tag::Name, package.name.as_str()),
+        (Tag::Version, &package.version),
+        (Tag::Release, &profile.release),
+        (Tag::License, &package.license),
+        (Tag::URL, &package.url),
+    ] {
+        tags.push((tag, None, TagValue::Text(text(value)?)));
+    }
+    if manifest.package.noarch {
+        tags.push((
+            Tag::BuildArch,
+            None,
+            TagValue::ArchList(vec![text("noarch")?]),
+        ));
+    }
+    if let Some(system) = &manifest.build.system {
+        tags.push((
+            Tag::Other("BuildSystem".into()),
+            None,
+            TagValue::Text(text(system)?),
+        ));
+    }
+    if let Vcs::Git(url) = &package.vcs {
+        tags.push((Tag::VCS, None, TagValue::Text(text(&format!("git:{url}"))?)));
+    }
+    for (number, source) in &manifest.sources {
+        tags.push((
+            Tag::Source(Some(*number)),
+            None,
+            TagValue::Text(text(source.value())?),
+        ));
+    }
+    for (number, patch) in &manifest.patches {
+        tags.push((
+            Tag::Patch(Some(*number)),
+            None,
+            TagValue::Text(text(&patch.path)?),
+        ));
+    }
+    for (stage, config) in &manifest.build.stages {
+        for option in &config.options {
+            // rpm-spec stores an unknown tag's parenthesized argument in `lang`.
+            tags.push((
+                Tag::Other("BuildOption".into()),
+                Some(stage.as_str()),
+                TagValue::Text(text(option)?),
+            ));
+        }
+    }
+    dependency_tags(
+        &mut tags,
+        &Tag::BuildRequires,
+        &manifest.build_requires.rpm,
+        "build-requires.rpm",
+    )?;
+    tags.extend(body_tags(&package.body, "package")?);
+
+    Ok(tags)
+}
+
+fn expected_comments(manifest: &Manifest, profile: &Profile) -> Result<Vec<Text>, RenderError> {
+    let mut expected_comments = Vec::new();
+    for holder in &profile.copyright_holders {
+        expected_comments.push(text(&format!(
+            "SPDX-FileCopyrightText: (C) {} {holder}",
+            manifest.spec.copyright_years
+        ))?);
+    }
+    for contributor in &manifest.spec.contributors {
+        expected_comments.push(text(&format!("SPDX-FileContributor: {contributor}"))?);
+    }
+    // Keep the generated marker split so REUSE does not read it as this source file's license.
+    expected_comments.push(text(
+        &["SPDX-License-", "Identifier: ", &profile.spec_license].concat(),
+    )?);
+    if matches!(manifest.package.vcs, Vcs::NoPublicRepository) {
+        expected_comments.push(comment_text(&profile.no_public_vcs_comment)?);
+    }
+    for (_, source) in &manifest.sources {
+        if let Source::Remote { sha256, .. } = source {
+            expected_comments.push(comment_text(&profile.remote_asset(sha256.as_deref()))?);
+        }
+    }
+    Ok(expected_comments)
 }
 
 fn body_tags(body: &PackageBody, field: &str) -> Result<Vec<ExpectedTag>, RenderError> {
@@ -516,14 +538,7 @@ fn files(
 
 /// Parses expressions for comparison without evaluating or rewriting their macros.
 fn text(value: &str) -> Result<Text, RenderError> {
-    let state = ParserState::new();
-    let (rest, parsed) = parse_text(&state, Input::new(value), &|_| false)
-        .map_err(|_| mismatch("input expression"))?;
-    check(
-        rest.fragment().is_empty() && state.diagnostics.borrow().is_empty(),
-        "input expression",
-    )?;
-    Ok(parsed)
+    super::expression::parse(value).map_err(|_| mismatch("input expression"))
 }
 
 fn comment_text(value: &str) -> Result<Text, RenderError> {

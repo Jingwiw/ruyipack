@@ -66,21 +66,25 @@ fn consistent_endpoints(source: &str, span: Span) -> bool {
     if source.get(span.start_byte..span.end_byte).is_none() {
         return false;
     }
-    [
+    let mut newlines = source.match_indices('\n').peekable();
+    let mut line = 1usize;
+    let mut line_start = 0;
+    for (offset, expected) in [
         (span.start_byte, (span.start_line, span.start_column)),
         (span.end_byte, (span.end_line, span.end_column)),
-    ]
-    .into_iter()
-    .all(|(offset, expected)| {
-        let prefix = &source.as_bytes()[..offset];
-        let line = prefix.iter().filter(|&&byte| byte == b'\n').count() + 1;
-        let column = prefix
-            .iter()
-            .rposition(|&byte| byte == b'\n')
-            .map_or(offset + 1, |newline| offset - newline);
-        u32::try_from(line).ok() == Some(expected.0)
-            && u32::try_from(column).ok() == Some(expected.1)
-    })
+    ] {
+        while let Some(&(newline, _)) = newlines.peek().filter(|(newline, _)| *newline < offset) {
+            line += 1;
+            line_start = newline + 1;
+            newlines.next();
+        }
+        if u32::try_from(line).ok() != Some(expected.0)
+            || u32::try_from(offset - line_start + 1).ok() != Some(expected.1)
+        {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]

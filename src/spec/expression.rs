@@ -137,7 +137,8 @@ impl Context {
                         let definition = definition.as_ref().map_err(Clone::clone)?;
                         if matches!(reference.conditional, ConditionalMacro::IfNotDefined) {
                             continue;
-                        } else if let Some(value) = &reference.with_value {
+                        }
+                        if let Some(value) = &reference.with_value {
                             self.expand_into(value, stack, depth + 1, output)?;
                         } else {
                             if stack.contains(&name) {
@@ -260,7 +261,8 @@ fn integer(value: &str) -> Result<i64, String> {
         .map_err(|_| format!("condition is not a supported integer: {value:?}"))
 }
 
-fn parse(value: &str) -> Result<Text, String> {
+/// Parse a complete expression without evaluating macros or accepting parser recovery.
+pub(super) fn parse(value: &str) -> Result<Text, String> {
     let state = ParserState::new();
     let (rest, text) = parse_text(&state, Input::new(value), &|_| false)
         .map_err(|_| "unsupported or invalid RPM source expression".to_owned())?;

@@ -93,45 +93,7 @@ impl Snapshot<'_> {
             }
             self.replace_list(list, &values, field, &list.prefix, &mut changes)?;
         }
-        if let Some(copyright) = &self.copyright {
-            let years = if self.selects("spec.copyright-years") {
-                string(edited, "spec.copyright-years")?
-            } else {
-                &self.source[copyright.years[0].clone()]
-            };
-            crate::spec_metadata::validate_years(years)?;
-            let holders = if self.selects("spec.copyright-holders") {
-                strings(edited, "spec.copyright-holders")?
-            } else {
-                copyright
-                    .holders
-                    .items
-                    .iter()
-                    .map(|range| &self.source[range.clone()])
-                    .collect()
-            };
-            if holders.is_empty() {
-                return Err("spec.copyright-holders: cannot remove every holder while copyright-years is present".into());
-            }
-            for holder in &holders {
-                validate_text(holder, "spec.copyright-holders", false)?;
-            }
-            if holders.len() == copyright.holders.items.len() {
-                for range in &copyright.years {
-                    if years != &self.source[range.clone()] {
-                        changes.push((range.clone(), years.to_owned()));
-                    }
-                }
-            }
-            let prefix = format!("# SPDX-FileCopyrightText: (C) {years} ");
-            self.replace_list(
-                &copyright.holders,
-                &holders,
-                "spec.copyright-holders",
-                &prefix,
-                &mut changes,
-            )?;
-        }
+        self.replace_copyright(edited, &mut changes)?;
         changes.sort_by_key(|(range, _)| range.start);
         if changes
             .array_windows::<2>()
@@ -170,6 +132,53 @@ impl Snapshot<'_> {
             }
         }
         Ok(parsed)
+    }
+
+    fn replace_copyright(
+        &self,
+        edited: &Table,
+        changes: &mut Vec<(Range<usize>, String)>,
+    ) -> Result<(), String> {
+        if let Some(copyright) = &self.copyright {
+            let years = if self.selects("spec.copyright-years") {
+                string(edited, "spec.copyright-years")?
+            } else {
+                &self.source[copyright.years[0].clone()]
+            };
+            crate::spec_metadata::validate_years(years)?;
+            let holders = if self.selects("spec.copyright-holders") {
+                strings(edited, "spec.copyright-holders")?
+            } else {
+                copyright
+                    .holders
+                    .items
+                    .iter()
+                    .map(|range| &self.source[range.clone()])
+                    .collect()
+            };
+            if holders.is_empty() {
+                return Err("spec.copyright-holders: cannot remove every holder while copyright-years is present".into());
+            }
+            for holder in &holders {
+                validate_text(holder, "spec.copyright-holders", false)?;
+            }
+            if holders.len() == copyright.holders.items.len() {
+                for range in &copyright.years {
+                    if years != &self.source[range.clone()] {
+                        changes.push((range.clone(), years.to_owned()));
+                    }
+                }
+            }
+            let prefix = format!("# SPDX-FileCopyrightText: (C) {years} ");
+            self.replace_list(
+                &copyright.holders,
+                &holders,
+                "spec.copyright-holders",
+                &prefix,
+                changes,
+            )?;
+        }
+        Ok(())
     }
 
     fn replace_list(
@@ -212,10 +221,10 @@ impl Snapshot<'_> {
                 changes.push((range.clone(), String::new()));
             }
         } else {
-            let first = list.lines.first().ok_or_else(|| {
+            let first_line = list.lines.first().ok_or_else(|| {
                 format!("{field}: adding a previously absent group is unsupported")
             })?;
-            let last = list
+            let last_line = list
                 .lines
                 .last()
                 .ok_or_else(|| format!("{field}: missing group"))?;
@@ -234,10 +243,10 @@ impl Snapshot<'_> {
                 replacement.push_str(value);
                 replacement.push('\n');
             }
-            if !self.source[first.start..last.end].ends_with('\n') {
+            if !self.source[first_line.start..last_line.end].ends_with('\n') {
                 replacement.pop();
             }
-            changes.push((first.start..last.end, replacement));
+            changes.push((first_line.start..last_line.end, replacement));
         }
         Ok(())
     }

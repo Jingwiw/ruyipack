@@ -73,7 +73,7 @@ fn validate_table_shape(original: &Table, edited: &Table, parent: &str) -> Resul
         })?;
         match (value, changed) {
             (Value::Table(original), Value::Table(edited)) => {
-                validate_table_shape(original, edited, &field)?
+                validate_table_shape(original, edited, &field)?;
             }
             (Value::Array(_), Value::Array(edited)) if edited.iter().all(Value::is_str) => {}
             (Value::String(_), Value::String(_)) => {}

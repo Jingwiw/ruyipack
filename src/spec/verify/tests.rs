@@ -15,6 +15,19 @@ use crate::{
 
 const MANIFEST: &str = include_str!("../../../examples/ed/ed.toml");
 
+#[track_caller]
+fn rejected(manifest: &manifest::Manifest, changed: &str) -> String {
+    let parsed = ParsedSpec::parse(changed);
+    assert!(
+        parsed.parsed.diagnostics.is_empty(),
+        "not a clean parser result: {changed}"
+    );
+    match run(&parsed, manifest, profile::load()) {
+        Ok(()) => panic!("accepted changed SPEC:\n{changed}"),
+        Err(error) => error.to_string(),
+    }
+}
+
 #[test]
 fn rejects_changed_facts_even_when_the_spec_still_parses() {
     let input = MANIFEST
@@ -123,12 +136,7 @@ fn rejects_changed_facts_even_when_the_spec_still_parses() {
     ] {
         let changed = original.replacen(before, after, 1);
         assert_ne!(changed, original, "mutation did not apply: {before}");
-        let parsed = ParsedSpec::parse(&changed);
-        assert!(
-            parsed.parsed.diagnostics.is_empty(),
-            "not a clean parser result: {before}"
-        );
-        let error = run(&parsed, &manifest, profile).unwrap_err().to_string();
+        let error = rejected(&manifest, &changed);
         assert!(error.contains(field), "{before}: {error}");
     }
 }
@@ -150,12 +158,7 @@ fn rejects_changed_vcs_declarations() {
             "# VCS: No VCS link available\n",
         ] {
             let changed = original.replace("BuildSystem:", &format!("{declaration}BuildSystem:"));
-            let parsed = ParsedSpec::parse(&changed);
-            assert!(parsed.parsed.diagnostics.is_empty());
-            assert!(
-                run(&parsed, &manifest, profile).is_err(),
-                "{choice}: {declaration}"
-            );
+            rejected(&manifest, &changed);
         }
         if choice.starts_with("git =") {
             for replacement in ["", "VCS: git:https://example.org/another.git\n"] {
@@ -163,9 +166,7 @@ fn rejects_changed_vcs_declarations() {
                     "VCS:            git:https://example.org/project.git\n",
                     replacement,
                 );
-                let parsed = ParsedSpec::parse(&changed);
-                assert!(parsed.parsed.diagnostics.is_empty());
-                assert!(run(&parsed, &manifest, profile).is_err());
+                rejected(&manifest, &changed);
             }
         }
     }
@@ -188,9 +189,7 @@ fn rejects_missing_duplicate_and_unexpected_units() {
         ),
         original.replace("\n%changelog\n%autochangelog\n", ""),
     ] {
-        let parsed = ParsedSpec::parse(&changed);
-        assert!(parsed.parsed.diagnostics.is_empty());
-        assert!(run(&parsed, &manifest, profile).is_err());
+        rejected(&manifest, &changed);
     }
 }
 
@@ -217,14 +216,7 @@ fn keeps_each_checksum_bound_to_its_source() {
     lines[positions[1]] = source_lines[0];
     // All tags and all comments remain present; only their association is wrong.
     let changed = lines.join("\n") + "\n";
-    let parsed = ParsedSpec::parse(&changed);
-    assert!(parsed.parsed.diagnostics.is_empty());
-    assert!(
-        run(&parsed, &manifest, profile)
-            .unwrap_err()
-            .to_string()
-            .contains("sources.2.sha256")
-    );
+    assert!(rejected(&manifest, &changed).contains("sources.2.sha256"));
 }
 
 #[test]
@@ -255,14 +247,7 @@ fn preserves_remote_asset_marker_bytes() {
 
     let changed = original.replacen("#!RemoteAsset:", "# !RemoteAsset:", 1);
     assert_ne!(changed, original);
-    let parsed = ParsedSpec::parse(&changed);
-    assert!(parsed.parsed.diagnostics.is_empty());
-    assert!(
-        run(&parsed, &manifest, profile)
-            .unwrap_err()
-            .to_string()
-            .contains("sources.0.sha256")
-    );
+    assert!(rejected(&manifest, &changed).contains("sources.0.sha256"));
 }
 
 fn rejects_mutations(input: &str, mutations: &[(&str, &str)]) {
@@ -275,9 +260,7 @@ fn rejects_mutations(input: &str, mutations: &[(&str, &str)]) {
     for &(before, after) in mutations {
         let changed = original.replacen(before, after, 1);
         assert_ne!(changed, original, "mutation did not apply: {before}");
-        let parsed = ParsedSpec::parse(&changed);
-        assert!(parsed.parsed.diagnostics.is_empty(), "{before}");
-        assert!(run(&parsed, &manifest, profile).is_err(), "{before}");
+        rejected(&manifest, &changed);
     }
 }
 
@@ -504,15 +487,7 @@ fn subpackages_reject_missing_duplicate_and_unexpected_units() {
     ] {
         let changed = original.replacen(before, after, 1);
         assert_ne!(changed, original, "mutation did not apply: {before}");
-        let parsed = ParsedSpec::parse(&changed);
-        assert!(
-            parsed.parsed.diagnostics.is_empty(),
-            "not a clean parser result: {before}"
-        );
-        assert!(
-            run(&parsed, &manifest, profile).is_err(),
-            "accepted: {before}"
-        );
+        rejected(&manifest, &changed);
     }
     let extra_tail = format!("{original}\n%files unexpected\n");
     let parsed = ParsedSpec::parse(&extra_tail);
@@ -550,11 +525,6 @@ fn subpackage_facts_cannot_be_moved_between_package_scopes() {
             .replace(right, left)
             .replace("SWAPPED_TEST_FACT", right);
         assert_ne!(changed, original);
-        let parsed = ParsedSpec::parse(&changed);
-        assert!(parsed.parsed.diagnostics.is_empty(), "{left}");
-        assert!(
-            run(&parsed, &manifest, profile).is_err(),
-            "accepted: {left}"
-        );
+        rejected(&manifest, &changed);
     }
 }

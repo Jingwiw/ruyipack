@@ -46,14 +46,10 @@ pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
         Options::Edit(options) => {
             let input = options.input.resolve()?;
             let parsed = ParsedSpec::parse(&input.source);
-            let selection = if options.all {
-                &[][..]
-            } else {
-                &options.fields
-            };
-            let snapshot = Snapshot::capture_selected(&parsed, selection).map_err(|error| {
-                ReportError::Projection(format!("{}: {error}", input.path.display()))
-            })?;
+            let snapshot =
+                Snapshot::capture_selected(&parsed, &options.fields).map_err(|error| {
+                    ReportError::Projection(format!("{}: {error}", input.path.display()))
+                })?;
             schema::generate(snapshot.document())
         }
     };

@@ -7,7 +7,7 @@
 //! Locate selected fields without requiring old values to be valid replacements.
 
 use rpm_spec::{
-    ast::{FileDirective, FilesContent, Section, Span, SpecItem, Tag},
+    ast::{FileDirective, FilesContent, PreambleItem, Section, Span, SpecItem, Tag},
     parse_result::Severity,
 };
 use std::{collections::BTreeMap, ops::Range};
@@ -50,7 +50,6 @@ impl<'src> Snapshot<'src> {
         snapshot.list("spec.contributors", "# SPDX-FileContributor: ");
         snapshot.list("spec.comments", "");
         snapshot.list("build-requires.rpm", "BuildRequires:  ");
-        let profile = crate::profile::load();
         let mut coverage = Vec::new();
         let mut comments = Vec::new();
         let mut consumed_assets = Vec::new();
@@ -92,101 +91,15 @@ impl<'src> Snapshot<'src> {
                     {
                         continue;
                     }
-                    let range = checked_range(source, item.data)?;
-                    coverage.push(range.clone());
-                    let raw = line(source, &range)?;
-                    let (name, value) = raw.split_once(':').ok_or("preamble: missing colon")?;
-                    if !item.qualifiers.is_empty() || item.lang.is_some() {
-                        return Err(format!(
-                            "preamble {name:?}: qualified or localized tag cannot be edited; select a supported field such as --field package.version"
-                        ));
-                    }
-                    let value_start = range.start + name.len() + 1 + value.len()
-                        - value.trim_start_matches([' ', '\t']).len();
-                    let value_end = range.start + raw.trim_end_matches([' ', '\t']).len();
-                    let value_range = value_start..value_end;
-                    let (field, expected) = match &item.tag {
-                        Tag::BuildRequires => {
-                            if !name.trim().eq_ignore_ascii_case("BuildRequires") {
-                                return Err("build-requires.rpm: AST/source header mismatch".into());
-                            }
-                            snapshot.list_item("build-requires.rpm", value_range, range)?;
-                            continue;
-                        }
-                        Tag::Source(_) => {
-                            let number = number.ok_or("sources: unresolved Source number")?;
-                            let identity = format!("sources.{number}");
-                            if lookup(&snapshot.document, &format!("{identity}.url")).is_some() {
-                                return Err(format!("{identity}: duplicate Source identity"));
-                            }
-                            let expected = match &item.tag {
-                                Tag::Source(Some(number)) => format!("Source{number}"),
-                                _ => "Source".to_owned(),
-                            };
-                            let previous =
-                                index.checked_sub(1).and_then(|i| parsed.spec.items.get(i));
-                            let adjacent = if let Some(SpecItem::Comment(previous)) = previous {
-                                let asset = checked_range(source, previous.data)?;
-                                (asset.end == range.start).then_some(asset)
-                            } else {
-                                None
-                            };
-                            let marked = adjacent.filter(|asset| {
-                                source[asset.clone()]
-                                    .starts_with(profile.remote_asset_bare.as_str())
-                            });
-                            let (asset, hash) = if let Some(asset) = marked {
-                                let hash = profile
-                                    .remote_asset_digest(
-                                        source[asset.clone()].trim_end_matches('\n'),
-                                    )
-                                    .map_err(|reason| format!("{identity}.sha256: {reason}"))?
-                                    .unwrap_or("")
-                                    .to_owned();
-                                consumed_assets.push(asset.clone());
-                                (asset, hash)
-                            } else {
-                                // Insert a marker only for a statically known remote Source.
-                                // Local files must never gain RemoteAsset metadata.
-                                let remote = resolved_sources
-                                    .as_ref()
-                                    .and_then(|sources| sources.sources.get(&number))
-                                    .and_then(|source| source.url.as_ref().ok())
-                                    .is_some_and(|url| crate::source::is_remote_url(url));
-                                if !remote {
-                                    return Err(format!(
-                                        "{identity} ({name}): no adjacent RemoteAsset marker; local or unresolved Sources are not editable; select an individual remote Source with --field sources.N"
-                                    ));
-                                }
-                                if let Some(SpecItem::Comment(previous)) = previous
-                                    && source[checked_range(source, previous.data)?]
-                                        .contains("RemoteAsset")
-                                {
-                                    return Err(format!(
-                                        "{identity}.sha256: malformed or nonadjacent RemoteAsset marker"
-                                    ));
-                                }
-                                (range.start..range.start, String::new())
-                            };
-                            let field = format!("{identity}.sha256");
-                            if snapshot.selects(&field) {
-                                insert(&mut snapshot.document, &field, Value::String(hash))?;
-                                snapshot.digest_markers.insert(field, asset);
-                            }
-                            (format!("{identity}.url"), expected)
-                        }
-                        _ => {
-                            let (field, expected) =
-                                scalar_preamble(&item.tag).ok_or_else(|| {
-                                    format!("preamble: unsupported tag {:?}", item.tag)
-                                })?;
-                            (field.to_owned(), expected.to_owned())
-                        }
-                    };
-                    if !name.trim().eq_ignore_ascii_case(&expected) {
-                        return Err(format!("{field}: AST/source header mismatch"));
-                    }
-                    snapshot.scalar(&field, value_range, false)?;
+                    let previous = index.checked_sub(1).and_then(|i| parsed.spec.items.get(i));
+                    coverage.push(snapshot.preamble(
+                        source,
+                        item,
+                        previous,
+                        number,
+                        resolved_sources.as_deref(),
+                        &mut consumed_assets,
+                    )?);
                 }
                 SpecItem::Section(section) => {
                     let selected_section =
@@ -197,43 +110,7 @@ impl<'src> Snapshot<'src> {
                     if !(selection.is_empty() || selected_section || selected_comments) {
                         continue;
                     }
-                    let (name, span) = match section.as_ref() {
-                        Section::Description { subpkg: None, data, .. } => ("description", *data),
-                        Section::Files { subpkg: None, file_lists, data, .. } => {
-                            if !file_lists.is_empty() {
-                                let range = checked_range(source, *data)?;
-                                let header = source[range].lines().next().unwrap_or("%files");
-                                return Err(format!("package.files: external file list in {header:?} is not editable; select another field such as --field package.version"));
-                            }
-                            ("files", *data)
-                        },
-                        Section::Changelog { data, .. } => ("changelog", *data),
-                        _ => return Err("section: only simple main-package description, files and changelog are supported".into()),
-                    };
-                    if sections.contains(&name) {
-                        return Err(format!("{name}: duplicate section"));
-                    }
-                    sections.push(name);
-                    let range = checked_range(source, span)?;
-                    coverage.push(range.clone());
-                    let raw = &source[range.clone()];
-                    let header_end = raw.find('\n').map_or(raw.len(), |i| i + 1);
-                    if raw[..header_end].trim() != format!("%{name}") {
-                        return Err(format!("{name}: unsupported section header"));
-                    }
-                    let body = range.start + header_end..range.end;
-                    match section.as_ref() {
-                        Section::Description { .. } => {
-                            snapshot.scalar("package.description", body, true)?
-                        }
-                        Section::Changelog { .. } => {
-                            snapshot.scalar("spec.changelog", body, true)?
-                        }
-                        Section::Files { content, .. } => {
-                            snapshot.files(content, body, &mut comments)?
-                        }
-                        _ => unreachable!(),
-                    }
+                    coverage.push(snapshot.section(section, &mut sections, &mut comments)?);
                 }
                 SpecItem::Conditional(conditional) if !selection.is_empty() => {
                     for branch in &conditional.branches {
@@ -265,9 +142,150 @@ impl<'src> Snapshot<'src> {
         Ok(snapshot)
     }
 
+    fn preamble(
+        &mut self,
+        source: &str,
+        item: &PreambleItem<Span>,
+        previous: Option<&SpecItem<Span>>,
+        number: Option<u32>,
+        resolved_sources: Option<&crate::spec::sources::Resolution>,
+        consumed_assets: &mut Vec<Range<usize>>,
+    ) -> Result<Range<usize>, String> {
+        let range = checked_range(source, item.data)?;
+        let raw = line(source, &range)?;
+        let (name, value) = raw.split_once(':').ok_or("preamble: missing colon")?;
+        if !item.qualifiers.is_empty() || item.lang.is_some() {
+            return Err(format!(
+                "preamble {name:?}: qualified or localized tag cannot be edited; select a supported field such as --field package.version"
+            ));
+        }
+        let value_start = range.start + name.len() + 1 + value.len()
+            - value.trim_start_matches([' ', '\t']).len();
+        let value_end = range.start + raw.trim_end_matches([' ', '\t']).len();
+        let value_range = value_start..value_end;
+        let (field, expected) = match &item.tag {
+            Tag::BuildRequires => {
+                if !name.trim().eq_ignore_ascii_case("BuildRequires") {
+                    return Err("build-requires.rpm: AST/source header mismatch".into());
+                }
+                self.list_item("build-requires.rpm", value_range, range.clone())?;
+                return Ok(range);
+            }
+            Tag::Source(_) => {
+                let number = number.ok_or("sources: unresolved Source number")?;
+                let identity = format!("sources.{number}");
+                if lookup(&self.document, &format!("{identity}.url")).is_some() {
+                    return Err(format!("{identity}: duplicate Source identity"));
+                }
+                let expected = match &item.tag {
+                    Tag::Source(Some(number)) => format!("Source{number}"),
+                    _ => "Source".to_owned(),
+                };
+                let (asset, hash) = source_marker(
+                    source,
+                    previous,
+                    &range,
+                    number,
+                    resolved_sources,
+                    &identity,
+                    name,
+                )?;
+                if !asset.is_empty() {
+                    consumed_assets.push(asset.clone());
+                }
+                let field = format!("{identity}.sha256");
+                if self.selects(&field) {
+                    insert(&mut self.document, &field, Value::String(hash))?;
+                    self.digest_markers.insert(field, asset);
+                }
+                (format!("{identity}.url"), expected)
+            }
+            _ => {
+                let (field, expected) = scalar_preamble(&item.tag)
+                    .ok_or_else(|| format!("preamble: unsupported tag {:?}", item.tag))?;
+                (field.to_owned(), expected.to_owned())
+            }
+        };
+        if !name.trim().eq_ignore_ascii_case(&expected) {
+            return Err(format!("{field}: AST/source header mismatch"));
+        }
+        self.scalar(&field, value_range, false)?;
+        Ok(range)
+    }
+
+    fn section(
+        &mut self,
+        section: &Section<Span>,
+        sections: &mut Vec<&'static str>,
+        comments: &mut Vec<Range<usize>>,
+    ) -> Result<Range<usize>, String> {
+        let source = &self.source;
+        let (name, span) = match section {
+            Section::Description {
+                subpkg: None, data, ..
+            } => ("description", *data),
+            Section::Files {
+                subpkg: None,
+                file_lists,
+                data,
+                ..
+            } => {
+                if !file_lists.is_empty() {
+                    let range = checked_range(source, *data)?;
+                    let header = source[range].lines().next().unwrap_or("%files");
+                    return Err(format!(
+                        "package.files: external file list in {header:?} is not editable; select another field such as --field package.version"
+                    ));
+                }
+                ("files", *data)
+            }
+            Section::Changelog { data, .. } => ("changelog", *data),
+            _ => return Err(
+                "section: only simple main-package description, files and changelog are supported"
+                    .into(),
+            ),
+        };
+        if sections.contains(&name) {
+            return Err(format!("{name}: duplicate section"));
+        }
+        sections.push(name);
+        let range = checked_range(source, span)?;
+        let raw = &source[range.clone()];
+        let header_end = raw.find('\n').map_or(raw.len(), |i| i + 1);
+        if raw[..header_end].trim() != format!("%{name}") {
+            return Err(format!("{name}: unsupported section header"));
+        }
+        let body = range.start + header_end..range.end;
+        match section {
+            Section::Description { .. } => {
+                self.scalar("package.description", body, true)?;
+            }
+            Section::Changelog { .. } => {
+                self.scalar("spec.changelog", body, true)?;
+            }
+            Section::Files { content, .. } => {
+                self.files(content, body, comments)?;
+            }
+            _ => unreachable!(),
+        }
+        Ok(range)
+    }
+
     /// Project every independently source-mappable field while keeping other bytes opaque.
     /// This does not claim that unmapped RPM constructs can be regenerated from TOML.
     pub(crate) fn capture_supported(spec: &'src ParsedSpec<'_>) -> Result<Self, String> {
+        // Accept a jointly mappable group at once. Split only failed groups to
+        // isolate unsupported fields; do not redo the whole walk for each Source.
+        fn supported(spec: &ParsedSpec<'_>, fields: &[String], output: &mut Vec<String>) {
+            if Snapshot::capture_selected(spec, fields).is_ok() {
+                output.extend_from_slice(fields);
+            } else if fields.len() > 1 {
+                let (left, right) = fields.split_at(fields.len() / 2);
+                supported(spec, left, output);
+                supported(spec, right, output);
+            }
+        }
+
         let mut fields = [
             "package.name",
             "package.version",
@@ -292,17 +310,6 @@ impl<'src> Snapshot<'src> {
         if let Ok(sources) = crate::spec::sources::resolve(spec, &[]) {
             for number in sources.sources.keys() {
                 fields.push(format!("sources.{number}"));
-            }
-        }
-        // Accept a jointly mappable group at once. Split only failed groups to
-        // isolate unsupported fields; do not redo the whole walk for each Source.
-        fn supported(spec: &ParsedSpec<'_>, fields: &[String], output: &mut Vec<String>) {
-            if Snapshot::capture_selected(spec, fields).is_ok() {
-                output.extend_from_slice(fields);
-            } else if fields.len() > 1 {
-                let (left, right) = fields.split_at(fields.len() / 2);
-                supported(spec, left, output);
-                supported(spec, right, output);
             }
         }
         let mut selected = Vec::new();
@@ -468,7 +475,6 @@ impl<'src> Snapshot<'src> {
             holders: List::default(),
         };
         let mut holder_values = Vec::new();
-        let mut shared_years: Option<String> = None;
         for range in comments {
             let raw = line(&self.source, &range)?;
             let field = comment_field(raw);
@@ -498,13 +504,13 @@ impl<'src> Snapshot<'src> {
                 {
                     return Err("spec.copyright-holders: declarations must be contiguous".into());
                 }
-                if shared_years
-                    .as_deref()
-                    .is_some_and(|previous| previous != years)
+                if copyright
+                    .years
+                    .first()
+                    .is_some_and(|previous| &self.source[previous.clone()] != years)
                 {
                     return Err("spec.copyright-years: mixed years cannot be mapped".into());
                 }
-                shared_years = Some(years.to_owned());
                 let start = range.start + raw.len() - value.len();
                 copyright.years.push(start..start + years.len());
                 copyright
@@ -540,12 +546,12 @@ impl<'src> Snapshot<'src> {
                 }
             }
         }
-        if let Some(years) = shared_years {
+        if let Some(years) = copyright.years.first() {
             if self.selects("spec.copyright-years") {
                 insert(
                     &mut self.document,
                     "spec.copyright-years",
-                    Value::String(years),
+                    Value::String(self.source[years.clone()].to_owned()),
                 )?;
             }
             if self.selects("spec.copyright-holders") {
@@ -563,6 +569,56 @@ impl<'src> Snapshot<'src> {
         }
         Ok(())
     }
+}
+
+fn source_marker(
+    source: &str,
+    previous: Option<&SpecItem<Span>>,
+    range: &Range<usize>,
+    number: u32,
+    resolved_sources: Option<&crate::spec::sources::Resolution>,
+    identity: &str,
+    name: &str,
+) -> Result<(Range<usize>, String), String> {
+    let profile = crate::profile::load();
+    Ok({
+        let adjacent = if let Some(SpecItem::Comment(previous)) = previous {
+            let asset = checked_range(source, previous.data)?;
+            (asset.end == range.start).then_some(asset)
+        } else {
+            None
+        };
+        let marked = adjacent
+            .filter(|asset| source[asset.clone()].starts_with(profile.remote_asset_bare.as_str()));
+        if let Some(asset) = marked {
+            let hash = profile
+                .remote_asset_digest(source[asset.clone()].trim_end_matches('\n'))
+                .map_err(|reason| format!("{identity}.sha256: {reason}"))?
+                .unwrap_or("")
+                .to_owned();
+            (asset, hash)
+        } else {
+            // Insert a marker only for a statically known remote Source.
+            // Local files must never gain RemoteAsset metadata.
+            let remote = resolved_sources
+                .and_then(|sources| sources.sources.get(&number))
+                .and_then(|source| source.url.as_ref().ok())
+                .is_some_and(|url| crate::source::is_remote_url(url));
+            if !remote {
+                return Err(format!(
+                    "{identity} ({name}): no adjacent RemoteAsset marker; local or unresolved Sources are not editable; select an individual remote Source with --field sources.N"
+                ));
+            }
+            if let Some(SpecItem::Comment(previous)) = previous
+                && source[checked_range(source, previous.data)?].contains("RemoteAsset")
+            {
+                return Err(format!(
+                    "{identity}.sha256: malformed or nonadjacent RemoteAsset marker"
+                ));
+            }
+            (range.start..range.start, String::new())
+        }
+    })
 }
 
 fn scalar_preamble(tag: &Tag) -> Option<(&'static str, &'static str)> {
