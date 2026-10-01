@@ -50,7 +50,7 @@ pub(crate) struct Options {
     /// Explicit SPEC mode only: prepared sources; symlinks and special files are rejected.
     #[arg(long, value_name = "DIR", requires = "spec", conflicts_with = "work")]
     source_dir: Option<PathBuf>,
-    /// Explicit SPEC mode only: result parent (default build); results live in DIR/SPEC_STEM.
+    /// Explicit SPEC mode only: result parent (default build); results live in `DIR/SPEC_STEM`.
     #[arg(long, value_name = "DIR", requires = "spec", conflicts_with = "work")]
     dir: Option<PathBuf>,
     /// Whole backend execution deadline; bounded recovery runs separately afterward.
@@ -124,6 +124,14 @@ struct Execution {
 }
 
 impl Execution {
+    fn add_recovery_command(&mut self, argv: &[std::ffi::OsString]) {
+        self.recovery_commands.push(
+            argv.iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect(),
+        );
+    }
+
     fn failed(message: String) -> Self {
         Self {
             failure: Some(message),
@@ -252,99 +260,16 @@ fn normalize_mode(path: &Path, metadata: &std::fs::Metadata) -> io::Result<()> {
 }
 
 pub(crate) fn run(options: &Options) -> io::Result<bool> {
-    if options
-        .context
-        .as_deref()
-        .is_some_and(|context| context.trim().is_empty())
-    {
-        return Err(invalid("--context must not be empty"));
-    }
-    let custom_config = options
-        .config
-        .as_ref()
-        .map(|path| {
-            regular_file(path)?;
-            fs::canonicalize(path)
-        })
-        .transpose()?;
-    // Keep the binding's cooperative lock through staging, execution and receipt publication.
-    let mut development = None;
-    let mut workspace_config = None;
-    let (requested_spec, requested_sources, managed_output) = if let Some(work) = &options.work {
-        let workspace = crate::workspace::discover()?;
-        let mut area = workspace.development(work, options.pkgname.as_deref(), false)?;
-        // Require the bound package SPEC before allocating the Git checkout.
-        area.spec()?;
-        if options.config.is_none() {
-            let config = workspace.build_config();
-            regular_file(&config)?;
-            workspace_config = Some(fs::canonicalize(config)?);
-        }
-        area.create()?;
-        let spec = area.spec()?;
-        let sources = area.package_directory().to_path_buf();
-        let output = area.directory().join("build");
-        development = Some(area);
-        (spec, sources, Some(output))
-    } else {
-        let sources = options
-            .source_dir
-            .as_ref()
-            .ok_or_else(|| invalid("building an explicit SPEC requires --source-dir"))?;
-        (
-            options
-                .spec
-                .as_ref()
-                .expect("clap requires WORK or --spec")
-                .clone(),
-            sources.clone(),
-            None,
-        )
-    };
-    regular_file(&requested_spec)?;
-    let spec = fs::canonicalize(&requested_spec)?;
-    let spec_name = spec
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| invalid("SPEC filename must be UTF-8"))?;
-    let source_dir = directory(&requested_sources)?;
-    // Named builds consume the saved PKG binding; explicit paths retain their recipe stem.
-    let package = match &development {
-        Some(area) => area.package(),
-        None => spec
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| invalid("SPEC stem must be UTF-8"))?,
-    };
-    crate::check::metadata::Field::Name
-        .validate(package)
-        .map_err(invalid)?;
-    let output = match managed_output {
-        Some(output) => output,
-        None => {
-            let requested = std::env::current_dir()?
-                .join(options.dir.as_deref().unwrap_or_else(|| Path::new("build")));
-            let root = if requested.try_exists()? {
-                directory(&requested)?
-            } else {
-                fs::canonicalize(
-                    requested
-                        .parent()
-                        .ok_or_else(|| invalid("build directory needs a parent"))?,
-                )?
-                .join(
-                    requested
-                        .file_name()
-                        .ok_or_else(|| invalid("build directory needs a name"))?,
-                )
-            };
-            root.join(package)
-        }
-    };
+    let input = BuildInput::resolve(options)?;
+    let spec = &input.spec;
+    let source_dir = &input.source_dir;
+    let output = &input.output;
+    let custom_config = &input.custom_config;
+    let package = BuildInput::package(input.development.as_ref(), spec)?;
     let root = output
         .parent()
         .ok_or_else(|| invalid("build result needs a parent"))?;
-    if output.starts_with(&source_dir) {
+    if output.starts_with(source_dir) {
         return Err(invalid("build directory must not be inside --source-dir"));
     }
     if custom_config
@@ -357,7 +282,7 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
     }
     crate::host_process::install_handler()?;
     fs::create_dir_all(root)?;
-    fs::create_dir(&output).map_err(|error| {
+    fs::create_dir(output).map_err(|error| {
         if error.kind() == io::ErrorKind::AlreadyExists {
             invalid(format!(
                 "{} already exists; use shell, or explicitly clean this retained result before another build",
@@ -374,45 +299,28 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
         remove: options.remove,
     };
     let engine = mock::Mock;
-    let input = output.join("input");
+    let staged_input = output.join("input");
     let mut inputs = Vec::new();
     let mut configuration_files = Vec::new();
-    let mut stage = || -> io::Result<Vec<String>> {
-        if let Some(workspace_config) = &workspace_config {
-            // Snapshot user-owned workspace assets; normalize only these copied files.
-            copy_sources(
-                workspace_config.parent().expect("absolute config"),
-                &output.join(".config"),
-            )?;
-            inventory(&output, &output.join(".config"), &mut configuration_files)?;
-        } else if custom_config.is_none() {
-            crate::environment::write(&output.join(".config"))?;
-            inventory(&output, &output.join(".config"), &mut configuration_files)?;
-        } else {
-            let content = crate::file_digest::read(&config).map_err(io::Error::other)?;
-            configuration_files.push(InputFile {
-                path: config.to_string_lossy().into_owned(),
-                content,
-            });
-        }
-        backend.validate()?;
-        fs::create_dir(&input)?;
-        fs::create_dir(input.join("SPECS"))?;
-        fs::copy(&spec, input.join("SPECS").join(spec_name))?;
-        copy_sources(&source_dir, &input.join("SOURCES"))?;
-        engine.stage(&input, spec_name, Duration::from_secs(options.timeout))
-    };
-    let execution = match stage().and_then(|invocation| {
-        if invocation.is_empty() {
-            return Err(invalid("engine returned an empty invocation"));
-        }
-        inventory(&input, &input, &mut inputs)?;
-        Ok(invocation)
-    }) {
+    let execution = match input
+        .stage(
+            &backend,
+            &engine,
+            &config,
+            Duration::from_secs(options.timeout),
+            &mut configuration_files,
+        )
+        .and_then(|invocation| {
+            if invocation.is_empty() {
+                return Err(invalid("engine returned an empty invocation"));
+            }
+            inventory(&staged_input, &staged_input, &mut inputs)?;
+            Ok(invocation)
+        }) {
         Ok(invocation) => backend.execute(
             &invocation,
-            &input,
-            &output,
+            &staged_input,
+            output,
             Duration::from_secs(options.timeout),
         ),
         Err(error) => Execution::failed(format!("input staging failed: {error}")),
@@ -448,53 +356,218 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
     let bytes = serde_json::to_vec_pretty(&receipt).map_err(io::Error::other)?;
     let receipt_path = output.join("receipt.json");
     fs::write(&receipt_path, bytes)?;
-    match options.format {
-        ReportFormat::Toml => {
-            crate::report::write(
-                &mut io::stdout().lock(),
-                &BuildReport {
-                    format_version: 1,
-                    tool: crate::tool::identity(),
-                    operation: "build",
-                    success,
-                    receipt: receipt_path.to_string_lossy(),
-                    failure: receipt.execution.failure.as_deref(),
-                    artifact_error: receipt.execution.artifact_error.as_deref(),
-                    engine_validation_error: receipt.engine_validation_error.as_deref(),
-                    cleanup_failure: receipt.execution.cleanup_failure.as_deref(),
-                    cleanup_skipped: receipt.execution.cleanup_skipped,
-                },
-            )?;
+    receipt.write_report(options.format, &receipt_path)?;
+    Ok(success)
+}
+
+// Resolves paths once and owns the cooperative WORK lock for the complete operation.
+struct BuildInput {
+    development: Option<crate::workspace::Development>,
+    spec: PathBuf,
+    source_dir: PathBuf,
+    output: PathBuf,
+    custom_config: Option<PathBuf>,
+    workspace_config: Option<PathBuf>,
+}
+
+impl BuildInput {
+    fn resolve(options: &Options) -> io::Result<Self> {
+        if options
+            .context
+            .as_deref()
+            .is_some_and(|context| context.trim().is_empty())
+        {
+            return Err(invalid("--context must not be empty"));
         }
-        ReportFormat::Human => {
-            writeln!(
-                io::stdout().lock(),
-                "build {}: {}",
-                if success { "completed" } else { "failed" },
-                receipt_path.display()
-            )?;
-            if receipt.execution.cleanup_skipped {
-                writeln!(
-                    io::stderr().lock(),
-                    "automatic removal not requested; resource state and recovery commands: {}",
-                    receipt_path.display()
-                )?;
+        let custom_config = options
+            .config
+            .as_ref()
+            .map(|path| {
+                regular_file(path)?;
+                fs::canonicalize(path)
+            })
+            .transpose()?;
+        // Keep the binding's cooperative lock through staging, execution and receipt publication.
+        let mut development = None;
+        let mut workspace_config = None;
+        let (requested_spec, requested_sources, managed_output) = if let Some(work) = &options.work
+        {
+            let workspace = crate::workspace::discover()?;
+            let mut area = workspace.development(work, options.pkgname.as_deref(), false)?;
+            // Require the bound package SPEC before allocating the Git checkout.
+            area.spec()?;
+            if options.config.is_none() {
+                let config = workspace.build_config();
+                regular_file(&config)?;
+                workspace_config = Some(fs::canonicalize(config)?);
             }
-            if let Some(error) = &receipt.execution.failure {
-                writeln!(io::stderr().lock(), "{error}")?;
-            }
-            if let Some(error) = &receipt.execution.artifact_error {
-                writeln!(io::stderr().lock(), "artifact retrieval: {error}")?;
-            }
-            if let Some(error) = &receipt.engine_validation_error {
-                writeln!(io::stderr().lock(), "engine result verification: {error}")?;
-            }
-            if let Some(error) = &receipt.execution.cleanup_failure {
-                writeln!(io::stderr().lock(), "cleanup: {error}")?;
-            }
+            area.create()?;
+            let spec = area.spec()?;
+            let sources = area.package_directory().to_path_buf();
+            let output = area.directory().join("build");
+            development = Some(area);
+            (spec, sources, Some(output))
+        } else {
+            let sources = options
+                .source_dir
+                .as_ref()
+                .ok_or_else(|| invalid("building an explicit SPEC requires --source-dir"))?;
+            (
+                options
+                    .spec
+                    .as_ref()
+                    .expect("clap requires WORK or --spec")
+                    .clone(),
+                sources.clone(),
+                None,
+            )
+        };
+        regular_file(&requested_spec)?;
+        let spec = fs::canonicalize(&requested_spec)?;
+        spec.file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| invalid("SPEC filename must be UTF-8"))?;
+        let source_dir = directory(&requested_sources)?;
+        // Named builds consume the saved PKG binding; explicit paths retain their recipe stem.
+        let package = Self::package(development.as_ref(), &spec)?;
+        crate::check::metadata::Field::Name
+            .validate(package)
+            .map_err(invalid)?;
+        let output = if let Some(output) = managed_output {
+            output
+        } else {
+            let requested = std::env::current_dir()?
+                .join(options.dir.as_deref().unwrap_or_else(|| Path::new("build")));
+            let root = if requested.try_exists()? {
+                directory(&requested)?
+            } else {
+                fs::canonicalize(
+                    requested
+                        .parent()
+                        .ok_or_else(|| invalid("build directory needs a parent"))?,
+                )?
+                .join(
+                    requested
+                        .file_name()
+                        .ok_or_else(|| invalid("build directory needs a name"))?,
+                )
+            };
+            root.join(package)
+        };
+        Ok(Self {
+            development,
+            spec,
+            source_dir,
+            output,
+            custom_config,
+            workspace_config,
+        })
+    }
+
+    fn package<'a>(
+        development: Option<&'a crate::workspace::Development>,
+        spec: &'a Path,
+    ) -> io::Result<&'a str> {
+        match development {
+            Some(area) => Ok(area.package()),
+            None => spec
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| invalid("SPEC stem must be UTF-8")),
         }
     }
-    Ok(success)
+
+    fn stage(
+        &self,
+        backend: &impl Backend,
+        engine: &impl Engine,
+        config: &Path,
+        timeout: Duration,
+        configuration_files: &mut Vec<InputFile>,
+    ) -> io::Result<Vec<String>> {
+        let output = &self.output;
+        let input = output.join("input");
+        let spec_name = self
+            .spec
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| invalid("SPEC filename must be UTF-8"))?;
+        if let Some(workspace_config) = &self.workspace_config {
+            // Snapshot user-owned workspace assets; normalize only these copied files.
+            copy_sources(
+                workspace_config.parent().expect("absolute config"),
+                &output.join(".config"),
+            )?;
+            inventory(output, &output.join(".config"), configuration_files)?;
+        } else if self.custom_config.is_none() {
+            crate::environment::write(&output.join(".config"))?;
+            inventory(output, &output.join(".config"), configuration_files)?;
+        } else {
+            let content = crate::file_digest::read(config).map_err(io::Error::other)?;
+            configuration_files.push(InputFile {
+                path: config.to_string_lossy().into_owned(),
+                content,
+            });
+        }
+        backend.validate()?;
+        fs::create_dir(&input)?;
+        fs::create_dir(input.join("SPECS"))?;
+        fs::copy(&self.spec, input.join("SPECS").join(spec_name))?;
+        copy_sources(&self.source_dir, &input.join("SOURCES"))?;
+        engine.stage(&input, spec_name, timeout)
+    }
+}
+
+impl Receipt<'_> {
+    fn write_report(&self, format: ReportFormat, receipt_path: &Path) -> io::Result<()> {
+        match format {
+            ReportFormat::Toml => {
+                crate::report::write(
+                    &mut io::stdout().lock(),
+                    &BuildReport {
+                        format_version: 1,
+                        tool: crate::tool::identity(),
+                        operation: "build",
+                        success: self.success,
+                        receipt: receipt_path.to_string_lossy(),
+                        failure: self.execution.failure.as_deref(),
+                        artifact_error: self.execution.artifact_error.as_deref(),
+                        engine_validation_error: self.engine_validation_error.as_deref(),
+                        cleanup_failure: self.execution.cleanup_failure.as_deref(),
+                        cleanup_skipped: self.execution.cleanup_skipped,
+                    },
+                )?;
+            }
+            ReportFormat::Human => {
+                writeln!(
+                    io::stdout().lock(),
+                    "build {}: {}",
+                    if self.success { "completed" } else { "failed" },
+                    receipt_path.display()
+                )?;
+                if self.execution.cleanup_skipped {
+                    writeln!(
+                        io::stderr().lock(),
+                        "automatic removal not requested; resource state and recovery commands: {}",
+                        receipt_path.display()
+                    )?;
+                }
+                if let Some(error) = &self.execution.failure {
+                    writeln!(io::stderr().lock(), "{error}")?;
+                }
+                if let Some(error) = &self.execution.artifact_error {
+                    writeln!(io::stderr().lock(), "artifact retrieval: {error}")?;
+                }
+                if let Some(error) = &self.engine_validation_error {
+                    writeln!(io::stderr().lock(), "engine result verification: {error}")?;
+                }
+                if let Some(error) = &self.execution.cleanup_failure {
+                    writeln!(io::stderr().lock(), "cleanup: {error}")?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// CLI outcome points to complete retained evidence; engine/host storage has its own protocol.

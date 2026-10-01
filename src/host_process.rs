@@ -57,7 +57,9 @@ enum Stop {
     ZombiesOnly,
 }
 
-fn stop(child: &mut Child, group: bool, _root_exited: bool) -> io::Result<Stop> {
+fn stop(child: &mut Child, group: bool, root_exited: bool) -> io::Result<Stop> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = root_exited;
     if !group {
         return if child.try_wait()?.is_some() {
             Ok(Stop::Gone)
@@ -75,7 +77,7 @@ fn stop(child: &mut Child, group: bool, _root_exited: bool) -> io::Result<Stop> 
             // group. Verify that case while the root PID is still pinned; never
             // reinterpret an ordinary permission failure as successful cleanup.
             #[cfg(target_os = "macos")]
-            Err(error @ rustix::io::Errno::PERM) if _root_exited => match zombie_group(child) {
+            Err(error @ rustix::io::Errno::PERM) if root_exited => match zombie_group(child) {
                 Ok(true) => Ok(Stop::ZombiesOnly),
                 Ok(false) => Err(error.into()),
                 Err(query) => Err(io::Error::new(
@@ -244,57 +246,67 @@ fn run_inner(
                 poll = (poll * 2).min(Duration::from_millis(25));
             }
         })();
-        let stopped = stop(&mut child, group, root_exited);
-        let mut termination = Termination {
-            method: match &stopped {
-                #[cfg(target_os = "macos")]
-                Ok(Stop::ZombiesOnly) => "unix-process-group-zombies-only",
-                _ if group => "unix-process-group",
-                _ => "direct-child",
-            },
-            target: child.id(),
-            reaped: false,
-            error: stopped.as_ref().err().map(ToString::to_string),
-        };
-        // A root can leave its initial group. ESRCH alone is not proof it exited.
-        if !root_exited && !matches!(stopped, Ok(Stop::Signalled)) {
-            termination.method = "direct-child-fallback";
-            if let Err(error) = child.kill() {
-                termination.error = Some(match termination.error.take() {
-                    Some(previous) => format!("{previous}; direct child: {error}"),
-                    None => format!("direct child: {error}"),
-                });
-            }
-        }
-        match reap(&mut child) {
-            Ok(status) => {
-                outcome.status = Some(status);
-                termination.reaped = true;
-            }
-            Err(error) => {
-                termination.error = Some(match termination.error.take() {
-                    Some(previous) => format!("{previous}; {error}"),
-                    None => error.to_string(),
-                });
-            }
-        }
-        // No group left on ordinary completion: avoid claiming a termination happened.
-        if !matches!(stopped, Ok(Stop::Gone)) || result.is_err() || termination.error.is_some() {
-            outcome.termination = Some(termination);
-        }
-        if let Some(error) = outcome.termination.as_ref().and_then(|t| t.error.as_ref()) {
-            return Err(match result {
-                Err(original) => {
-                    io::Error::new(original.kind(), format!("{original}; cleanup: {error}"))
-                }
-                Ok(()) => io::Error::other(format!("process cleanup: {error}")),
-            });
-        }
-        result
+        finish_child(&mut child, group, root_exited, result, &mut outcome)
     })();
     outcome.error = result.err();
     outcome.elapsed_ms = start.elapsed().as_millis();
     outcome
+}
+
+fn finish_child(
+    child: &mut Child,
+    group: bool,
+    root_exited: bool,
+    result: io::Result<()>,
+    outcome: &mut Outcome,
+) -> io::Result<()> {
+    let stopped = stop(child, group, root_exited);
+    let mut termination = Termination {
+        method: match &stopped {
+            #[cfg(target_os = "macos")]
+            Ok(Stop::ZombiesOnly) => "unix-process-group-zombies-only",
+            _ if group => "unix-process-group",
+            _ => "direct-child",
+        },
+        target: child.id(),
+        reaped: false,
+        error: stopped.as_ref().err().map(ToString::to_string),
+    };
+    // A root can leave its initial group. ESRCH alone is not proof it exited.
+    if !root_exited && !matches!(stopped, Ok(Stop::Signalled)) {
+        termination.method = "direct-child-fallback";
+        if let Err(error) = child.kill() {
+            termination.error = Some(match termination.error.take() {
+                Some(previous) => format!("{previous}; direct child: {error}"),
+                None => format!("direct child: {error}"),
+            });
+        }
+    }
+    match reap(child) {
+        Ok(status) => {
+            outcome.status = Some(status);
+            termination.reaped = true;
+        }
+        Err(error) => {
+            termination.error = Some(match termination.error.take() {
+                Some(previous) => format!("{previous}; {error}"),
+                None => error.to_string(),
+            });
+        }
+    }
+    // No group left on ordinary completion: avoid claiming a termination happened.
+    if !matches!(stopped, Ok(Stop::Gone)) || result.is_err() || termination.error.is_some() {
+        outcome.termination = Some(termination);
+    }
+    if let Some(error) = outcome.termination.as_ref().and_then(|t| t.error.as_ref()) {
+        return Err(match result {
+            Err(original) => {
+                io::Error::new(original.kind(), format!("{original}; cleanup: {error}"))
+            }
+            Ok(()) => io::Error::other(format!("process cleanup: {error}")),
+        });
+    }
+    result
 }
 
 /// Temporary regular files avoid waiting for pipe EOF held by grandchildren.

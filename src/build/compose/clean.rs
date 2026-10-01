@@ -14,7 +14,7 @@ use std::{
     ffi::OsString,
     io::{self, IsTerminal, Read, Write},
     path::{Path, PathBuf},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 fn target(path: &Path) -> io::Result<PathBuf> {
@@ -63,32 +63,129 @@ fn docker(
     stage: &str,
     args: &[&str],
 ) -> io::Result<String> {
-    let argv = super::docker(context, args.iter().map(OsString::from));
+    let command = super::docker(context, args.iter().map(OsString::from));
     runner
-        .capture(&argv, stage, timeout.saturating_sub(start.elapsed()))
+        .capture(&command, stage, timeout.saturating_sub(start.elapsed()))
         .map_err(io::Error::other)
 }
 
-fn perform(
-    path: &Path,
-    force: bool,
+fn collect_resources(
+    runner: &mut Runner<'_>,
     context: Option<&str>,
+    start: Instant,
     timeout: Duration,
+    attempt: &str,
+    project: &str,
     report: &mut CleanReport,
 ) -> io::Result<()> {
-    let root = target(path)?;
-    let receipt_path = root.join("receipt.json");
-    // Serialize cleanup with shell sessions and other cleanups until local deletion ends.
-    let mut file = fs::File::open(&receipt_path)?.into_file();
-    file.try_lock().map_err(|error| {
-        io::Error::other(format!(
-            "{}: another shell or cleanup session owns this build: {error}",
-            receipt_path.display()
-        ))
-    })?;
-    let mut original = Vec::new();
-    file.read_to_end(&mut original)?;
-    let receipt: Value = serde_json::from_slice(&original).map_err(io::Error::other)?;
+    let filter = format!("label=com.docker.compose.project={project}");
+    for kind in ["container", "network", "volume"] {
+        let mut args = vec![kind, "ls", "--quiet"];
+        if kind == "container" {
+            args.push("--all");
+        }
+        if kind != "volume" {
+            args.push("--no-trunc");
+        }
+        args.extend(["--filter", &filter]);
+        let listed = docker(
+            runner,
+            context,
+            start,
+            timeout,
+            &format!("{attempt}-list-{kind}"),
+            &args,
+        )?;
+        let mut names = Vec::new();
+        for name in listed
+            .lines()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            let valid = if kind == "volume" {
+                name.as_bytes()[0].is_ascii_alphanumeric()
+                    && name.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-')
+                    })
+            } else {
+                name.bytes().all(|byte| byte.is_ascii_hexdigit())
+            };
+            if !valid {
+                return Err(invalid(format!(
+                    "Docker returned an invalid {kind} identity"
+                )));
+            }
+            let inspected = docker(
+                runner,
+                context,
+                start,
+                timeout,
+                &format!("{attempt}-inspect-{kind}"),
+                &[kind, "inspect", name],
+            )?;
+            let inspected: Value = serde_json::from_str(&inspected).map_err(io::Error::other)?;
+            let labels = if kind == "container" {
+                &inspected[0]["Config"]["Labels"]
+            } else {
+                &inspected[0]["Labels"]
+            };
+            if labels["com.docker.compose.project"].as_str() != Some(project) {
+                return Err(invalid(format!(
+                    "{kind} {name} no longer has the exact project ownership label"
+                )));
+            }
+            if kind == "volume"
+                && labels["com.docker.compose.volume"]
+                    .as_str()
+                    .is_none_or(str::is_empty)
+            {
+                report.retained_volumes.push(name.to_owned());
+            } else {
+                names.push(name.to_owned());
+            }
+        }
+        names.sort();
+        names.dedup();
+        report.scope.insert(kind, names);
+    }
+    Ok(())
+}
+
+fn confirm(
+    root: &Path,
+    project: &str,
+    daemon: &str,
+    force: bool,
+    report: &CleanReport,
+) -> io::Result<()> {
+    writeln!(
+        io::stderr().lock(),
+        "Clean results: {}\nDocker project: {project}\nDocker daemon: {daemon}\nOwned resources: {:?}\nImages and volumes without Compose ownership labels are retained.",
+        root.display(),
+        report.scope
+    )?;
+    if !force {
+        write!(
+            io::stderr().lock(),
+            "Delete these resources and the result directory? [y/N] "
+        )?;
+        io::stderr().flush()?;
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "clean cancelled; nothing was deleted",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn receipt_identity<'a>(
+    receipt: &'a Value,
+    context: Option<&'a str>,
+) -> io::Result<(&'a str, &'a str, Option<&'a str>)> {
     if receipt["format_version"] != 1 || receipt["backend"] != "compose" {
         return Err(invalid(
             "clean requires a format_version 1 Compose build receipt",
@@ -117,6 +214,30 @@ fn perform(
     if context.is_some_and(|value| value.trim().is_empty()) {
         return Err(invalid("Docker context must not be empty"));
     }
+    Ok((project, daemon, context))
+}
+
+fn perform(
+    path: &Path,
+    force: bool,
+    context: Option<&str>,
+    timeout: Duration,
+    report: &mut CleanReport,
+) -> io::Result<()> {
+    let root = target(path)?;
+    let receipt_path = root.join("receipt.json");
+    // Serialize cleanup with shell sessions and other cleanups until local deletion ends.
+    let mut file = fs::File::open(&receipt_path)?.into_file();
+    file.try_lock().map_err(|error| {
+        io::Error::other(format!(
+            "{}: another shell or cleanup session owns this build: {error}",
+            receipt_path.display()
+        ))
+    })?;
+    let mut original = Vec::new();
+    file.read_to_end(&mut original)?;
+    let receipt: Value = serde_json::from_slice(&original).map_err(io::Error::other)?;
+    let (project, daemon, context) = receipt_identity(&receipt, context)?;
     report.project = Some(project.to_owned());
     report.daemon_id = Some(daemon.to_owned());
     report.context = context.map(str::to_owned);
@@ -128,14 +249,7 @@ fn perform(
     if !root.join("host").exists() {
         fs::create_dir(root.join("host"))?;
     }
-    let attempt = format!(
-        "clean-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    );
+    let attempt = super::operation_id("clean");
     let mut runner = Runner {
         cancellable: false,
         output: &root,
@@ -157,107 +271,23 @@ fn perform(
                 "Docker daemon identity differs from the build receipt; nothing was deleted",
             ));
         }
-        let filter = format!("label=com.docker.compose.project={project}");
-        let mut owned: Vec<(&str, Vec<String>)> = Vec::new();
-        for kind in ["container", "network", "volume"] {
-            let mut args = vec![kind, "ls", "--quiet"];
-            if kind == "container" {
-                args.push("--all");
-            }
-            if kind != "volume" {
-                args.push("--no-trunc");
-            }
-            args.extend(["--filter", &filter]);
-            let listed = docker(
-                &mut runner,
-                context,
-                start,
-                timeout,
-                &format!("{attempt}-list-{kind}"),
-                &args,
-            )?;
-            let mut names = Vec::new();
-            for name in listed
-                .lines()
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-            {
-                let valid = if kind == "volume" {
-                    name.as_bytes()[0].is_ascii_alphanumeric()
-                        && name.bytes().all(|byte| {
-                            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-')
-                        })
-                } else {
-                    name.bytes().all(|byte| byte.is_ascii_hexdigit())
-                };
-                if !valid {
-                    return Err(invalid(format!(
-                        "Docker returned an invalid {kind} identity"
-                    )));
-                }
-                let inspected = docker(
-                    &mut runner,
-                    context,
-                    start,
-                    timeout,
-                    &format!("{attempt}-inspect-{kind}"),
-                    &[kind, "inspect", name],
-                )?;
-                let inspected: Value =
-                    serde_json::from_str(&inspected).map_err(io::Error::other)?;
-                let labels = if kind == "container" {
-                    &inspected[0]["Config"]["Labels"]
-                } else {
-                    &inspected[0]["Labels"]
-                };
-                if labels["com.docker.compose.project"].as_str() != Some(project) {
-                    return Err(invalid(format!(
-                        "{kind} {name} no longer has the exact project ownership label"
-                    )));
-                }
-                if kind == "volume"
-                    && labels["com.docker.compose.volume"]
-                        .as_str()
-                        .is_none_or(str::is_empty)
-                {
-                    report.retained_volumes.push(name.to_owned());
-                } else {
-                    names.push(name.to_owned());
-                }
-            }
-            names.sort();
-            names.dedup();
-            report.scope.insert(kind, names.clone());
-            owned.push((kind, names));
-        }
-        writeln!(
-            io::stderr().lock(),
-            "Clean results: {}\nDocker project: {project}\nDocker daemon: {daemon}\nOwned resources: {:?}\nImages and volumes without Compose ownership labels are retained.",
-            root.display(),
-            report.scope
+        collect_resources(
+            &mut runner,
+            context,
+            start,
+            timeout,
+            &attempt,
+            project,
+            report,
         )?;
-        if !force {
-            write!(
-                io::stderr().lock(),
-                "Delete these resources and the result directory? [y/N] "
-            )?;
-            io::stderr().flush()?;
-            let mut answer = String::new();
-            io::stdin().read_line(&mut answer)?;
-            if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "clean cancelled; nothing was deleted",
-                ));
-            }
-        }
-        for (kind, names) in owned {
+        confirm(&root, project, daemon, force, report)?;
+        for (&kind, names) in &report.scope {
             for name in names {
                 let mut args = vec![kind, "rm"];
                 if kind == "container" {
                     args.push("--force");
                 }
-                args.push(&name);
+                args.push(name);
                 docker(
                     &mut runner,
                     context,
@@ -266,7 +296,7 @@ fn perform(
                     &format!("{attempt}-remove-{kind}"),
                     &args,
                 )?;
-                report.removed.entry(kind).or_default().push(name);
+                report.removed.entry(kind).or_default().push(name.clone());
             }
         }
         Ok(())

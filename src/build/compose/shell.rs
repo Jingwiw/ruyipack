@@ -12,7 +12,7 @@ use std::{
     io::{self, IsTerminal, Write},
     path::Path,
     process::Command,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 pub(super) fn attach(
@@ -34,14 +34,7 @@ pub(super) fn attach(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| invalid("build receipt has no daemon identity"))?;
     directory(&output.join("host"))?;
-    let attempt = format!(
-        "shell-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    );
+    let attempt = super::operation_id("shell");
     let mut runner = Runner {
         cancellable: false,
         output,
@@ -55,40 +48,15 @@ pub(super) fn attach(
     argv.push(id.into());
     argv.extend(invocation.iter().map(Into::into));
     let outcome = (|| -> io::Result<std::process::ExitStatus> {
-        let captured = runner
-            .capture(
-                &docker(
-                    context,
-                    ["info".into(), "--format".into(), "{{json .}}".into()],
-                ),
-                &format!("{attempt}-daemon"),
-                timeout,
-            )
-            .map_err(io::Error::other)?;
-        let info: Value = serde_json::from_str(&captured).map_err(io::Error::other)?;
-        if info["ID"].as_str() != Some(daemon) {
-            return Err(invalid(
-                "Docker daemon identity differs from the build receipt",
-            ));
-        }
-        let captured = runner
-            .capture(
-                &docker(context, ["inspect".into(), id.into()]),
-                &format!("{attempt}-inspect"),
-                timeout,
-            )
-            .map_err(io::Error::other)?;
-        let inspect: Value = serde_json::from_str(&captured).map_err(io::Error::other)?;
-        if inspect[0]["Config"]["Labels"]["com.docker.compose.project"].as_str()
-            != Some(&resources.project)
-        {
-            return Err(invalid("worker does not have this build's ownership label"));
-        }
-        if inspect[0]["State"]["Running"] != false {
-            return Err(invalid(
-                "worker is already running or its state is unknown; refusing to interrupt another session",
-            ));
-        }
+        verify_worker(
+            &mut runner,
+            context,
+            &attempt,
+            id,
+            daemon,
+            &resources.project,
+            timeout,
+        )?;
         started = true;
         runner
             .run(
@@ -143,4 +111,48 @@ pub(super) fn attach(
     saved?;
     writeln!(io::stderr().lock(), "shell record: {}", record.display())?;
     Ok(success)
+}
+
+fn verify_worker(
+    runner: &mut Runner<'_>,
+    context: Option<&str>,
+    attempt: &str,
+    id: &str,
+    daemon: &str,
+    project: &str,
+    timeout: Duration,
+) -> io::Result<()> {
+    let captured = runner
+        .capture(
+            &docker(
+                context,
+                ["info".into(), "--format".into(), "{{json .}}".into()],
+            ),
+            &format!("{attempt}-daemon"),
+            timeout,
+        )
+        .map_err(io::Error::other)?;
+    let info: Value = serde_json::from_str(&captured).map_err(io::Error::other)?;
+    if info["ID"].as_str() != Some(daemon) {
+        return Err(invalid(
+            "Docker daemon identity differs from the build receipt",
+        ));
+    }
+    let captured = runner
+        .capture(
+            &docker(context, ["inspect".into(), id.into()]),
+            &format!("{attempt}-inspect"),
+            timeout,
+        )
+        .map_err(io::Error::other)?;
+    let inspect: Value = serde_json::from_str(&captured).map_err(io::Error::other)?;
+    if inspect[0]["Config"]["Labels"]["com.docker.compose.project"].as_str() != Some(project) {
+        return Err(invalid("worker does not have this build's ownership label"));
+    }
+    if inspect[0]["State"]["Running"] != false {
+        return Err(invalid(
+            "worker is already running or its state is unknown; refusing to interrupt another session",
+        ));
+    }
+    Ok(())
 }
