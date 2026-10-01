@@ -13,71 +13,8 @@ use std::fmt::Write as _;
 /// Renders a complete SPEC from validated manifest fields and distribution defaults.
 pub(crate) fn render(manifest: &Manifest, profile: &Profile) -> String {
     let mut output = String::new();
-    let header = &manifest.spec;
-
-    for holder in &profile.copyright_holders {
-        writeln!(
-            output,
-            "# SPDX-FileCopyrightText: (C) {} {holder}",
-            header.copyright_years
-        )
-        .expect("writing to a String cannot fail");
-    }
-    for contributor in &header.contributors {
-        writeln!(output, "# SPDX-FileContributor: {contributor}")
-            .expect("writing to a String cannot fail");
-    }
-    // Keep the generated marker split so REUSE does not treat it as this file's own header.
-    output.push_str("#\n# SPDX-License-");
-    writeln!(output, "Identifier: {}\n", profile.spec_license)
-        .expect("writing to a String cannot fail");
-
+    render_preamble(&mut output, manifest, profile);
     let column = profile.preamble_value_column;
-    write_tag(&mut output, "Name:", &manifest.package.name, column);
-    write_tag(&mut output, "Version:", &manifest.package.version, column);
-    write_tag(&mut output, "Release:", &profile.release, column);
-    write_tag(
-        &mut output,
-        "Summary:",
-        &manifest.package.body.summary,
-        column,
-    );
-    write_tag(&mut output, "License:", &manifest.package.license, column);
-    write_tag(&mut output, "URL:", &manifest.package.url, column);
-    match &manifest.package.vcs {
-        Vcs::Git(url) => write_tag(&mut output, "VCS:", &format!("git:{url}"), column),
-        Vcs::Unknown | Vcs::SameAsUrl => {}
-        Vcs::NoPublicRepository => {
-            writeln!(output, "{}", profile.no_public_vcs_comment)
-                .expect("writing to a String cannot fail");
-        }
-    }
-    for (number, source) in &manifest.sources {
-        if let Source::Remote { sha256, .. } = source {
-            writeln!(output, "{}", profile.remote_asset(sha256.as_deref()))
-                .expect("writing to a String cannot fail");
-        }
-        write_tag(
-            &mut output,
-            &format!("Source{number}:"),
-            source.value(),
-            column,
-        );
-    }
-    if manifest.package.noarch {
-        write_tag(&mut output, "BuildArch:", "noarch", column);
-    }
-    // RPM's declarative build machinery supplies the default stage bodies.
-    // Do not also inline the profile's guidance: that would replace those defaults.
-    if let Some(system) = &manifest.build.system {
-        write_tag(&mut output, "BuildSystem:", system, column);
-    }
-    // openRuyi places patches after BuildSystem, before options and dependencies.
-    for (number, patch) in &manifest.patches {
-        write_tag(&mut output, &format!("Patch{number}:"), &patch.path, column);
-    }
-    output.push('\n');
-
     for (stage, config) in &manifest.build.stages {
         let label = format!("BuildOption({}):", stage.as_str());
         for option in &config.options {
@@ -167,6 +104,63 @@ pub(crate) fn render(manifest: &Manifest, profile: &Profile) -> String {
     writeln!(output, "\n%changelog\n{}", profile.changelog)
         .expect("writing to a String cannot fail");
     output
+}
+
+fn render_preamble(output: &mut String, manifest: &Manifest, profile: &Profile) {
+    let header = &manifest.spec;
+
+    for holder in &profile.copyright_holders {
+        writeln!(
+            output,
+            "# SPDX-FileCopyrightText: (C) {} {holder}",
+            header.copyright_years
+        )
+        .expect("writing to a String cannot fail");
+    }
+    for contributor in &header.contributors {
+        writeln!(output, "# SPDX-FileContributor: {contributor}")
+            .expect("writing to a String cannot fail");
+    }
+    // Keep the generated marker split so REUSE does not treat it as this file's own header.
+    output.push_str("#\n# SPDX-License-");
+    writeln!(output, "Identifier: {}\n", profile.spec_license)
+        .expect("writing to a String cannot fail");
+
+    let column = profile.preamble_value_column;
+    write_tag(output, "Name:", &manifest.package.name, column);
+    write_tag(output, "Version:", &manifest.package.version, column);
+    write_tag(output, "Release:", &profile.release, column);
+    write_tag(output, "Summary:", &manifest.package.body.summary, column);
+    write_tag(output, "License:", &manifest.package.license, column);
+    write_tag(output, "URL:", &manifest.package.url, column);
+    match &manifest.package.vcs {
+        Vcs::Git(url) => write_tag(output, "VCS:", &format!("git:{url}"), column),
+        Vcs::Unknown | Vcs::SameAsUrl => {}
+        Vcs::NoPublicRepository => {
+            writeln!(output, "{}", profile.no_public_vcs_comment)
+                .expect("writing to a String cannot fail");
+        }
+    }
+    for (number, source) in &manifest.sources {
+        if let Source::Remote { sha256, .. } = source {
+            writeln!(output, "{}", profile.remote_asset(sha256.as_deref()))
+                .expect("writing to a String cannot fail");
+        }
+        write_tag(output, &format!("Source{number}:"), source.value(), column);
+    }
+    if manifest.package.noarch {
+        write_tag(output, "BuildArch:", "noarch", column);
+    }
+    // RPM's declarative build machinery supplies the default stage bodies.
+    // Do not also inline the profile's guidance: that would replace those defaults.
+    if let Some(system) = &manifest.build.system {
+        write_tag(output, "BuildSystem:", system, column);
+    }
+    // openRuyi places patches after BuildSystem, before options and dependencies.
+    for (number, patch) in &manifest.patches {
+        write_tag(output, &format!("Patch{number}:"), &patch.path, column);
+    }
+    output.push('\n');
 }
 
 fn write_tag(output: &mut String, label: &str, value: &str, column: usize) {

@@ -80,6 +80,100 @@ impl Input {
         }
         Ok(())
     }
+    fn publish_spec(
+        &self,
+        options: &Options,
+        workspace: &workspace::Workspace,
+        development: &mut workspace::Development,
+        target: &Path,
+        generated: &Generated,
+        written: &mut Vec<PathBuf>,
+    ) -> Result<(), GenerateError> {
+        // Explicit publication is the gate: no derived artifacts appear when
+        // the check or destination fails. Only auto needs a checkout.
+        if let Some(spec) = &options.spec {
+            if spec == Path::new("auto") {
+                // Retain the same WORK lock from input selection through publication.
+                workspace
+                    .materialize(development)
+                    .map_err(GenerateError::Workspace)?;
+            }
+            let source_path = self
+                .bound
+                .as_ref()
+                .map_or(&self.path, |draft| &draft.source);
+            let original = self
+                .bound
+                .as_ref()
+                .map_or(self.original_document.as_str(), |draft| {
+                    draft.original.as_str()
+                });
+            let outcomes = options
+                .output
+                .emit_from(target, generated.spec.source(), source_path, original)
+                .map_err(GenerateError::Output)?;
+            written.extend(outcomes.into_iter().filter_map(|outcome| match outcome {
+                file_output::EditOutcome::Written(path) => Some(path),
+                _ => None,
+            }));
+            if spec == Path::new("auto")
+                && let Some(bound) = &self.bound
+            {
+                // A skipped conflict is not publication; rebase only observed bytes.
+                if utf8_file::read(target).map_err(GenerateError::Input)? == generated.spec.source()
+                {
+                    let fields = &bound.fields;
+                    let baseline = Snapshot::capture_selected(&generated.spec, fields)
+                        .map_err(GenerateError::Invalid)?;
+                    // Rebase the exact published declarations, not the derived
+                    // completion table that intentionally omits unobserved hashes.
+                    stage::update(
+                        &bound.path,
+                        fields,
+                        baseline.document(),
+                        Some(generated.spec.source()),
+                    )
+                    .map_err(GenerateError::Invalid)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn cache(
+        &self,
+        generated: &Generated,
+        resolved_path: &Path,
+        package: &str,
+        hashes: Option<&BTreeMap<u32, source::Download>>,
+        failures: &BTreeMap<u32, source::Error>,
+        unpublished: bool,
+    ) -> Result<(), GenerateError> {
+        if unpublished {
+            self.unchanged()?;
+        }
+        let document = resolved_document(self, generated, hashes, failures)?;
+        file_output::write_artifact(resolved_path, document.as_bytes()).map_err(|source| {
+            GenerateError::ArtifactWrite {
+                path: resolved_path.to_owned(),
+                source,
+            }
+        })?;
+        let dir = resolved_path.parent().expect("resolved TOML has a parent");
+        let cache_dir = if self.bound.is_some() {
+            dir.to_path_buf()
+        } else {
+            dir.join("stage")
+        };
+        stage::cache(&cache_dir, package, generated.spec.source())
+            .map_err(GenerateError::Invalid)?;
+        if let Some(bound) = &self.bound {
+            let diff = stage::diff(&bound.source, &bound.original, generated.spec.source())
+                .map_err(GenerateError::Invalid)?;
+            stage::save_diff(&cache_dir, package, &diff).map_err(GenerateError::Invalid)?;
+        }
+        Ok(())
+    }
 }
 
 struct Generated {
@@ -123,16 +217,48 @@ struct GenerationReport<'a> {
 
 /// WORK explicitly selects the authority; derived files never become inputs.
 pub(crate) fn run(options: &Options) -> Result<bool, GenerateError> {
-    let mut manifest_path = None;
-    let mut baseline_path = None;
-    let mut manifest_digest = None;
-    let mut hashes = (!options.offline).then(BTreeMap::new);
-    let mut failures = BTreeMap::new();
-    let mut warnings = Vec::new();
-    let mut candidate = None;
-    let mut target = None;
-    let mut written = Vec::new();
-    let result = (|| {
+    let mut generation = Generation {
+        hashes: (!options.offline).then(BTreeMap::new),
+        ..Generation::default()
+    };
+    let result = generation
+        .execute(options)
+        .map_err(|error| error.with_written(&generation.written));
+    if options.check && matches!(options.format, Some(ReportFormat::Toml)) {
+        let report = generation.report(options, &result);
+        crate::report::write(&mut io::stdout().lock(), &report).map_err(GenerateError::Report)?;
+        return Ok(report.success);
+    }
+    generation.write_human(options)?;
+    result
+}
+
+#[derive(Default)]
+struct Generation {
+    manifest_path: Option<PathBuf>,
+    baseline_path: Option<PathBuf>,
+    manifest_digest: Option<String>,
+    hashes: Option<BTreeMap<u32, source::Download>>,
+    failures: BTreeMap<u32, source::Error>,
+    warnings: Vec<String>,
+    candidate: Option<Generated>,
+    target: Option<PathBuf>,
+    written: Vec<PathBuf>,
+}
+
+impl Generation {
+    fn execute(&mut self, options: &Options) -> Result<bool, GenerateError> {
+        let Self {
+            manifest_path,
+            baseline_path,
+            manifest_digest,
+            hashes,
+            failures,
+            warnings,
+            candidate,
+            target,
+            written,
+        } = self;
         let workspace = workspace::discover().map_err(GenerateError::Workspace)?;
         let mut development = workspace
             .existing_development(&options.work)
@@ -156,42 +282,31 @@ pub(crate) fn run(options: &Options) -> Result<bool, GenerateError> {
                 .join("stage")
                 .join(format!("{}.toml", development.package())),
         };
-        manifest_path = Some(selected_path);
-        let mut input = load(
-            &development,
-            selected_input,
-            &mut manifest_path,
-            &mut manifest_digest,
-        )?;
-        baseline_path = input.bound.as_ref().map(|draft| draft.source.clone());
+        *manifest_path = Some(selected_path);
+        let mut input = load(&development, selected_input, manifest_path, manifest_digest)?;
+        *baseline_path = input.bound.as_ref().map(|draft| draft.source.clone());
         let resolved_path = input
             .path
             .with_file_name(format!("{}.resolved.toml", development.package()));
         let selected_target = spec_target(options, &development, &resolved_path);
-        target = Some(selected_target.clone());
+        *target = Some(selected_target.clone());
         if !options.output.stdout && !options.output.diff {
             protect_target(&input, &selected_target, &resolved_path, &development)?;
         }
         let generated = if input.bound.is_some() {
-            from_stage(
-                &mut input,
-                options,
-                &mut hashes,
-                &mut failures,
-                &mut warnings,
-            )?
+            from_stage(&mut input, options, hashes, failures, warnings)?
         } else {
             from_authoring(
                 &mut input,
                 development.package(),
                 options,
-                &mut hashes,
-                &mut failures,
-                &mut warnings,
+                hashes,
+                failures,
+                warnings,
             )?
         };
         let valid = generated.admissible();
-        candidate = Some(generated);
+        *candidate = Some(generated);
         if options.check {
             return Ok(valid);
         }
@@ -220,175 +335,123 @@ pub(crate) fn run(options: &Options) -> Result<bool, GenerateError> {
                 .map_err(GenerateError::Output)?;
             return Ok(true);
         }
-        // Explicit publication is the gate: no derived artifacts appear when
-        // the check or destination fails. Only auto needs a checkout.
-        if let Some(spec) = &options.spec {
-            if spec == Path::new("auto") {
-                // Retain the same WORK lock from input selection through publication.
-                workspace
-                    .materialize(&mut development)
-                    .map_err(GenerateError::Workspace)?;
-            }
-            let source_path = input
-                .bound
-                .as_ref()
-                .map_or(&input.path, |draft| &draft.source);
-            let original = input
-                .bound
-                .as_ref()
-                .map_or(input.original_document.as_str(), |draft| {
-                    draft.original.as_str()
-                });
-            let outcomes = options
-                .output
-                .emit_from(
-                    &selected_target,
-                    generated.spec.source(),
-                    source_path,
-                    original,
-                )
-                .map_err(GenerateError::Output)?;
-            written.extend(outcomes.into_iter().filter_map(|outcome| match outcome {
-                file_output::EditOutcome::Written(path) => Some(path),
-                _ => None,
-            }));
-            if spec == Path::new("auto")
-                && let Some(bound) = &input.bound
-            {
-                // A skipped conflict is not publication; rebase only observed bytes.
-                if utf8_file::read(&selected_target).map_err(GenerateError::Input)?
-                    == generated.spec.source()
-                {
-                    let fields = &bound.fields;
-                    let baseline = Snapshot::capture_selected(&generated.spec, fields)
-                        .map_err(GenerateError::Invalid)?;
-                    // Rebase the exact published declarations, not the derived
-                    // completion table that intentionally omits unobserved hashes.
-                    stage::update(
-                        &bound.path,
-                        fields,
-                        baseline.document(),
-                        Some(generated.spec.source()),
-                    )
-                    .map_err(GenerateError::Invalid)?;
-                }
-            }
-        }
-        if options.spec.is_none() {
-            input.unchanged()?;
-        }
-        let document = resolved_document(&input, generated, hashes.as_ref(), &failures)?;
-        file_output::write_artifact(&resolved_path, document.as_bytes()).map_err(|source| {
-            GenerateError::ArtifactWrite {
-                path: resolved_path.clone(),
-                source,
-            }
-        })?;
-        let dir = resolved_path.parent().expect("resolved TOML has a parent");
-        let cache_dir = if input.bound.is_some() {
-            dir.to_path_buf()
-        } else {
-            dir.join("stage")
-        };
-        stage::cache(&cache_dir, development.package(), generated.spec.source())
-            .map_err(GenerateError::Invalid)?;
-        if let Some(bound) = &input.bound {
-            let diff = stage::diff(&bound.source, &bound.original, generated.spec.source())
-                .map_err(GenerateError::Invalid)?;
-            stage::save_diff(&cache_dir, development.package(), &diff)
-                .map_err(GenerateError::Invalid)?;
-        }
+        input.publish_spec(
+            options,
+            &workspace,
+            &mut development,
+            &selected_target,
+            generated,
+            written,
+        )?;
+        input.cache(
+            generated,
+            &resolved_path,
+            development.package(),
+            hashes.as_ref(),
+            failures,
+            options.spec.is_none(),
+        )?;
         if options.input.is_some() {
             development
                 .select_input(selected_input)
                 .map_err(GenerateError::Workspace)?;
         }
         Ok(true)
-    })()
-    .map_err(|error: GenerateError| error.with_written(&written));
-    if options.check && matches!(options.format, Some(ReportFormat::Toml)) {
+    }
+
+    fn report<'a>(
+        &'a self,
+        options: &'a Options,
+        result: &Result<bool, GenerateError>,
+    ) -> GenerationReport<'a> {
         let success = result.as_ref().is_ok_and(|admissible| *admissible);
-        let report = GenerationReport {
+        GenerationReport {
             format_version: 4,
             tool: crate::tool::identity(),
-            scope: if candidate
+            scope: if self
+                .candidate
                 .as_ref()
-                .is_some_and(|candidate| candidate.manifest.is_none())
+                .is_some_and(|generated| generated.manifest.is_none())
             {
                 "selected-generation-static"
             } else {
                 "manifest-generation-static"
             },
-            valid: candidate
+            valid: self
+                .candidate
                 .as_ref()
-                .and_then(|candidate| candidate.report.as_ref())
+                .and_then(|generated| generated.report.as_ref())
                 .map(CheckReport::is_success),
-            admissible: candidate.as_ref().map(Generated::admissible),
+            admissible: self.candidate.as_ref().map(Generated::admissible),
             success,
-            baseline_report: candidate
+            baseline_report: self
+                .candidate
                 .as_ref()
-                .and_then(|candidate| candidate.baseline.as_ref())
+                .and_then(|generated| generated.baseline.as_ref())
                 .map(|report| {
-                    report.structured(baseline_path.as_deref().expect("baseline source"))
+                    report.structured(self.baseline_path.as_deref().expect("baseline source"))
                 }),
             input: crate::report::Input {
-                display_path: manifest_path.as_ref().map_or_else(
+                display_path: self.manifest_path.as_ref().map_or_else(
                     || options.work.as_str().into(),
                     |path| path.to_string_lossy(),
                 ),
-                sha256: manifest_digest.as_deref(),
+                sha256: self.manifest_digest.as_deref(),
                 revision: None,
             },
             work: &options.work,
             profile: crate::profile::identity(),
-            build_contract: candidate
+            build_contract: self
+                .candidate
                 .as_ref()
-                .and_then(|candidate| candidate.manifest.as_ref())
+                .and_then(|generated| generated.manifest.as_ref())
                 .and_then(|manifest| manifest.build.system.as_deref())
                 .and_then(crate::profile::buildsystems::contract_identity),
-            report: candidate
+            report: self
+                .candidate
                 .as_ref()
-                .and_then(|candidate| candidate.report.as_ref())
-                .map(|report| report.structured(target.as_deref().expect("candidate target"))),
-            source_hashes: hashes.as_ref().map(crate::report::Numbered),
-            source_hash_failures: crate::report::Numbered(&failures),
-            authoring_warnings: &warnings,
+                .and_then(|generated| generated.report.as_ref())
+                .map(|report| report.structured(self.target.as_deref().expect("candidate target"))),
+            source_hashes: self.hashes.as_ref().map(crate::report::Numbered),
+            source_hash_failures: crate::report::Numbered(&self.failures),
+            authoring_warnings: &self.warnings,
             error: result
                 .as_ref()
                 .err()
                 .map(|error| crate::report::failure(error.code(), error)),
+        }
+    }
+
+    fn write_human(&self, options: &Options) -> Result<(), GenerateError> {
+        let warn = |message: std::fmt::Arguments<'_>| {
+            output_cli::human(
+                &mut io::stderr().lock(),
+                output_cli::HumanLevel::Warn,
+                Some(Path::new(&options.work)),
+                message,
+            )
+            .map_err(|error| GenerateError::Stderr(error).with_written(&self.written))
         };
-        crate::report::write(&mut io::stdout().lock(), &report).map_err(GenerateError::Report)?;
-        return Ok(success);
+        for (number, error) in &self.failures {
+            warn(format_args!(
+                "sources.{number}.sha256: not calculated: {error}; left missing"
+            ))?;
+        }
+        for warning in &self.warnings {
+            warn(format_args!("{warning}"))?;
+        }
+        if let Some(report) = self
+            .candidate
+            .as_ref()
+            .and_then(|candidate| candidate.report.as_ref())
+        {
+            let subject = PathBuf::from(format!("{} (candidate)", options.work));
+            report
+                .write_human(&subject, &mut io::stderr().lock())
+                .map_err(|error| GenerateError::Stderr(error).with_written(&self.written))?;
+        }
+        Ok(())
     }
-    for (number, error) in &failures {
-        output_cli::human(
-            &mut io::stderr().lock(),
-            output_cli::HumanLevel::Warn,
-            Some(Path::new(&options.work)),
-            format_args!("sources.{number}.sha256: not calculated: {error}; left missing"),
-        )
-        .map_err(|error| GenerateError::Stderr(error).with_written(&written))?;
-    }
-    for warning in &warnings {
-        output_cli::human(
-            &mut io::stderr().lock(),
-            output_cli::HumanLevel::Warn,
-            Some(Path::new(&options.work)),
-            format_args!("{warning}"),
-        )
-        .map_err(|error| GenerateError::Stderr(error).with_written(&written))?;
-    }
-    if let Some(report) = candidate
-        .as_ref()
-        .and_then(|candidate| candidate.report.as_ref())
-    {
-        let subject = PathBuf::from(format!("{} (candidate)", options.work));
-        report
-            .write_human(&subject, &mut io::stderr().lock())
-            .map_err(|error| GenerateError::Stderr(error).with_written(&written))?;
-    }
-    result
 }
 
 fn load(
@@ -558,7 +621,6 @@ fn from_stage(
         .render_before_hashing(&input.document, &[])
         .map_err(GenerateError::Invalid)?;
     let resolved = crate::spec::sources::resolve(&pending, &[]).map_err(GenerateError::Invalid)?;
-    let mut numbers = Vec::new();
     let original_sources =
         crate::spec::sources::resolve(&parsed, &[]).map_err(GenerateError::Invalid)?;
     let changed_urls = resolved
@@ -575,81 +637,30 @@ fn from_stage(
     for number in &changed_urls {
         warnings.push(format!("sources.{number}: effective URL changed; any retained digest is a declaration, not verification of the new URL; use --hash to recalculate"));
     }
-    let complete_sources = resolved.incomplete.is_none();
-    if !options.offline && !complete_sources {
-        let reason = resolved
-            .incomplete
-            .as_deref()
-            .expect("incomplete source resolution");
-        if options.hash {
-            return Err(GenerateError::Invalid(format!(
-                "cannot recalculate Source digests: {reason}"
-            )));
-        }
-        warnings.push(format!("sources: automatic digest completion skipped: {reason}; unresolved facts were not inferred"));
-    }
-    if !options.offline && complete_sources {
-        for (number, material) in &resolved.sources {
-            let Ok(url) = &material.url else {
-                continue;
-            };
-            if !source::is_remote_url(url) {
-                continue;
-            }
-            let supplied = crate::spec::document::table::lookup(
-                &input.document,
-                &format!("sources.{number}.sha256"),
-            )
-            .and_then(Value::as_str)
-            .is_some_and(|digest| !digest.is_empty());
-            let missing_changed_digest =
-                changed_urls.contains(number) && !explicit_digests.contains(number);
-            if !options.hash
-                && !missing_changed_digest
-                && (supplied || material.digest.as_ref().is_ok_and(Option::is_some))
-            {
-                continue;
-            }
-            numbers.push(*number);
-            let field = format!("sources.{number}.sha256");
-            if !fields.is_empty()
-                && !fields.iter().any(|selected| {
-                    selected == &field || field.starts_with(&format!("{selected}."))
-                })
-            {
-                fields.push(field);
-            }
+    let numbers = stage_downloads(
+        &input.document,
+        &resolved,
+        &changed_urls,
+        &explicit_digests,
+        options,
+        warnings,
+    )?;
+    for number in &numbers {
+        let field = format!("sources.{number}.sha256");
+        if !fields.is_empty()
+            && !fields
+                .iter()
+                .any(|selected| selected == &field || field.starts_with(&format!("{selected}.")))
+        {
+            fields.push(field);
         }
     }
     if fields != bound.fields {
         snapshot = Snapshot::capture_selected(&parsed, &fields).map_err(GenerateError::Invalid)?;
         stage::complete_missing(&mut input.document, snapshot.document());
     }
+    complete_stage_digests(&mut input.document, &numbers, &resolved, hashes, failures)?;
     if !numbers.is_empty() {
-        for number in &numbers {
-            // Selection already proved these URLs against the edited candidate;
-            // adding digest fields does not change URL resolution.
-            let url = resolved.sources[number]
-                .url
-                .as_ref()
-                .expect("selected resolved URL");
-            match source::RemoteSource::parse(url).and_then(source::RemoteSource::download) {
-                Ok(download) => {
-                    let field = format!("sources.{number}.sha256");
-                    *crate::spec::document::table::lookup_mut(&mut input.document, &field)
-                        .ok_or_else(|| {
-                            GenerateError::Invalid(format!("{field}: digest mapping unavailable"))
-                        })? = Value::String(download.sha256.clone());
-                    hashes
-                        .as_mut()
-                        .expect("downloads enabled")
-                        .insert(*number, download);
-                }
-                Err(error) => {
-                    failures.insert(*number, error.at(*number));
-                }
-            }
-        }
         input.unchanged()?;
         if options.hash && !failures.is_empty() {
             return Err(GenerateError::HashFailed);
@@ -689,6 +700,89 @@ fn from_stage(
         baseline,
         manifest: None,
     })
+}
+
+fn stage_downloads(
+    document: &Table,
+    resolved: &crate::spec::sources::Resolution,
+    changed_urls: &[u32],
+    explicit_digests: &BTreeSet<u32>,
+    options: &Options,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<u32>, GenerateError> {
+    let mut numbers = Vec::new();
+    let complete_sources = resolved.incomplete.is_none();
+    if !options.offline && !complete_sources {
+        let reason = resolved
+            .incomplete
+            .as_deref()
+            .expect("incomplete source resolution");
+        if options.hash {
+            return Err(GenerateError::Invalid(format!(
+                "cannot recalculate Source digests: {reason}"
+            )));
+        }
+        warnings.push(format!("sources: automatic digest completion skipped: {reason}; unresolved facts were not inferred"));
+    }
+    if !options.offline && complete_sources {
+        for (number, material) in &resolved.sources {
+            let Ok(url) = &material.url else {
+                continue;
+            };
+            if !source::is_remote_url(url) {
+                continue;
+            }
+            let supplied =
+                crate::spec::document::table::lookup(document, &format!("sources.{number}.sha256"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|digest| !digest.is_empty());
+            let missing_changed_digest =
+                changed_urls.contains(number) && !explicit_digests.contains(number);
+            if !options.hash
+                && !missing_changed_digest
+                && (supplied || material.digest.as_ref().is_ok_and(Option::is_some))
+            {
+                continue;
+            }
+            numbers.push(*number);
+        }
+    }
+    Ok(numbers)
+}
+
+fn complete_stage_digests(
+    document: &mut Table,
+    numbers: &[u32],
+    resolved: &crate::spec::sources::Resolution,
+    hashes: &mut Option<BTreeMap<u32, source::Download>>,
+    failures: &mut BTreeMap<u32, source::Error>,
+) -> Result<(), GenerateError> {
+    if !numbers.is_empty() {
+        for number in numbers {
+            // Selection already proved these URLs against the edited candidate;
+            // adding digest fields does not change URL resolution.
+            let url = resolved.sources[number]
+                .url
+                .as_ref()
+                .expect("selected resolved URL");
+            match source::RemoteSource::parse(url).and_then(source::RemoteSource::download) {
+                Ok(download) => {
+                    let field = format!("sources.{number}.sha256");
+                    *crate::spec::document::table::lookup_mut(document, &field).ok_or_else(
+                        || GenerateError::Invalid(format!("{field}: digest mapping unavailable")),
+                    )? = Value::String(download.sha256.clone());
+                    hashes
+                        .as_mut()
+                        .expect("downloads enabled")
+                        .insert(*number, download);
+                }
+                Err(error) => {
+                    failures.insert(*number, error.at(*number));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A read-only view of the same prepared facts used to render the candidate.

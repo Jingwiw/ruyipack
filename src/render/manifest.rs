@@ -79,7 +79,7 @@ struct PackageInput {
     requires: Vec<String>,
     #[serde(default)]
     provides: Vec<String>,
-    /// Architecture-independent package; arbitrary BuildArch lists are not supported.
+    /// Architecture-independent package; arbitrary `BuildArch` lists are not supported.
     #[serde(default)]
     noarch: bool,
     #[serde(default)]
@@ -187,7 +187,7 @@ fn resolve_vcs(input: &VcsInput) -> Result<Vcs, String> {
     }
 }
 /// An RPM Source declaration. Local material is not
-/// downloaded or assigned a RemoteAsset marker; generation never opens it.
+/// downloaded or assigned a `RemoteAsset` marker; generation never opens it.
 #[derive(Deserialize, JsonSchema)]
 #[serde(untagged, deny_unknown_fields)]
 pub(crate) enum Source {
@@ -467,75 +467,11 @@ fn resolve(mut input: ManifestInput) -> Result<Manifest, RenderError> {
             None
         }
     };
-    if !input.sources.iter().any(|(number, _)| *number == 0) {
-        record(Err(invalid("sources", "sources.0 is required")));
+    for error in validate_materials(&input.package, &input.sources, &input.patches) {
+        record(Err(error));
     }
-    for (number, source) in &input.sources {
-        let field = format!("sources.{number}");
-        match source {
-            Source::Remote { url, sha256 } => {
-                record(validate_source_url(&format!("{field}.url"), url, package));
-                if let Some(hash) = sha256 {
-                    record(
-                        crate::source::validate_sha256(hash)
-                            .map_err(|reason| invalid(&format!("{field}.sha256"), reason)),
-                    );
-                }
-            }
-            Source::Local { path } => record(validate_local_path(&format!("{field}.path"), path)),
-        }
-    }
-    for (number, patch) in &input.patches {
-        record(validate_local_path(
-            &format!("patches.{number}.path"),
-            &patch.path,
-        ));
-    }
-    if let Some(system) = &input.build.system
-        && crate::profile::buildsystems::contract(system).is_none()
-    {
-        record(Err(invalid(
-            "build.system",
-            &format!("unsupported build system {system:?}"),
-        )));
-    }
-    for (stage, config) in &input.build.stages {
-        if input.build.system.is_none() && !config.options.is_empty() {
-            record(Err(invalid(
-                &format!("build.stages.{}.options", stage.as_str()),
-                "requires build.system; put arguments in the explicit stage script",
-            )));
-        }
-        if config.replace.is_some() && !config.options.is_empty() {
-            record(Err(invalid(
-                &format!("build.stages.{}", stage.as_str()),
-                "options cannot be combined with replace; put arguments in the replacement script",
-            )));
-        }
-        for option in &config.options {
-            record(validate_single_line(
-                &format!("build.stages.{}.options", stage.as_str()),
-                option,
-            ));
-        }
-        for (name, script) in [
-            ("prepend", Some(config.prepend.as_str())),
-            ("replace", config.replace.as_deref()),
-            ("append", Some(config.append.as_str())),
-        ] {
-            let Some(script) = script else {
-                continue;
-            };
-            if script
-                .chars()
-                .any(|c| c.is_control() && c != '\n' && c != '\t')
-            {
-                record(Err(invalid(
-                    &format!("build.stages.{}.{name}", stage.as_str()),
-                    "expected script text using LF line endings without control characters other than tabs",
-                )));
-            }
-        }
+    for error in validate_build(&input.build) {
+        record(Err(error));
     }
     for requirement in &build_requires.rpm {
         record(validate_single_line("build-requires.rpm", requirement));
@@ -549,34 +485,10 @@ fn resolve(mut input: ManifestInput) -> Result<Manifest, RenderError> {
         &package.files,
         true,
     ));
-    let mut package_names = BTreeSet::from([package.name.clone()]);
-    for (name, subpackage) in &input.subpackages {
-        let field = format!("subpackages.{name}");
-        if let Err(message) = crate::check::metadata::Field::Name.validate_at(name, &field) {
-            errors.push(message);
-        }
-        let effective_name = if subpackage.full_name {
-            name.clone()
-        } else {
-            format!("{}-{name}", package.name)
-        };
-        // Distinct table keys can still designate the same RPM package.
-        if !package_names.insert(effective_name.clone()) {
-            errors.push(invalid(
-                &field,
-                &format!("duplicate package name {effective_name:?}"),
-            ));
-        }
-        errors.extend(validate_body(
-            &field,
-            &subpackage.summary,
-            &subpackage.description,
-            &subpackage.requires,
-            &subpackage.provides,
-            &subpackage.files,
-            false,
-        ));
-    }
+    errors.extend(validate_subpackages(
+        &input.package.name,
+        &input.subpackages,
+    ));
 
     if !errors.is_empty() {
         return Err(RenderError::Invalid(errors.join("\n")));
@@ -623,6 +535,139 @@ fn resolve(mut input: ManifestInput) -> Result<Manifest, RenderError> {
         build_requires,
         subpackages,
     })
+}
+
+fn validate_materials(
+    package: &PackageInput,
+    sources: &[(u32, Source)],
+    patches: &[(u32, Patch)],
+) -> Vec<String> {
+    let invalid = |field: &str, reason: &str| format!("{field}: {reason}");
+    let mut errors = Vec::new();
+    let mut record = |result: Result<(), String>| {
+        if let Err(error) = result {
+            errors.push(error);
+        }
+    };
+    if !sources.iter().any(|(number, _)| *number == 0) {
+        record(Err(invalid("sources", "sources.0 is required")));
+    }
+    for (number, source) in sources {
+        let field = format!("sources.{number}");
+        match source {
+            Source::Remote { url, sha256 } => {
+                record(validate_source_url(&format!("{field}.url"), url, package));
+                if let Some(hash) = sha256 {
+                    record(
+                        crate::source::validate_sha256(hash)
+                            .map_err(|reason| invalid(&format!("{field}.sha256"), reason)),
+                    );
+                }
+            }
+            Source::Local { path } => record(validate_local_path(&format!("{field}.path"), path)),
+        }
+    }
+    for (number, patch) in patches {
+        record(validate_local_path(
+            &format!("patches.{number}.path"),
+            &patch.path,
+        ));
+    }
+    errors
+}
+
+fn validate_build(build: &Build) -> Vec<String> {
+    let invalid = |field: &str, reason: &str| format!("{field}: {reason}");
+    let mut errors = Vec::new();
+    let mut record = |result: Result<(), String>| {
+        if let Err(error) = result {
+            errors.push(error);
+        }
+    };
+    if let Some(system) = &build.system
+        && crate::profile::buildsystems::contract(system).is_none()
+    {
+        record(Err(invalid(
+            "build.system",
+            &format!("unsupported build system {system:?}"),
+        )));
+    }
+    for (stage, config) in &build.stages {
+        if build.system.is_none() && !config.options.is_empty() {
+            record(Err(invalid(
+                &format!("build.stages.{}.options", stage.as_str()),
+                "requires build.system; put arguments in the explicit stage script",
+            )));
+        }
+        if config.replace.is_some() && !config.options.is_empty() {
+            record(Err(invalid(
+                &format!("build.stages.{}", stage.as_str()),
+                "options cannot be combined with replace; put arguments in the replacement script",
+            )));
+        }
+        for option in &config.options {
+            record(validate_single_line(
+                &format!("build.stages.{}.options", stage.as_str()),
+                option,
+            ));
+        }
+        for (name, script) in [
+            ("prepend", Some(config.prepend.as_str())),
+            ("replace", config.replace.as_deref()),
+            ("append", Some(config.append.as_str())),
+        ] {
+            let Some(script) = script else {
+                continue;
+            };
+            if script
+                .chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\t')
+            {
+                record(Err(invalid(
+                    &format!("build.stages.{}.{name}", stage.as_str()),
+                    "expected script text using LF line endings without control characters other than tabs",
+                )));
+            }
+        }
+    }
+    errors
+}
+
+fn validate_subpackages(
+    package: &str,
+    subpackages: &BTreeMap<String, SubpackageInput>,
+) -> Vec<String> {
+    let invalid = |field: &str, reason: &str| format!("{field}: {reason}");
+    let mut errors = Vec::new();
+    let mut package_names = BTreeSet::from([package.to_owned()]);
+    for (name, subpackage) in subpackages {
+        let field = format!("subpackages.{name}");
+        if let Err(message) = crate::check::metadata::Field::Name.validate_at(name, &field) {
+            errors.push(message);
+        }
+        let effective_name = if subpackage.full_name {
+            name.clone()
+        } else {
+            format!("{package}-{name}")
+        };
+        // Distinct table keys can still designate the same RPM package.
+        if !package_names.insert(effective_name.clone()) {
+            errors.push(invalid(
+                &field,
+                &format!("duplicate package name {effective_name:?}"),
+            ));
+        }
+        errors.extend(validate_body(
+            &field,
+            &subpackage.summary,
+            &subpackage.description,
+            &subpackage.requires,
+            &subpackage.provides,
+            &subpackage.files,
+            false,
+        ));
+    }
+    errors
 }
 
 /// Reads numeric source keys without silently merging alternate spellings.

@@ -10,6 +10,12 @@ const INPUT: &str = include_str!("../../../examples/ed/ed.toml");
 
 #[test]
 fn snapshot_uses_current_values_and_preserves_material_order_and_empty_replacement() {
+    #[derive(Serialize)]
+    struct Snapshot<'a> {
+        manifest: &'a Manifest,
+        profile: &'a crate::profile::Profile,
+    }
+
     let input = INPUT.replace("no-public-repository = true", "")
         + r#"
 [sources.12]
@@ -30,11 +36,6 @@ replace = ""
     };
     *sha256 = Some("a".repeat(64));
 
-    #[derive(Serialize)]
-    struct Snapshot<'a> {
-        manifest: &'a Manifest,
-        profile: &'a crate::profile::Profile,
-    }
     let output = toml::to_string_pretty(&Snapshot {
         manifest: &manifest,
         profile: crate::profile::load(),
