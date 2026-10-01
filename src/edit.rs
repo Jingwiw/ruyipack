@@ -788,13 +788,18 @@ fn publish(options: &Options, inputs: &[Edit]) -> Result<Vec<file_output::EditOu
             contents: item.result().expect("candidate constructed").spec.source(),
         })
         .collect::<Vec<_>>();
-    let outcomes = file_output::run_edits(&files, options.output.as_deref(), |path| {
-        if options.force {
-            Ok(file_output::ConflictAction::Overwrite)
-        } else {
-            output_cli::select_edit_action(path)
-        }
-    })
+    let outcomes = file_output::run_edits(
+        &mut io::stdout().lock(),
+        &files,
+        options.output.as_deref(),
+        |path| {
+            if options.force {
+                Ok(file_output::ConflictAction::Overwrite)
+            } else {
+                output_cli::select_edit_action(path)
+            }
+        },
+    )
     .map_err(EditError::publication)?;
     rebase_stages(inputs, &outcomes)?;
     if !matches!(options.format, Some(ReportFormat::Toml)) {

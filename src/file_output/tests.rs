@@ -99,8 +99,8 @@ fn copy_selection_is_unreachable_for_directories_or_nameless_targets() {
         contents: "candidate\n",
     }];
     for target in [directory.path(), Path::new(""), Path::new("/")] {
-        assert!(publish(target, "candidate\n", no_prompt).is_err());
-        assert!(run_edits(&files, Some(target), no_prompt).is_err());
+        assert!(publish(&mut io::sink(), target, "candidate\n", no_prompt).is_err());
+        assert!(run_edits(&mut io::sink(), &files, Some(target), no_prompt).is_err());
     }
     assert_eq!(fs::read_to_string(input).unwrap(), "original\n");
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
@@ -135,6 +135,7 @@ fn copy_selection_preserves_extensions_and_existing_sidecars() {
         fs::write(&occupied, "keep\n").unwrap();
         if edit {
             let outcomes = run_edits(
+                &mut io::sink(),
                 &[EditFile {
                     source_path: &input,
                     original: "original\n",
@@ -149,7 +150,10 @@ fn copy_selection_preserves_extensions_and_existing_sidecars() {
                 [EditOutcome::Written(copy.canonicalize().unwrap())]
             );
         } else {
-            publish(&target, "candidate\n", |_| Ok(ConflictAction::Copy)).unwrap();
+            publish(&mut io::sink(), &target, "candidate\n", |_| {
+                Ok(ConflictAction::Copy)
+            })
+            .unwrap();
         }
         for (path, expected) in [
             (&input, "original\n"),
@@ -170,6 +174,7 @@ fn edit_selection_cannot_authorize_a_changed_source_or_destination() {
         let target = source(directory.path(), "output.spec", "other\n");
         let changed = if change_source { &input } else { &target };
         let result = run_edits(
+            &mut io::sink(),
             &[EditFile {
                 source_path: &input,
                 original: "original\n",
@@ -199,7 +204,9 @@ fn edit_diff_returns_to_selection_and_cancellation_does_not_publish() {
     let input = source(directory.path(), "input.spec", "original\n");
     let target = source(directory.path(), "output.spec", "other\n");
     let mut selections = 0;
+    let mut diff = Vec::new();
     let result = run_edits(
+        &mut diff,
         &[EditFile {
             source_path: &input,
             original: "original\n",
@@ -220,6 +227,13 @@ fn edit_diff_returns_to_selection_and_cancellation_does_not_publish() {
     let error = result.unwrap_err();
     assert_eq!(selections, 2);
     assert_eq!(
+        String::from_utf8(diff).unwrap(),
+        format!(
+            "--- {0}\t\n+++ {0}\t\n@@ -1 +1 @@\n-other\n+candidate\n",
+            target.display()
+        )
+    );
+    assert_eq!(
         std::error::Error::source(&error).unwrap().to_string(),
         "cancelled"
     );
@@ -233,7 +247,8 @@ fn generated_diff_returns_to_selection_and_rechecks_the_target() {
     let directory = tempfile::tempdir().unwrap();
     let target = source(directory.path(), "output.spec", "other\n");
     let mut selections = 0;
-    let result = publish(&target, "candidate\n", |path| {
+    let mut diff = Vec::new();
+    let result = publish(&mut diff, &target, "candidate\n", |path| {
         selections += 1;
         if selections == 1 {
             Ok(ConflictAction::Diff)
@@ -244,6 +259,13 @@ fn generated_diff_returns_to_selection_and_rechecks_the_target() {
     });
     assert_matches!(result, Err(OutputError::Changed(path)) if path == target);
     assert_eq!(selections, 2);
+    assert_eq!(
+        String::from_utf8(diff).unwrap(),
+        format!(
+            "--- {0}\t\n+++ {0}\t\n@@ -1 +1 @@\n-other\n+candidate\n",
+            target.display()
+        )
+    );
     assert_eq!(fs::read_to_string(target).unwrap(), "external change\n");
 }
 
@@ -267,7 +289,7 @@ fn all_sources_are_checked_before_force_writes_any_member() {
         },
     ];
     std::assert_matches!(
-        run_edits(&files, None, |_| Ok(ConflictAction::Overwrite)),
+        run_edits(&mut io::sink(), &files, None, |_| Ok(ConflictAction::Overwrite)),
         Err(OutputError::SourceChanged(path)) if path == second
     );
     assert_eq!(fs::read_to_string(first).unwrap(), "first\n");
@@ -317,7 +339,10 @@ fn successful_overwrites_do_not_invalidate_the_remaining_batch() {
         },
     ];
     assert_eq!(
-        run_edits(&files, None, |_| Ok(ConflictAction::Overwrite)).unwrap(),
+        run_edits(&mut io::sink(), &files, None, |_| Ok(
+            ConflictAction::Overwrite
+        ))
+        .unwrap(),
         vec![
             EditOutcome::Written(first.clone()),
             EditOutcome::Written(second.clone())
@@ -342,7 +367,9 @@ fn hardlinked_sources_and_targets_are_rejected() {
         contents: "edited\n",
     }];
     assert_matches!(
-        run_edits(&own_alias, Some(&alias), |_| Ok(ConflictAction::Overwrite)),
+        run_edits(&mut io::sink(), &own_alias, Some(&alias), |_| Ok(
+            ConflictAction::Overwrite
+        )),
         Err(OutputError::EditLayout(_))
     );
     let duplicate_sources = [
@@ -360,7 +387,9 @@ fn hardlinked_sources_and_targets_are_rejected() {
         },
     ];
     assert_matches!(
-        run_edits(&duplicate_sources, None, |_| Ok(ConflictAction::Overwrite)),
+        run_edits(&mut io::sink(), &duplicate_sources, None, |_| Ok(
+            ConflictAction::Overwrite
+        )),
         Err(OutputError::EditLayout(_))
     );
     assert_eq!(fs::read_to_string(first).unwrap(), "first\n");
@@ -374,6 +403,7 @@ fn edits_preserve_access_permissions_on_existing_and_new_targets() {
     fs::set_permissions(&input, fs::Permissions::from_mode(0o640)).unwrap();
     let target = directory.path().canonicalize().unwrap().join("new.spec");
     run_edits(
+        &mut io::sink(),
         &[EditFile {
             source_path: &input,
             original: "original\n",
@@ -389,6 +419,7 @@ fn edits_preserve_access_permissions_on_existing_and_new_targets() {
         0o640
     );
     run_edits(
+        &mut io::sink(),
         &[EditFile {
             source_path: &input,
             original: "original\n",
@@ -416,7 +447,10 @@ fn unchanged_edits_do_not_replace_files() {
         contents: "same\n",
     }];
     assert_eq!(
-        run_edits(&files, None, |_| Ok(ConflictAction::Overwrite)).unwrap(),
+        run_edits(&mut io::sink(), &files, None, |_| Ok(
+            ConflictAction::Overwrite
+        ))
+        .unwrap(),
         vec![EditOutcome::Unchanged(input.clone())]
     );
     let after = fs::metadata(&input).unwrap();
@@ -449,7 +483,9 @@ fn a_later_write_failure_retains_exact_written_paths() {
         },
     ];
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
-    let result = run_edits(&files, None, |_| Ok(ConflictAction::Overwrite));
+    let result = run_edits(&mut io::sink(), &files, None, |_| {
+        Ok(ConflictAction::Overwrite)
+    });
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
     let Err(OutputError::Partial { written, source }) = result else {
         panic!("expected a partial permission failure: {result:?}")

@@ -275,9 +275,16 @@ impl OutputActionOptions {
                     });
                 }
             };
-            return file_output::show_diff(path, existing.as_deref(), contents);
+            return file_output::write_diff(
+                &mut io::stdout().lock(),
+                path,
+                existing.as_deref(),
+                contents,
+            );
         }
-        let outcome = file_output::publish(path, contents, |path| self.choose(path))?;
+        let outcome = file_output::publish(&mut io::stdout().lock(), path, contents, |path| {
+            self.choose(path)
+        })?;
         if matches!(outcome, EditOutcome::Skipped(_))
             || matches!(&outcome, EditOutcome::Written(copy) if copy != path)
         {
@@ -302,7 +309,10 @@ impl OutputActionOptions {
             original,
             contents,
         };
-        file_output::run_edits(&[file], Some(path), |path| self.choose(path)).and_then(|outcomes| {
+        file_output::run_edits(&mut io::stdout().lock(), &[file], Some(path), |path| {
+            self.choose(path)
+        })
+        .and_then(|outcomes| {
             for outcome in &outcomes {
                 if matches!(outcome, file_output::EditOutcome::Skipped(_)) {
                     write_outcome(&mut stderr(), outcome).map_err(OutputError::Stderr)?;

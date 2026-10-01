@@ -28,12 +28,14 @@ pub(crate) enum ConflictAction {
 /// Publishes validated text without silently replacing different content.
 /// A selection authorizes an action, not stale bytes: revalidation stays here.
 pub(crate) fn publish(
+    diff: &mut impl Write,
     path: &Path,
     contents: &str,
     mut choose: impl FnMut(&Path) -> Result<ConflictAction, OutputError>,
 ) -> Result<EditOutcome, OutputError> {
     let existing = read_optional_target(path)?;
     publish_one(
+        diff,
         path,
         contents,
         existing.as_deref(),
@@ -60,12 +62,13 @@ pub(crate) enum EditOutcome {
 
 /// Publishes checked candidates, retaining exact paths on partial failure.
 pub(crate) fn run_edits(
+    diff: &mut impl Write,
     files: &[EditFile<'_>],
     output: Option<&Path>,
     mut choose: impl FnMut(&Path) -> Result<ConflictAction, OutputError>,
 ) -> Result<Vec<EditOutcome>, OutputError> {
     let mut outcomes = Vec::new();
-    match run_edit_batch(files, output, &mut choose, &mut outcomes) {
+    match run_edit_batch(diff, files, output, &mut choose, &mut outcomes) {
         Ok(()) => Ok(outcomes),
         Err(source) => {
             let written = outcomes
@@ -88,6 +91,7 @@ pub(crate) fn run_edits(
 }
 
 fn run_edit_batch(
+    diff: &mut impl Write,
     files: &[EditFile<'_>],
     output: Option<&Path>,
     choose: &mut impl FnMut(&Path) -> Result<ConflictAction, OutputError>,
@@ -104,6 +108,7 @@ fn run_edit_batch(
         .collect::<Result<Vec<_>, _>>()?;
     for ((file, target), existing) in files.iter().zip(&targets).zip(&existing) {
         let outcome = publish_one(
+            diff,
             target,
             file.contents,
             existing.as_deref(),
@@ -268,13 +273,13 @@ fn read_target(path: &Path) -> Result<Vec<u8>, OutputError> {
     })
 }
 
-pub(crate) fn show_diff(
+pub(crate) fn write_diff(
+    writer: &mut impl Write,
     path: &Path,
     existing: Option<&[u8]>,
     contents: &str,
 ) -> Result<(), OutputError> {
-    io::stdout()
-        .lock()
+    writer
         .write_all(diff_text(path, existing, contents)?.as_bytes())
         .map_err(OutputError::Stdout)
 }
@@ -309,6 +314,7 @@ pub(crate) fn diff_text(
 /// One conflict/write loop for generated files and source-bound edits. The caller
 /// supplies its live input guard; every menu and publication attempt rechecks it.
 fn publish_one(
+    diff: &mut impl Write,
     path: &Path,
     contents: &str,
     existing: Option<&[u8]>,
@@ -355,7 +361,7 @@ fn publish_one(
                     return Err(OutputError::Changed(path.to_path_buf()));
                 }
                 if matches!(action, ConflictAction::Diff) {
-                    show_diff(path, existing, contents)?;
+                    write_diff(diff, path, existing, contents)?;
                     continue;
                 }
                 let permissions = existing
