@@ -217,13 +217,16 @@ impl CheckReport {
     }
 
     /// Writes human-readable parser diagnostics and static-check findings.
-    pub(crate) fn write_human(&self, path: &Path, writer: &mut impl Write) -> io::Result<()> {
+    pub(crate) fn write_human(
+        &self,
+        path: &Path,
+        writer: &mut output_cli::HumanOutput<impl Write>,
+    ) -> io::Result<()> {
         if !self.parser_diagnostics.is_empty()
             || !self.findings.is_empty()
             || !self.incomplete_reasons.is_empty()
         {
-            output_cli::human(
-                writer,
+            writer.message(
                 HumanLevel::Info,
                 Some(path),
                 format_args!(
@@ -243,10 +246,12 @@ impl CheckReport {
         self.write_incomplete(writer)
     }
 
-    pub(crate) fn write_incomplete(&self, writer: &mut impl Write) -> io::Result<()> {
+    pub(crate) fn write_incomplete(
+        &self,
+        writer: &mut output_cli::HumanOutput<impl Write>,
+    ) -> io::Result<()> {
         for reason in &self.incomplete_reasons {
-            output_cli::human(
-                writer,
+            writer.message(
                 HumanLevel::Error,
                 None,
                 format_args!(
@@ -373,9 +378,11 @@ impl Finding {
             }
     }
 
-    pub(crate) fn write_human(&self, writer: &mut impl Write) -> io::Result<()> {
-        output_cli::diagnostic(
-            writer,
+    pub(crate) fn write_human(
+        &self,
+        writer: &mut output_cli::HumanOutput<impl Write>,
+    ) -> io::Result<()> {
+        writer.diagnostic(
             self.severity.human_level(),
             Some(self.span.start),
             Some(self.code),
@@ -492,7 +499,10 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
 
         let error = report
-            .write_human(Path::new("input.spec"), &mut BrokenWriter)
+            .write_human(
+                Path::new("input.spec"),
+                &mut output_cli::HumanOutput::new(BrokenWriter, false),
+            )
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
     }
@@ -502,7 +512,9 @@ mod tests {
         let path = std::env::current_dir().unwrap().join("pkg.spec");
         let mut report = check("");
         let mut human = Vec::new();
-        report.write_human(&path, &mut human).unwrap();
+        report
+            .write_human(&path, &mut output_cli::HumanOutput::new(&mut human, false))
+            .unwrap();
         let human = String::from_utf8(human).unwrap();
         assert!(human.contains("[ERROR]"), "{human:?}");
         assert!(
@@ -528,7 +540,12 @@ mod tests {
         let manifest_path = std::env::current_dir().unwrap().join("pkg.toml");
         report.set_manifest_input("[package]\n");
         let mut human = Vec::new();
-        report.write_human(&manifest_path, &mut human).unwrap();
+        report
+            .write_human(
+                &manifest_path,
+                &mut output_cli::HumanOutput::new(&mut human, false),
+            )
+            .unwrap();
         let human = String::from_utf8(human).unwrap();
         assert!(
             human.contains("pkg.toml: checking generated SPEC"),

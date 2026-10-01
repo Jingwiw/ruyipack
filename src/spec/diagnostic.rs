@@ -119,7 +119,11 @@ mod tests {
         assert!(converted[2].span.is_none());
         assert_eq!(converted[2].notes, ["the macro recovery context"]);
         let mut output = Vec::new();
-        crate::parser_diagnostic::write(&converted, &mut output).unwrap();
+        crate::parser_diagnostic::write(
+            &converted,
+            &mut crate::output_cli::HumanOutput::new(&mut output, false),
+        )
+        .unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "[ERROR] spec[1:3] [rpmspec/E001]: invalid syntax\n  note: the recovery context\n[WARN] spec: unlocated warning\n[WARN] spec [rpmspec/W0004]: unterminated macro\n  note: the macro recovery context\n"

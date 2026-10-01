@@ -572,13 +572,13 @@ fn execute(options: &Options) -> Result<EditResult, EditError> {
     if !matches!(options.format, Some(ReportFormat::Toml)) {
         for item in &inputs {
             if let Some(path) = &item.draft {
-                output_cli::human(
-                    &mut io::stderr().lock(),
-                    HumanLevel::Info,
-                    Some(&item.subject),
-                    format_args!("stage saved: {}", output_cli::human_path(path).display()),
-                )
-                .map_err(|error| error.to_string())?;
+                output_cli::stderr()
+                    .message(
+                        HumanLevel::Info,
+                        Some(&item.subject),
+                        format_args!("stage saved: {}", output_cli::human_path(path).display()),
+                    )
+                    .map_err(|error| error.to_string())?;
             }
         }
     }
@@ -735,13 +735,9 @@ fn publish(options: &Options, inputs: &[Edit]) -> Result<Vec<file_output::EditOu
     if (options.check || options.apply) && !static_errors.is_empty() {
         if !options.apply && !matches!(options.format, Some(ReportFormat::Toml)) {
             for error in &static_errors {
-                output_cli::human(
-                    &mut io::stderr().lock(),
-                    HumanLevel::Error,
-                    None,
-                    format_args!("{error}"),
-                )
-                .map_err(|error| error.to_string())?;
+                output_cli::stderr()
+                    .message(HumanLevel::Error, None, format_args!("{error}"))
+                    .map_err(|error| error.to_string())?;
             }
         }
         if options.apply {
@@ -803,7 +799,7 @@ fn publish(options: &Options, inputs: &[Edit]) -> Result<Vec<file_output::EditOu
     rebase_stages(inputs, &outcomes)?;
     if !matches!(options.format, Some(ReportFormat::Toml)) {
         for outcome in &outcomes {
-            output_cli::write_outcome(&mut io::stderr().lock(), outcome)
+            output_cli::write_outcome(&mut output_cli::stderr(), outcome)
                 .map_err(|error| error.to_string())?;
         }
     }

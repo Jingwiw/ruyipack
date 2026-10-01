@@ -65,7 +65,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
         let view = Inspection::new(parsed);
         match options.format {
             ReportFormat::Human => {
-                view.write_diagnostics(&input.path, &mut io::stderr().lock())
+                view.write_diagnostics(&input.path, &mut crate::output_cli::stderr())
                     .map_err(ReportError::Stderr)?;
                 view.write_human(&mut output)
             }

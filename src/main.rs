@@ -36,7 +36,7 @@ mod utf8_file;
 mod verify_sources;
 mod workspace;
 
-use std::{fmt, io, process::ExitCode};
+use std::{fmt, process::ExitCode};
 
 use clap::Parser;
 use cli::{Cli, Command};
@@ -68,8 +68,7 @@ fn exit_for<E: fmt::Display>(result: Result<bool, E>) -> ExitCode {
         Ok(false) => ExitCode::FAILURE,
         Err(error) => {
             // The command still fails when stderr is unavailable.
-            let _ = output_cli::human(
-                &mut io::stderr().lock(),
+            let _ = output_cli::stderr().message(
                 output_cli::HumanLevel::Error,
                 None,
                 format_args!("{error}"),

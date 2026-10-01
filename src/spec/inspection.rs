@@ -36,10 +36,13 @@ impl<'src> Inspection<'src> {
         }
     }
 
-    pub(crate) fn write_diagnostics(&self, path: &Path, writer: &mut impl Write) -> io::Result<()> {
+    pub(crate) fn write_diagnostics(
+        &self,
+        path: &Path,
+        writer: &mut crate::output_cli::HumanOutput<impl Write>,
+    ) -> io::Result<()> {
         if !self.diagnostics.is_empty() {
-            crate::output_cli::human(
-                writer,
+            writer.message(
                 crate::output_cli::HumanLevel::Info,
                 Some(path),
                 format_args!("inspecting SPEC"),

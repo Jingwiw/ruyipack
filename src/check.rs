@@ -233,7 +233,7 @@ fn write_report(
     match format {
         ReportFormat::Human => {
             report
-                .write_human(path, &mut io::stderr().lock())
+                .write_human(path, &mut crate::output_cli::stderr())
                 .map_err(ReportError::Stderr)?;
             if let Some(materials) = &report.materials {
                 materials

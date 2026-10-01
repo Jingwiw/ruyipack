@@ -424,13 +424,13 @@ impl Generation {
 
     fn write_human(&self, options: &Options) -> Result<(), GenerateError> {
         let warn = |message: std::fmt::Arguments<'_>| {
-            output_cli::human(
-                &mut io::stderr().lock(),
-                output_cli::HumanLevel::Warn,
-                Some(Path::new(&options.work)),
-                message,
-            )
-            .map_err(|error| GenerateError::Stderr(error).with_written(&self.written))
+            output_cli::stderr()
+                .message(
+                    output_cli::HumanLevel::Warn,
+                    Some(Path::new(&options.work)),
+                    message,
+                )
+                .map_err(|error| GenerateError::Stderr(error).with_written(&self.written))
         };
         for (number, error) in &self.failures {
             warn(format_args!(
@@ -447,7 +447,7 @@ impl Generation {
         {
             let subject = PathBuf::from(format!("{} (candidate)", options.work));
             report
-                .write_human(&subject, &mut io::stderr().lock())
+                .write_human(&subject, &mut output_cli::stderr())
                 .map_err(|error| GenerateError::Stderr(error).with_written(&self.written))?;
         }
         Ok(())

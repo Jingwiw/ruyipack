@@ -36,22 +36,24 @@ pub(crate) struct Diagnostic {
 }
 
 /// Writes every recoverable issue reported by the parser.
-pub(crate) fn write(diagnostics: &[Diagnostic], writer: &mut impl Write) -> io::Result<()> {
+pub(crate) fn write(
+    diagnostics: &[Diagnostic],
+    writer: &mut output_cli::HumanOutput<impl Write>,
+) -> io::Result<()> {
     for diagnostic in diagnostics {
         let level = match diagnostic.severity {
             Severity::Warning => HumanLevel::Warn,
             Severity::Error => HumanLevel::Error,
             Severity::Unknown => HumanLevel::Info,
         };
-        output_cli::diagnostic(
-            writer,
+        writer.diagnostic(
             level,
             diagnostic.span.as_ref().map(|span| span.start),
             diagnostic.code.as_deref(),
             format_args!("{}", diagnostic.message),
         )?;
         for note in &diagnostic.notes {
-            writeln!(writer, "  note: {note}")?;
+            writer.note(note)?;
         }
     }
     Ok(())
@@ -72,12 +74,14 @@ mod tests {
                 notes: vec!["detail".into()],
             });
         let mut output = Vec::new();
-        write(&diagnostics, &mut output).unwrap();
+        write(
+            &diagnostics,
+            &mut output_cli::HumanOutput::new(&mut output, false),
+        )
+        .unwrap();
         let output = String::from_utf8(output).unwrap();
-        // Unit-test runners may inherit a terminal; the process tests separately
-        // assert the exact ANSI/no-ANSI bytes on both output streams.
         assert_eq!(
-            dialoguer::console::strip_ansi_codes(&output),
+            output,
             "[WARN] spec [rpmspec/TEST]: parser message\n  note: detail\n\
              [ERROR] spec [rpmspec/TEST]: parser message\n  note: detail\n\
              [INFO] spec [rpmspec/TEST]: parser message\n  note: detail\n"

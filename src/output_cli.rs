@@ -24,70 +24,78 @@ pub(crate) enum HumanLevel {
     Error,
 }
 
-/// Writes one stderr diagnostic while retaining the caller's I/O error contract.
-/// The supplied subject may be a WORK name; actual paths are displayed relative to cwd.
-pub(crate) fn human(
-    writer: &mut impl Write,
-    level: HumanLevel,
-    subject: Option<&Path>,
-    message: fmt::Arguments<'_>,
-) -> io::Result<()> {
+/// A diagnostic destination owns its color policy; a buffer never inherits stderr's TTY.
+pub(crate) struct HumanOutput<W> {
+    writer: W,
+    color: bool,
+}
+
+pub(crate) fn stderr() -> HumanOutput<io::StderrLock<'static>> {
+    let writer = io::stderr().lock();
     let color = color_allowed(
-        io::stderr().is_terminal(),
+        writer.is_terminal(),
         std::env::var_os("NO_COLOR").is_some(),
         std::env::var_os("TERM").as_deref() == Some(std::ffi::OsStr::new("dumb")),
     );
-    human_with_color(writer, level, subject, message, color)
+    HumanOutput::new(writer, color)
 }
 
-/// Diagnostic coordinates refer to the SPEC identified by the surrounding report.
-/// Zero means the producer supplied no coordinate, not a synthetic line zero.
-pub(crate) fn diagnostic(
-    writer: &mut impl Write,
-    level: HumanLevel,
-    start: Option<(u32, u32)>,
-    code: Option<&str>,
-    message: fmt::Arguments<'_>,
-) -> io::Result<()> {
-    let location = match start {
-        Some((line, column)) if line > 0 && column > 0 => format!("[{line}:{column}]"),
-        Some((line, _)) if line > 0 => format!("[{line}]"),
-        _ => String::new(),
-    };
-    let code = code.map_or_else(String::new, |code| format!(" [{code}]"));
-    human(
-        writer,
-        level,
-        None,
-        format_args!("spec{location}{code}: {message}"),
-    )
+impl<W: Write> HumanOutput<W> {
+    pub(crate) fn new(writer: W, color: bool) -> Self {
+        Self { writer, color }
+    }
+
+    /// The subject may be a WORK name; actual paths are displayed relative to cwd.
+    pub(crate) fn message(
+        &mut self,
+        level: HumanLevel,
+        subject: Option<&Path>,
+        message: fmt::Arguments<'_>,
+    ) -> io::Result<()> {
+        use dialoguer::console::Style;
+
+        let (prefix, style) = match level {
+            HumanLevel::Info => ("[INFO]", Style::new().color256(8).dim()),
+            HumanLevel::Warn => ("[WARN]", Style::new().yellow()),
+            HumanLevel::Error => ("[ERROR]", Style::new().red()),
+        };
+        // Force the destination's policy, including when CLICOLOR_FORCE is set.
+        write!(
+            self.writer,
+            "{} ",
+            style.force_styling(self.color).apply_to(prefix)
+        )?;
+        if let Some(subject) = subject {
+            write!(self.writer, "{}: ", human_path(subject).display())?;
+        }
+        writeln!(self.writer, "{message}")
+    }
+
+    /// Coordinates refer to the SPEC identified by the surrounding report.
+    /// Zero means the producer supplied no coordinate, not a synthetic line zero.
+    pub(crate) fn diagnostic(
+        &mut self,
+        level: HumanLevel,
+        start: Option<(u32, u32)>,
+        code: Option<&str>,
+        message: fmt::Arguments<'_>,
+    ) -> io::Result<()> {
+        let location = match start {
+            Some((line, column)) if line > 0 && column > 0 => format!("[{line}:{column}]"),
+            Some((line, _)) if line > 0 => format!("[{line}]"),
+            _ => String::new(),
+        };
+        let code = code.map_or_else(String::new, |code| format!(" [{code}]"));
+        self.message(level, None, format_args!("spec{location}{code}: {message}"))
+    }
+
+    pub(crate) fn note(&mut self, note: &str) -> io::Result<()> {
+        writeln!(self.writer, "  note: {note}")
+    }
 }
 
 fn color_allowed(terminal: bool, no_color: bool, dumb: bool) -> bool {
     terminal && !no_color && !dumb
-}
-
-fn human_with_color(
-    writer: &mut impl Write,
-    level: HumanLevel,
-    subject: Option<&Path>,
-    message: fmt::Arguments<'_>,
-    color: bool,
-) -> io::Result<()> {
-    use dialoguer::console::Style;
-
-    let (prefix, style) = match level {
-        HumanLevel::Info => ("[INFO]", Style::new().color256(8).dim()),
-        HumanLevel::Warn => ("[WARN]", Style::new().yellow()),
-        HumanLevel::Error => ("[ERROR]", Style::new().red()),
-    };
-    // Explicitly guard NO_COLOR and dumb/non-terminal streams: console's force
-    // environment can otherwise override the terminal check.
-    write!(writer, "{} ", style.force_styling(color).apply_to(prefix))?;
-    if let Some(subject) = subject {
-        write!(writer, "{}: ", human_path(subject).display())?;
-    }
-    writeln!(writer, "{message}")
 }
 
 /// Presentation only; never use this for diff headers, resumable commands or receipts.
@@ -141,14 +149,16 @@ fn relative_path(path: &Path, current: &Path) -> PathBuf {
 }
 
 /// Display an observed publication result; the publisher owns paths and outcomes.
-pub(crate) fn write_outcome(writer: &mut impl Write, outcome: &EditOutcome) -> io::Result<()> {
+pub(crate) fn write_outcome(
+    writer: &mut HumanOutput<impl Write>,
+    outcome: &EditOutcome,
+) -> io::Result<()> {
     let (action, path) = match outcome {
         EditOutcome::Written(path) => ("Wrote", path),
         EditOutcome::Unchanged(path) => ("Unchanged", path),
         EditOutcome::Skipped(path) => ("Kept", path),
     };
-    human(
-        writer,
+    writer.message(
         HumanLevel::Info,
         None,
         format_args!("{action} {}", human_path(path).display()),
@@ -271,7 +281,7 @@ impl OutputActionOptions {
         if matches!(outcome, EditOutcome::Skipped(_))
             || matches!(&outcome, EditOutcome::Written(copy) if copy != path)
         {
-            write_outcome(&mut io::stderr().lock(), &outcome).map_err(OutputError::Stderr)?;
+            write_outcome(&mut stderr(), &outcome).map_err(OutputError::Stderr)?;
         }
         Ok(())
     }
@@ -295,8 +305,7 @@ impl OutputActionOptions {
         file_output::run_edits(&[file], Some(path), |path| self.choose(path)).and_then(|outcomes| {
             for outcome in &outcomes {
                 if matches!(outcome, file_output::EditOutcome::Skipped(_)) {
-                    write_outcome(&mut io::stderr().lock(), outcome)
-                        .map_err(OutputError::Stderr)?;
+                    write_outcome(&mut stderr(), outcome).map_err(OutputError::Stderr)?;
                 }
             }
             Ok(outcomes)
@@ -322,8 +331,7 @@ fn select_action(path: &Path) -> Result<ConflictAction, OutputError> {
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return Err(conflict().into());
     }
-    human(
-        &mut io::stderr().lock(),
+    stderr().message(
         HumanLevel::Warn,
         Some(path),
         format_args!("already exists with different content\nhelp: --force              overwrite the file\n      --diff               show the differences\n      --skip-existing      keep the current file\n      --stdout             preview the complete candidate"),
@@ -337,13 +345,13 @@ pub(crate) fn select_edit_action(path: &Path) -> Result<ConflictAction, OutputEr
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return Err(SelectionError::EditPrompt.into());
     }
-    human(
-        &mut io::stderr().lock(),
-        HumanLevel::Info,
-        None,
-        format_args!("This file will change:\n  {}", human_path(path).display()),
-    )
-    .map_err(OutputError::Stderr)?;
+    stderr()
+        .message(
+            HumanLevel::Info,
+            None,
+            format_args!("This file will change:\n  {}", human_path(path).display()),
+        )
+        .map_err(OutputError::Stderr)?;
     choose_conflict_action(path)
 }
 
@@ -423,11 +431,15 @@ mod tests {
         let current = std::env::current_dir().unwrap();
         let mut output = Vec::new();
         for name in ["first/pkg.spec", "second/pkg.spec"] {
-            write_outcome(&mut output, &EditOutcome::Written(current.join(name))).unwrap();
+            write_outcome(
+                &mut HumanOutput::new(&mut output, false),
+                &EditOutcome::Written(current.join(name)),
+            )
+            .unwrap();
         }
         let output = String::from_utf8(output).unwrap();
         assert_eq!(
-            dialoguer::console::strip_ansi_codes(&output),
+            output,
             "[INFO] Wrote first/pkg.spec\n[INFO] Wrote second/pkg.spec\n"
         );
     }
@@ -503,14 +515,13 @@ mod tests {
             (HumanLevel::Error, "\u{1b}[31m"),
         ] {
             let mut output = Vec::new();
-            human_with_color(
-                &mut output,
-                level,
-                Some(Path::new("WORK")),
-                format_args!("same plain body"),
-                true,
-            )
-            .unwrap();
+            HumanOutput::new(&mut output, true)
+                .message(
+                    level,
+                    Some(Path::new("WORK")),
+                    format_args!("same plain body"),
+                )
+                .unwrap();
             let output = String::from_utf8(output).unwrap();
             assert!(output.starts_with(color_prefix), "{output:?}");
             let (prefix, body) = output.split_once(' ').unwrap();
@@ -519,14 +530,13 @@ mod tests {
             assert_eq!(body, "WORK: same plain body\n");
 
             let mut output = Vec::new();
-            human_with_color(
-                &mut output,
-                level,
-                Some(Path::new("WORK")),
-                format_args!("same plain body"),
-                false,
-            )
-            .unwrap();
+            HumanOutput::new(&mut output, false)
+                .message(
+                    level,
+                    Some(Path::new("WORK")),
+                    format_args!("same plain body"),
+                )
+                .unwrap();
             assert!(!output.contains(&0x1b));
         }
         assert!(color_allowed(true, false, false));
@@ -544,19 +554,16 @@ mod tests {
             (None, ""),
         ] {
             let mut output = Vec::new();
-            diagnostic(
-                &mut output,
-                HumanLevel::Warn,
-                start,
-                Some("RPK005"),
-                format_args!("no sha256"),
-            )
-            .unwrap();
+            HumanOutput::new(&mut output, false)
+                .diagnostic(
+                    HumanLevel::Warn,
+                    start,
+                    Some("RPK005"),
+                    format_args!("no sha256"),
+                )
+                .unwrap();
             let output = String::from_utf8(output).unwrap();
-            assert_eq!(
-                dialoguer::console::strip_ansi_codes(&output),
-                format!("[WARN] spec{suffix} [RPK005]: no sha256\n")
-            );
+            assert_eq!(output, format!("[WARN] spec{suffix} [RPK005]: no sha256\n"));
         }
     }
 
@@ -571,7 +578,9 @@ mod tests {
                 Ok(())
             }
         }
-        let error = human(&mut Broken, HumanLevel::Warn, None, format_args!("test")).unwrap_err();
+        let error = HumanOutput::new(Broken, false)
+            .message(HumanLevel::Warn, None, format_args!("test"))
+            .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
     }
 }

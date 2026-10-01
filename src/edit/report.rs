@@ -210,7 +210,7 @@ pub(super) fn write_changes(
     path: &Path,
     baseline: &CheckReport,
     candidate: &CheckReport,
-    writer: &mut impl Write,
+    writer: &mut output_cli::HumanOutput<impl Write>,
 ) -> io::Result<()> {
     if baseline.findings().is_empty()
         && candidate.findings().is_empty()
@@ -232,8 +232,7 @@ pub(super) fn write_changes(
         .iter()
         .filter(|(finding, retained)| finding.severity == Severity::Deny && *retained)
         .count();
-    output_cli::human(
-        writer,
+    writer.message(
         if count(candidate) > inherited {
             HumanLevel::Error
         } else {
@@ -283,8 +282,7 @@ pub(super) fn write_changes(
             .filter(|(finding, retained)| finding.severity == Severity::Warn && *retained)
             .count();
     if warning_count(baseline) + warning_count(candidate) != 0 {
-        output_cli::human(
-            writer,
+        writer.message(
             HumanLevel::Warn,
             None,
             format_args!(
@@ -296,8 +294,7 @@ pub(super) fn write_changes(
         )?;
     }
     for ((code, start), (count, level)) in legacy {
-        output_cli::diagnostic(
-            writer,
+        writer.diagnostic(
             level,
             Some(start),
             Some(code),
@@ -314,15 +311,17 @@ pub(super) fn write_changes(
     write_guidance(candidate, writer)
 }
 
-fn write_guidance(candidate: &CheckReport, writer: &mut impl Write) -> io::Result<()> {
+fn write_guidance(
+    candidate: &CheckReport,
+    writer: &mut output_cli::HumanOutput<impl Write>,
+) -> io::Result<()> {
     candidate.write_incomplete(writer)?;
     if candidate
         .findings()
         .iter()
         .any(|finding| finding.code == "RPK005")
     {
-        output_cli::human(
-            writer,
+        writer.message(
             HumanLevel::Info,
             None,
             format_args!(
@@ -331,8 +330,7 @@ fn write_guidance(candidate: &CheckReport, writer: &mut impl Write) -> io::Resul
         )?;
     }
     if !candidate.is_success() {
-        output_cli::human(
-            writer,
+        writer.message(
             HumanLevel::Info,
             None,
             format_args!(
@@ -346,7 +344,7 @@ fn write_guidance(candidate: &CheckReport, writer: &mut impl Write) -> io::Resul
 fn write_parser_changes(
     baseline: &[parser_diagnostic::Diagnostic],
     candidate: &[parser_diagnostic::Diagnostic],
-    writer: &mut impl Write,
+    writer: &mut output_cli::HumanOutput<impl Write>,
 ) -> io::Result<usize> {
     // Locations can shift after a replacement. Parser messages are presentation
     // evidence only; they never decide whether publication is admissible.
@@ -378,11 +376,10 @@ pub(super) fn write_candidates(inputs: &[super::Edit], checked: bool) -> io::Res
         let check = item.candidate.as_ref().expect("candidate attempted");
         if let Ok(candidate) = check {
             if let (Some(baseline), Some(report)) = (&item.baseline, &candidate.report) {
-                write_changes(&item.subject, baseline, report, &mut io::stderr().lock())?;
+                write_changes(&item.subject, baseline, report, &mut output_cli::stderr())?;
             }
             if !candidate.review_triggers.is_empty() {
-                output_cli::human(
-                    &mut io::stderr().lock(),
+                output_cli::stderr().message(
                     HumanLevel::Warn,
                     Some(&item.subject),
                     format_args!(
@@ -394,8 +391,7 @@ pub(super) fn write_candidates(inputs: &[super::Edit], checked: bool) -> io::Res
         }
         if checked {
             let admissible = matches!(check, Ok(candidate) if super::static_check_error(item, candidate).is_none());
-            output_cli::human(
-                &mut io::stderr().lock(),
+            output_cli::stderr().message(
                 if admissible {
                     HumanLevel::Info
                 } else {
@@ -437,7 +433,13 @@ mod tests {
             &[],
         );
         let mut output = Vec::new();
-        write_changes(Path::new("pkg"), &baseline, &candidate, &mut output).unwrap();
+        write_changes(
+            Path::new("pkg"),
+            &baseline,
+            &candidate,
+            &mut output_cli::HumanOutput::new(&mut output, false),
+        )
+        .unwrap();
         let output = String::from_utf8(output).unwrap();
         assert!(
             output.contains("[INFO] pkg: candidate static blockers:"),
@@ -479,7 +481,13 @@ mod tests {
                 .any(|diagnostic| diagnostic.severity == parser_diagnostic::Severity::Warning)
         );
         let mut output = Vec::new();
-        write_changes(Path::new("WORK"), &report, &report, &mut output).unwrap();
+        write_changes(
+            Path::new("WORK"),
+            &report,
+            &report,
+            &mut output_cli::HumanOutput::new(&mut output, false),
+        )
+        .unwrap();
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("[ERROR]"), "{output:?}");
         assert!(!output.contains("warnings:"), "{output:?}");
