@@ -60,7 +60,7 @@ proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 unsafe_code = "forbid"
 dead_code_pub_in_binary = "warn"
 
-# Catch unused ownership and lossy conversions without broad stylistic lint groups.
+# Focused ownership, conversion and readability rules shared by local and CI gates.
 [lints.clippy]
 assigning_clones = "warn"
 format_collect = "warn"
@@ -70,3 +70,12 @@ needless_pass_by_value = "warn"
 cast_possible_truncation = "warn"
 cast_sign_loss = "warn"
 cast_possible_wrap = "warn"
+doc_markdown = "warn"
+semicolon_if_nothing_returned = "warn"
+single_match_else = "warn"
+items_after_statements = "warn"
+wildcard_imports = "warn"
+large_stack_arrays = "warn"
+ref_option = "warn"
+used_underscore_binding = "warn"
+needless_continue = "warn"

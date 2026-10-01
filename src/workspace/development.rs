@@ -370,7 +370,7 @@ fn open_lock(path: &Path) -> io::Result<File> {
                     .open(&lock_path)
                 {
                     Ok(file) => break file.into_file(),
-                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                     Err(error) => return Err(error),
                 }
             }

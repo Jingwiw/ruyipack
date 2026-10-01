@@ -10,7 +10,7 @@
 //! see `docs/design.md#openruyi-policy-sources` for the upstream document.
 //! Its license applies to the SPEC file, not the packaged software. Release and
 //! changelog macros are emitted literally for the target RPM environment.
-//! RemoteAsset is openRuyi source-fetch metadata carried in RPM comment lines.
+//! `RemoteAsset` is openRuyi source-fetch metadata carried in RPM comment lines.
 
 pub(crate) mod buildsystems;
 
@@ -63,7 +63,7 @@ impl Profile {
         }
     }
 
-    /// The RemoteAsset marker, including a digest when supplied.
+    /// The `RemoteAsset` marker, including a digest when supplied.
     pub(crate) fn remote_asset(&self, digest: Option<&str>) -> String {
         match digest {
             Some(hash) => format!("{}{hash}", self.remote_asset_prefix),

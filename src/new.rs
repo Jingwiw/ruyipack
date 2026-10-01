@@ -52,12 +52,11 @@ pub(crate) fn run(options: &Options) -> Result<(), NewError> {
     let mut development = workspace
         .development(&options.name, options.pkgname.as_deref(), preview)
         .map_err(NewError::Workspace)?;
-    let year = match time::OffsetDateTime::now_local() {
-        Ok(now) => now.year(),
-        Err(_) => {
-            warning("local time zone is unavailable; using the current UTC year")?;
-            time::OffsetDateTime::now_utc().year()
-        }
+    let year = if let Ok(now) = time::OffsetDateTime::now_local() {
+        now.year()
+    } else {
+        warning("local time zone is unavailable; using the current UTC year")?;
+        time::OffsetDateTime::now_utc().year()
     }
     .to_string();
     let author = git_author(&development.author_directory()).map_err(NewError::Workspace)?;
