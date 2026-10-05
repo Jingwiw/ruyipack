@@ -301,3 +301,17 @@ proptest! {
         prop_assert_eq!(edit(&combined, "summary", &new_summary), combined.as_str());
     }
 }
+
+#[test]
+fn supported_projection_keeps_the_parser_failure() {
+    let parsed = ParsedSpec::parse("Name: example\n%endif\n");
+    let selected = Snapshot::capture_selected(&parsed, &["package.name".into()])
+        .err()
+        .unwrap();
+    let supported = Snapshot::capture_supported(&parsed).err().unwrap();
+    assert_eq!(supported, selected);
+    assert!(
+        supported.contains("`%endif` without matching `%if`"),
+        "{supported}"
+    );
+}

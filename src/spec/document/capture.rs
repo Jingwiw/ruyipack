@@ -20,6 +20,29 @@ use super::{
 };
 use crate::spec::ParsedSpec;
 
+fn validate_source(spec: &ParsedSpec<'_>) -> Result<(), String> {
+    let source = spec.source();
+    if source.contains('\0')
+        || source
+            .match_indices('\r')
+            .any(|(index, _)| source.as_bytes().get(index + 1) != Some(&b'\n'))
+    {
+        return Err("source: NUL and bare CR are unsupported".into());
+    }
+    if let Some(diagnostic) = spec
+        .parsed
+        .diagnostics
+        .iter()
+        .find(|d| d.severity == Severity::Error)
+    {
+        return Err(format!(
+            "source: parser errors prevent a complete mapping: {}",
+            diagnostic.message
+        ));
+    }
+    Ok(())
+}
+
 impl<'src> Snapshot<'src> {
     pub(crate) fn capture_selected(
         spec: &'src ParsedSpec<'_>,
@@ -27,16 +50,7 @@ impl<'src> Snapshot<'src> {
     ) -> Result<Self, String> {
         let source = spec.source();
         let parsed = &spec.parsed;
-        if source.contains(['\r', '\0']) {
-            return Err("source: CR and NUL are unsupported".into());
-        }
-        if parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.severity == Severity::Error)
-        {
-            return Err("source: parser errors prevent a complete mapping".into());
-        }
+        validate_source(spec)?;
         let needs_sources = selected(selection, "sources");
         let mut snapshot = Self {
             source: source.into(),
@@ -286,6 +300,7 @@ impl<'src> Snapshot<'src> {
             }
         }
 
+        validate_source(spec)?;
         let mut fields = [
             "package.name",
             "package.version",
