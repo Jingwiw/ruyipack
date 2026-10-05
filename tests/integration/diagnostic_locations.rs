@@ -78,7 +78,7 @@ fn consistent_conditional_location_is_not_removed_by_error_code() {
 #[test]
 fn batch_edit_parser_diagnostics_distinguish_same_named_candidate_files() {
     let directory = tempfile::tempdir().unwrap();
-    let source = format!("%unknown value\n{}", include_str!("../fixtures/ed.spec"));
+    let source = format!("!unknown value\n{}", include_str!("../fixtures/ed.spec"));
     for name in ["first", "second"] {
         fs::create_dir(directory.path().join(name)).unwrap();
     }

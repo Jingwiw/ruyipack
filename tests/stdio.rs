@@ -39,7 +39,7 @@ fn gen_command(directory: &Path) -> Command {
 fn piped_human_diagnostics_never_emit_ansi_even_when_console_color_is_forced() {
     let directory = workspace();
     let path = directory.path().join("warning.spec");
-    fs::write(&path, "%unknown value\n").unwrap();
+    fs::write(&path, "!unknown value\n").unwrap();
     for (no_color, term) in [(false, "xterm"), (true, "xterm"), (false, "dumb")] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_ruyipack"));
         command
@@ -66,7 +66,7 @@ fn piped_human_diagnostics_never_emit_ansi_even_when_console_color_is_forced() {
 #[test]
 fn terminal_prefix_color_respects_no_color_and_dumb_term() {
     let directory = workspace();
-    fs::write(directory.path().join("warning.spec"), "%unknown value\n").unwrap();
+    fs::write(directory.path().join("warning.spec"), "!unknown value\n").unwrap();
     for (no_color, term, colored) in [
         (false, "xterm", true),
         (true, "xterm", false),
@@ -209,7 +209,7 @@ fn disconnected_stdout_returns_an_error_without_panicking() {
 fn disconnected_stderr_and_both_streams_return_errors() {
     let directory = workspace();
     fs::write(directory.path().join("missing-tags.spec"), "Name: demo\n").unwrap();
-    fs::write(directory.path().join("warning.spec"), "%unknown value\n").unwrap();
+    fs::write(directory.path().join("warning.spec"), "!unknown value\n").unwrap();
     for args in [
         ["check", "--spec=missing-tags.spec"].as_slice(),
         &["inspect", "--spec=warning.spec"],

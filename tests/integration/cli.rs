@@ -202,10 +202,10 @@ Name: demo
 Version: 1
 Release: 1
 License: MIT
-%unknown value
+!unknown value
 ";
 const PARSER_WARNING_SPEC_SHA256: &str =
-    "baaecaa6a7f2e5071fbf1036b6e7e8bc53c77c10b6bf8abcd1d8578695488704";
+    "3dfc551f12f6b24cfe765a828c15bd6f664889fed5836a7e7a4a914ac1a61f1d";
 
 const PARSER_ERROR_SPEC: &str = "\
 Name: demo
@@ -305,7 +305,7 @@ fn check_continues_after_a_parser_warning() {
     let complete_spec = write_file(
         temp.path(),
         "complete-warning.spec",
-        format!("{COMPLETE_REQUIRED_TAGS}%unknown value\n"),
+        format!("{COMPLETE_REQUIRED_TAGS}!unknown value\n"),
     );
     let complete_output = support::run(
         temp.path(),
@@ -339,7 +339,7 @@ Version: 1
 Release: 1
 Summary: Demo package
 License: MIT
-%unknown value
+!unknown value
 ",
     );
 

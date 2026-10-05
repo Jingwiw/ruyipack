@@ -37,13 +37,13 @@ fs-err = { version = "3.3.1", default-features = false }
 [dependencies.rpm-spec-analyzer]
 version = "=0.1.3"
 git = "https://github.com/openRuyi-Project/rpm-spec-tool"
-rev = "3609ae59bb848ec34f1548403d4dcb016aa74878"
+rev = "241e1b13a9b85872b1fe589f73f034fddaf02fd1"
 default-features = false
 
 [dependencies.rpm-spec]
 version = "=0.4.1"
 git = "https://github.com/openRuyi-Project/rpm-spec"
-rev = "964da4de8713babad153044dc1a7f0f48b2ae707"
+rev = "321f645ac860492f5f8aa068e6191857d990a6c0"
 default-features = false
 features = ["parser", "printer", "serde"]
 
