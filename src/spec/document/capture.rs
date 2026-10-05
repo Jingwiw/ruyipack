@@ -496,9 +496,7 @@ impl<'src> Snapshot<'src> {
                 return Err("sources: malformed, duplicate or orphan RemoteAsset comment".into());
             }
             if let Some(value) = raw.strip_prefix("# SPDX-FileCopyrightText: (C) ") {
-                let (years, holder) = value
-                    .split_once(' ')
-                    .ok_or("spec.copyright-holders: missing holder")?;
+                let (years, holder) = crate::spec_metadata::copyright_parts(value)?;
                 if let Some(previous) = copyright.holders.lines.last()
                     && previous.end != range.start
                 {

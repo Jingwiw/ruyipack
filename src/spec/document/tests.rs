@@ -111,12 +111,21 @@ fn copyright_years_and_holders_change_without_overlapping_replacements() {
     let prefix = concat!("# SPDX-FileCopy", "rightText: (C) ");
     for (years, first) in [
         ("2025", "First Holder"),
+        ("2025, 2026", "First Holder"),
         ("INVALID", "First Holder"),
         ("2025", ""),
     ] {
         let source =
             format!("{prefix}{years} {first}\n{prefix}{years} Second Holder\nName: demo\n");
         let snapshot = capture(&source);
+        assert_eq!(
+            snapshot.document()["spec"]["copyright-years"].as_str(),
+            Some(years)
+        );
+        assert_eq!(
+            snapshot.document()["spec"]["copyright-holders"][0].as_str(),
+            Some(first)
+        );
         if years == "INVALID" || first.is_empty() {
             assert!(render(&snapshot, snapshot.document()).is_err());
         } else {

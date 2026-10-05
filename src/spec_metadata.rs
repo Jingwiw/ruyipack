@@ -16,15 +16,35 @@ pub(crate) fn validate_years(value: &str) -> Result<(), &'static str> {
     let year = |value: &str| {
         value.len() == 4 && value != "0000" && value.bytes().all(|byte| byte.is_ascii_digit())
     };
-    let valid = match value.split_once('-') {
-        Some((start, end)) => year(start) && year(end) && start <= end,
-        None => year(value),
-    };
+    let valid = value
+        .split(',')
+        .all(|part| match part.trim().split_once('-') {
+            Some((start, end)) => year(start) && year(end) && start <= end,
+            None => year(part.trim()),
+        });
     if valid {
         Ok(())
     } else {
-        Err("spec.copyright-years: expected YYYY or YYYY-YYYY")
+        Err("spec.copyright-years: expected YYYY or YYYY-YYYY, separated by commas")
     }
+}
+
+/// Separate the whole year list from the holder; a comma continues the years,
+/// not the holder's name. Keep slices so editing preserves the original spacing.
+pub(crate) fn copyright_parts(value: &str) -> Result<(&str, &str), &'static str> {
+    let (mut years, mut holder) = value
+        .split_once(' ')
+        .ok_or("spec.copyright-holders: missing holder")?;
+    while years.ends_with(',') {
+        let (next, rest) = holder
+            .trim_start()
+            .split_once(' ')
+            .ok_or("spec.copyright-years: incomplete year list")?;
+        validate_years(next.trim_end_matches(','))?;
+        years = &value[..value.len() - rest.len() - 1];
+        holder = rest;
+    }
+    Ok((years, holder))
 }
 
 /// Checks authored text that must occupy one SPEC line.
@@ -56,10 +76,25 @@ mod tests {
 
     #[test]
     fn copyright_years_have_ordered_four_digit_endpoints() {
-        for value in ["2026", "2025-2026", "2026-2026"] {
+        for value in [
+            "2026",
+            "2025-2026",
+            "2026-2026",
+            "2025, 2026",
+            "2020-2022, 2025",
+        ] {
             assert!(validate_years(value).is_ok(), "{value}");
         }
-        for value in ["", "0000", "026", "2026-2025", "2025-", "2025-2026-2027"] {
+        for value in [
+            "",
+            "0000",
+            "026",
+            "2026-2025",
+            "2025-",
+            "2025-2026-2027",
+            "2025,",
+            "2025, invalid",
+        ] {
             assert!(validate_years(value).is_err(), "{value}");
         }
     }
