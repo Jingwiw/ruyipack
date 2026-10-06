@@ -23,6 +23,7 @@ mod file_tree;
 mod generate;
 mod host_process;
 mod inspect;
+mod maintain;
 mod new;
 mod open;
 mod output_cli;
@@ -57,6 +58,7 @@ fn main() -> ExitCode {
         Command::Completions { shell } => exit_for(cli::completions(shell)),
         Command::Init(options) => exit_for(workspace::run(&options).map(|()| true)),
         Command::RemoteBuild(options) => exit_for(remote_build::run(&options)),
+        Command::Maintain(options) => exit_for(maintain::run(&options)),
         Command::Build(options) => exit_for(build::run(&options)),
         Command::Shell(options) => exit_for(build::shell::run(&options)),
         Command::Schema(options) => exit_for(schema::run(&options)),

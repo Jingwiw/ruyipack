@@ -31,7 +31,7 @@ state = pathlib.Path(os.environ['RPK_FAKE_STATE'])
 mode = os.environ.get('RPK_FAKE_MODE', '')
 with (state / 'calls.jsonl').open('a') as stream:
     stream.write(json.dumps(args) + '\n')
-if mode == 'default-context':
+if mode.startswith('default-context'):
     assert args[0] != '--context', args
 else:
     assert args[:2] == ['--context', 'personalDocker'], args
@@ -78,7 +78,7 @@ elif args[0] == 'exec':
     assert args[1] == 'abcdef0123456789'
     (state / 'engine').mkdir(exist_ok=True)
     (state / 'engine' / 'artifact.rpm').write_bytes(b'fixture RPM bytes')
-    receipt = {'format_version': 1, 'engine': 'mock', 'target_stage': args[args.index('--stage')+1] if '--stage' in args else 'build', 'success': mode != 'failed-receipt',
+    receipt = {'format_version': 1, 'engine': 'mock', 'target_stage': args[args.index('--stage')+1] if '--stage' in args else 'build', 'success': mode not in ('failed-receipt', 'default-context-failure'),
                'artifacts': [{'path': 'artifact.rpm', 'size': len(b'fixture RPM bytes'),
                  'sha256': '0' * 64 if mode in ('bad-hash', 'bad-hash-cleanup') else hashlib.sha256(b'fixture RPM bytes').hexdigest(),
                  'identity': 'fixture\t1\t1.or\tx86_64'}]}
@@ -1641,4 +1641,150 @@ fn imported_local_recipe_builds_rebuilds_and_enters_the_same_retained_environmen
             .join("work/trial/recipe/SPECS/fixture/fixture.spec")
             .exists()
     );
+}
+
+#[test]
+fn maintenance_repairs_validates_and_reuses_a_completed_local_task() {
+    let fixture = Fixture::new();
+    let root = fixture.root.path().join("maintenance");
+    fs::create_dir(&root).unwrap();
+    let original = include_str!("../fixtures/ed.spec");
+    let source = original
+        .lines()
+        .filter(|line| !line.starts_with("#!RemoteAsset") && !line.starts_with("Source0:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let source = source.replace(
+        "A line-oriented text editor",
+        "A line-oriented text editor.",
+    );
+    let area = support::recipe_workspace(&root, "ed", "ed", &source);
+    let repo = root.join("openruyi");
+    git(&repo, &["config", "user.name", "Fixture Author"]);
+    git(&repo, &["config", "user.email", "fixture@example.org"]);
+    fs::write(root.join("plan.toml"), "[[packages]]\nwork='ed'\n").unwrap();
+    let run = || {
+        fixture
+            .command("default-context")
+            .current_dir(&root)
+            .args(["maintain", "--plan", "plan.toml", "--format=toml"])
+            .output()
+            .unwrap()
+    };
+    let first = run();
+    support::success(&first);
+    let report = support::machine_report(&first);
+    assert_eq!(report["tasks"][0]["phase"].as_str(), Some("ready"));
+    let changed = fs::read_to_string(area.join("recipe/SPECS/ed/ed.spec")).unwrap();
+    assert!(
+        !changed
+            .lines()
+            .find(|line| line.starts_with("Summary:"))
+            .unwrap()
+            .ends_with('.')
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join("SPECS/ed/ed.spec")).unwrap(),
+        source
+    );
+    let ready: toml::Value =
+        toml::from_str(&fs::read_to_string(report["ready_plan"].as_str().unwrap()).unwrap())
+            .unwrap();
+    assert_eq!(ready["packages"][0]["work"].as_str(), Some("ed"));
+    let calls = fs::read(fixture.root.path().join("calls.jsonl")).unwrap();
+    let second = run();
+    support::success(&second);
+    assert_eq!(
+        support::machine_report(&second)["tasks"][0]["attempt"],
+        report["tasks"][0]["attempt"]
+    );
+    assert_eq!(
+        fs::read(fixture.root.path().join("calls.jsonl")).unwrap(),
+        calls
+    );
+    fs::write(area.join("recipe/SPECS/ed/README"), "manual change\n").unwrap();
+    let stale = run();
+    assert!(!stale.status.success());
+    let stale = support::machine_report(&stale);
+    assert_eq!(stale["tasks"][0]["phase"].as_str(), Some("failed"));
+    let ready: toml::Value =
+        toml::from_str(&fs::read_to_string(stale["ready_plan"].as_str().unwrap()).unwrap())
+            .unwrap();
+    assert!(ready["packages"].as_array().unwrap().is_empty());
+    assert_eq!(
+        fs::read(fixture.root.path().join("calls.jsonl")).unwrap(),
+        calls
+    );
+}
+
+#[test]
+fn maintenance_noop_and_failure_stop_without_implicit_rebuilds() {
+    for change in [false, true] {
+        let fixture = Fixture::new();
+        let root = fixture.root.path().join("maintenance");
+        fs::create_dir(&root).unwrap();
+        let source = include_str!("../fixtures/ed.spec")
+            .lines()
+            .filter(|line| !line.starts_with("#!RemoteAsset") && !line.starts_with("Source0:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let source = if change {
+            source.replace(
+                "Summary:        A line-oriented text editor",
+                "Summary:        A line-oriented text editor.",
+            )
+        } else {
+            source
+        };
+        let area = support::recipe_workspace(&root, "ed", "ed", &source);
+        let repo = root.join("openruyi");
+        git(&repo, &["config", "user.name", "Fixture Author"]);
+        git(&repo, &["config", "user.email", "fixture@example.org"]);
+        fs::write(root.join("plan.toml"), "[[packages]]\nwork='ed'\n").unwrap();
+        let run = |mode: &str, retry: bool| {
+            let mut command = fixture.command(mode);
+            command
+                .current_dir(&root)
+                .args(["maintain", "--plan", "plan.toml", "--format=toml"]);
+            if retry {
+                command.arg("--retry-failed");
+            }
+            command.output().unwrap()
+        };
+        let first = run("default-context-failure", false);
+        assert_eq!(first.status.success(), !change, "{first:?}");
+        let first = support::machine_report(&first);
+        assert_eq!(
+            first["tasks"][0]["phase"].as_str(),
+            Some(if change { "failed" } else { "unchanged" })
+        );
+        let spec = fs::read(area.join("recipe/SPECS/ed/ed.spec")).unwrap();
+        let calls = fs::read(fixture.root.path().join("calls.jsonl")).ok();
+        let second = support::machine_report(&run("default-context-failure", false));
+        assert_eq!(second["tasks"][0]["attempt"], first["tasks"][0]["attempt"]);
+        assert_eq!(
+            fs::read(fixture.root.path().join("calls.jsonl")).ok(),
+            calls
+        );
+        if change {
+            let retried = run("default-context", true);
+            support::success(&retried);
+            assert_eq!(
+                support::machine_report(&retried)["tasks"][0]["phase"].as_str(),
+                Some("ready")
+            );
+            assert_eq!(
+                fs::read(area.join("recipe/SPECS/ed/ed.spec")).unwrap(),
+                spec
+            );
+        } else {
+            assert!(calls.is_none());
+        }
+        assert_eq!(
+            fs::read_to_string(repo.join("SPECS/ed/ed.spec")).unwrap(),
+            source
+        );
+    }
 }

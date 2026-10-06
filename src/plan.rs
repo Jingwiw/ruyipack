@@ -41,7 +41,7 @@ impl Settings {
         }
     }
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Plan {
     #[serde(flatten)]
@@ -49,14 +49,14 @@ pub(crate) struct Plan {
     pub packages: Vec<Task>,
     pub pr: Option<Publication>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Task {
     pub work: String,
     #[serde(flatten)]
     pub settings: Settings,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Publication {
     pub title: String,

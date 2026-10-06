@@ -14,7 +14,7 @@ use std::{
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(super) struct File {
+pub(crate) struct File {
     pub sha256: String,
     pub executable: bool,
 }
@@ -28,7 +28,7 @@ pub(super) struct Baseline {
     pub allow_create: bool,
 }
 
-pub(super) type Files = BTreeMap<String, File>;
+pub(crate) type Files = BTreeMap<String, File>;
 
 pub(super) fn relative(value: &str) -> io::Result<&Path> {
     let path = Path::new(value);
@@ -42,7 +42,7 @@ pub(super) fn relative(value: &str) -> io::Result<&Path> {
     Ok(path)
 }
 
-pub(super) fn read(root: &Path) -> io::Result<Files> {
+pub(crate) fn read(root: &Path) -> io::Result<Files> {
     let mut files = Files::new();
     if root.try_exists()? {
         collect(root, root, &mut files)?;
@@ -76,12 +76,12 @@ fn collect(root: &Path, path: &Path, files: &mut Files) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn load<T: serde::de::DeserializeOwned>(path: &Path) -> io::Result<T> {
+pub(crate) fn load<T: serde::de::DeserializeOwned>(path: &Path) -> io::Result<T> {
     toml::from_str(&crate::utf8_file::read(path).map_err(io::Error::other)?)
         .map_err(|e| invalid(format!("{}: {e}", path.display())))
 }
 
-pub(super) fn save(path: &Path, value: &impl Serialize) -> io::Result<()> {
+pub(crate) fn save(path: &Path, value: &impl Serialize) -> io::Result<()> {
     let text = toml::to_string(value).map_err(io::Error::other)?;
     let mut file = tempfile::NamedTempFile::new_in(path.parent().expect("state parent"))?;
     file.write_all(text.as_bytes())?;

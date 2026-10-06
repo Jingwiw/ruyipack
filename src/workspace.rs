@@ -4,7 +4,7 @@
 
 //! Workspace roots and user-owned configuration, independent of build tools.
 
-mod baseline;
+pub(crate) mod baseline;
 pub(crate) mod commit;
 mod commit_scope;
 pub(crate) mod delete;
@@ -275,7 +275,7 @@ fn relative(path: &Path, field: &str) -> io::Result<()> {
 
 // Resolve existing ancestors without requiring the recipe or work directory to exist.
 // Resolve symlinks before '..' so overlap checks use filesystem identities.
-fn directory(root: &Path, path: &Path, allow_symlinks: bool) -> io::Result<PathBuf> {
+pub(crate) fn directory(root: &Path, path: &Path, allow_symlinks: bool) -> io::Result<PathBuf> {
     let mut resolved = if path.is_absolute() {
         PathBuf::new()
     } else {
