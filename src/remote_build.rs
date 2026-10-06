@@ -5,6 +5,7 @@
 mod api;
 mod config;
 mod delivery;
+mod status;
 use crate::output_cli::ReportFormat;
 use crate::plan::Task;
 use clap::Args;
@@ -33,6 +34,9 @@ pub(crate) struct Options {
     /// Submit changed materials and refresh remote services; otherwise show retained results.
     #[arg(long)]
     fresh: bool,
+    /// Read retained submissions without uploading or changing OBS settings.
+    #[arg(long, conflicts_with_all = ["fresh", "repositories", "from_config"])]
+    status: bool,
     #[arg(long,value_enum,default_value_t=ReportFormat::Human)]
     format: ReportFormat,
 }
@@ -66,6 +70,9 @@ struct Report {
 
 pub(crate) fn run(options: &Options) -> Result<bool, String> {
     let workspace = crate::workspace::discover().map_err(|e| e.to_string())?;
+    if options.status {
+        return status::run(&workspace, options);
+    }
     let interactive = matches!(options.format, ReportFormat::Human)
         && io::stdin().is_terminal()
         && io::stderr().is_terminal();

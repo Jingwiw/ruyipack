@@ -138,16 +138,27 @@ pub(super) fn directory(text: &str) -> Result<BTreeMap<String, String>, String> 
     if doc.root_element().tag_name().name() != "directory" {
         return Err("OBS did not return a source directory".into());
     }
-    Ok(doc
+    let mut files = BTreeMap::new();
+    for entry in doc
         .root_element()
         .children()
         .filter(|n| n.has_tag_name("entry"))
-        .filter_map(|n| {
-            let name = n.attribute("name")?;
-            (!name.starts_with("_service:") && !name.starts_with("_service_"))
-                .then(|| (name.to_owned(), n.attribute("md5").unwrap_or("").to_owned()))
-        })
-        .collect())
+    {
+        let name = entry
+            .attribute("name")
+            .ok_or("OBS source entry has no name")?;
+        if name.starts_with("_service:") || name.starts_with("_service_") {
+            continue;
+        }
+        let md5 = entry
+            .attribute("md5")
+            .filter(|s| !s.is_empty())
+            .ok_or("OBS source entry has no digest")?;
+        if files.insert(name.to_owned(), md5.to_owned()).is_some() {
+            return Err(format!("duplicate OBS source entry: {name}"));
+        }
+    }
+    Ok(files)
 }
 pub(super) fn project(client: &Client, user: &str, settings: &Settings) -> Result<(), String> {
     let project = settings.project.as_deref().ok_or("missing project")?;

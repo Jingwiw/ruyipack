@@ -7,10 +7,15 @@ use std::time::Duration;
 
 pub(super) struct Client {
     base: url::Url,
+    reads: std::cell::Cell<usize>,
     auth: String,
     agent: ureq::Agent,
 }
 impl Client {
+    pub(super) fn read_requests(&self) -> usize {
+        self.reads.get()
+    }
+
     pub(super) fn origin(&self) -> String {
         self.base.origin().ascii_serialization()
     }
@@ -28,6 +33,7 @@ impl Client {
         }
         Ok(Self {
             base,
+            reads: std::cell::Cell::new(0),
             auth: format!(
                 "Basic {}",
                 base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"))
@@ -50,7 +56,15 @@ impl Client {
         Ok(url)
     }
     pub(super) fn get(&self, path: &[&str]) -> Result<Option<String>, String> {
-        let url = self.url(path, &[])?;
+        self.get_query(path, &[])
+    }
+    pub(super) fn get_query(
+        &self,
+        path: &[&str],
+        query: &[(&str, &str)],
+    ) -> Result<Option<String>, String> {
+        let url = self.url(path, query)?;
+        self.reads.set(self.reads.get() + 1);
         match self
             .agent
             .get(url.as_str())

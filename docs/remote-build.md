@@ -62,6 +62,28 @@ ruyipack remote-build --plan basic.plan.toml --plan upgrade.plan.toml \
 
 Omitted values inherit workspace defaults; `parent = "default"` explicitly selects the default parent. Each task saves its resolved settings in its own WORK. All tasks sharing a project must agree on project settings. A missing WORK can be prepared from the configured recipe repository. Tasks run sequentially, with separate errors and receipts. Retry completed tasks without `--fresh` to read their results rather than uploading again.
 
+## Observe submitted builds
+
+```sh
+ruyipack remote-build --plan plan.toml --status --format toml
+```
+
+`--status` reads existing WORK settings and submission receipts. It does not create
+WORKs, change local settings, upload files or change OBS projects. It queries each
+project once for its target configuration and once for results, then checks each
+package source revision. Plan settings do not override retained bindings in this mode.
+
+A target passes only when OBS reports `succeeded`, the result is not dirty, and
+its build revision and source identity match the submitted files. A completed
+source service supplies the expanded build identity; a running or failed service
+cannot pass. Every configured
+repository/architecture must pass. Missing targets remain waiting; missing build
+identity is unavailable, not success. Failed, stale and unavailable observations
+remain separate. Exit 0 requires all selected tasks to pass.
+
+This reports source and target-matrix evidence, not reproducible dependency
+snapshots or PR approval. The caller must also check local candidate identity.
+
 ## Source services and evidence
 
 Local submission does not use `obs_scm`: pulling Git could replace local changes. The default `_service` runs `download_assets` in `trylocal` mode. Set `.ruyiconfig/obs-service.xml` for a shared template, `work/WORK/_service` for a local override, or `service = "PATH"` in remote settings (relative to `.ruyiconfig`, or absolute). A recipe's `_service` is also used when no WORK override exists. Custom services execute on OBS; review them before submission.

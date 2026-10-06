@@ -70,19 +70,7 @@ pub(super) fn load(root: &Path, interactive: bool) -> Result<(Global, Auth), Str
     }
 
     let mut auth: Auth = if auth_path.exists() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if std::fs::metadata(&auth_path)
-                .map_err(|e| e.to_string())?
-                .permissions()
-                .mode()
-                & 0o077
-                != 0
-            {
-                return Err("obs-auth.toml must have permissions 0600".into());
-            }
-        }
+        check_auth_permissions(&auth_path)?;
         read(&auth_path)?
     } else {
         if !interactive || !std::io::stdin().is_terminal() {
@@ -115,6 +103,35 @@ pub(super) fn load(root: &Path, interactive: bool) -> Result<(Global, Auth), Str
         }
         save(&auth_path, &auth)?;
     }
+    super::api::identifier(&auth.user)?;
+    if auth.password.is_empty() {
+        return Err("OBS password is empty".into());
+    }
+    Ok((global, auth))
+}
+
+fn check_auth_permissions(auth_path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if fs_err::metadata(auth_path)
+            .map_err(|e| e.to_string())?
+            .permissions()
+            .mode()
+            & 0o077
+            != 0
+        {
+            return Err("obs-auth.toml must have permissions 0600".into());
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn load_existing(root: &Path) -> Result<(Global, Auth), String> {
+    let global = read(&root.join("obs.toml"))?;
+    let auth_path = root.join("obs-auth.toml");
+    check_auth_permissions(&auth_path)?;
+    let auth: Auth = read(&auth_path)?;
     super::api::identifier(&auth.user)?;
     if auth.password.is_empty() {
         return Err("OBS password is empty".into());
