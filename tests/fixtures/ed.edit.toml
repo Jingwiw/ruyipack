@@ -56,3 +56,8 @@ system = "autotools"
 
 [build-requires]
 rpm = ["autoconf", "automake", "libtool", "make", "lzip"]
+
+[build.stages.conf]
+prepend = ""
+replace = ""
+append = ""

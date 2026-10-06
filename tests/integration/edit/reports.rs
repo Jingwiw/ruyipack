@@ -79,7 +79,7 @@ fn incomplete_batch_diagnostics_identify_each_candidate_without_publishing() {
         let diagnostics = String::from_utf8(output.stderr).unwrap();
         let starts = names.map(|name| {
             diagnostics
-                .find(&format!("[INFO] {name}: candidate static blockers:"))
+                .find(&format!("[INFO] {name}: candidate"))
                 .unwrap_or_else(|| panic!("missing {name} report context: {diagnostics}"))
         });
         assert!(starts[0] < starts[1], "{diagnostics}");
@@ -88,7 +88,7 @@ fn incomplete_batch_diagnostics_identify_each_candidate_without_publishing() {
             .position(|line| line.starts_with("License:"))
             .unwrap()
             + 1;
-        let issue = format!("[WARN] spec[{line}:1] [RPK001]: inherited 1 issue(s)");
+        let issue = format!("[WARN] spec[{line}:1] [RPK001]: inherited 1:");
         let incomplete =
             "[ERROR] check incomplete because license expressions require RPM evaluation";
         assert_eq!(diagnostics.matches(&issue).count(), 2, "{diagnostics}");
@@ -99,7 +99,7 @@ fn incomplete_batch_diagnostics_identify_each_candidate_without_publishing() {
             assert_eq!(section.matches(&issue).count(), 1, "{section}");
             assert_eq!(section.matches(incomplete).count(), 1, "{section}");
             assert!(
-                section.contains(&format!("[ERROR] {name}: not admissible")),
+                section.contains(&format!("[ERROR] {name}: check: failed")),
                 "{section}"
             );
             assert_file(directory.path().join(name), &source);
@@ -206,8 +206,8 @@ fn toml_check_reports_distinguish_candidates_from_unreadable_inputs() {
         assert_eq!(output.status.code(), Some(exit), "{output:?}");
         assert!(output.stderr.is_empty());
         let report = super::support::machine_report(&output);
-        assert_eq!(report["format_version"].as_integer(), Some(4));
-        assert_eq!(report["scope"].as_str(), Some("edit-stage"));
+        assert_eq!(report["format_version"].as_integer(), Some(5));
+        assert_eq!(report["scope"].as_str(), Some("edit"));
         assert_eq!(report["success"].as_bool(), Some(exit == 0));
         if exit == 0 {
             assert_eq!(report["valid"].as_bool(), Some(true));
@@ -249,7 +249,7 @@ fn toml_publication_failure_identifies_the_target_operation() {
     assert_eq!(receipt["error"]["code"].as_str(), Some("operation-failed"));
     assert_eq!(receipt["error"]["stage"].as_str(), Some("publication"));
     assert_eq!(receipt["error"]["reason"].as_str(), Some("read-failed"));
-    assert_eq!(receipt["error"]["io_kind"].as_str(), Some("is-a-directory"));
+    assert_eq!(receipt["error"]["io_kind"].as_str(), Some("invalid-input"));
     assert!(receipt["error"]["path"].is_str());
     unchanged(failed_directory.path());
 }
@@ -411,10 +411,16 @@ fn upgrade_review_is_visible_without_changing_static_check_success() {
                 file["review_triggers"],
                 toml::Value::Array(vec![toml::Value::from(trigger)])
             );
+            assert!(
+                file["changed_fields"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&toml::Value::from(trigger))
+            );
             assert_eq!(
                 file["review_required"],
                 toml::Value::Array(vec![
-                    toml::Value::from("source-content-and-digests"),
+                    toml::Value::from("source-authenticity"),
                     toml::Value::from("patch-applicability"),
                     toml::Value::from("native-build")
                 ])
@@ -429,7 +435,7 @@ fn upgrade_review_is_visible_without_changing_static_check_success() {
             .unwrap();
         success(&preview);
         assert_eq!(
-            String::from_utf8_lossy(&preview.stderr).contains("review required"),
+            String::from_utf8_lossy(&preview.stderr).contains("unverified source-authenticity"),
             trigger.is_some()
         );
         assert!(String::from_utf8_lossy(&preview.stdout).contains("sha256:56e107"));
@@ -553,4 +559,54 @@ fn non_utf8_publication_reports_real_filesystem_outcomes() {
         );
     }
     assert_file(directory.path().join("ed.spec"), SPEC);
+}
+
+#[test]
+fn applied_spec_recovers_draft_update_without_republishing() {
+    use sha2::{Digest, Sha256};
+    let directory = fixture(SPEC);
+    let drafts = prepare(directory.path(), &["ed.spec"], &["package.version"]);
+    change_version(&drafts.join("ed.toml"), "9.8.7");
+    let preview = resume(directory.path(), &drafts)
+        .arg("--stdout")
+        .output()
+        .unwrap();
+    success(&preview);
+    let hash = format!("{:x}", Sha256::digest(&preview.stdout));
+    let obstruction = drafts.join(format!(".state/originals/0-{hash}.spec"));
+    fs::create_dir(&obstruction).unwrap();
+    let output = resume(directory.path(), &drafts)
+        .args(["--apply", "--format", "toml"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let report = super::support::machine_report(&output);
+    assert_eq!(report["written"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        report["error"]["code"].as_str(),
+        Some("draft-recovery-failed")
+    );
+    assert!(
+        report["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("draft recovery state")
+    );
+    let spec = directory.path().join("ed.spec");
+    assert_eq!(fs::read(&spec).unwrap(), preview.stdout);
+    let before = fs::metadata(&spec).unwrap().modified().unwrap();
+    fs::remove_dir(obstruction).unwrap();
+    let recovered = resume(directory.path(), &drafts)
+        .arg("--apply")
+        .output()
+        .unwrap();
+    success(&recovered);
+    assert_eq!(fs::read(&spec).unwrap(), preview.stdout);
+    assert_eq!(fs::metadata(&spec).unwrap().modified().unwrap(), before);
+    success(
+        &resume(directory.path(), &drafts)
+            .arg("--check")
+            .output()
+            .unwrap(),
+    );
 }

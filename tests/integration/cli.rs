@@ -533,6 +533,7 @@ fn input_failures_share_machine_error_shape_across_commands() {
             vec!["edit", "--set", "package.version=2", "--check", "--spec"],
             vec!["source", "hash", "--spec"],
             vec!["source", "verify", "--spec"],
+            vec!["source", "fetch", "--spec"],
         ] {
             let output = command()
                 .args(&args)
@@ -624,7 +625,7 @@ fn generation_input_errors_keep_manifest_identity_without_derived_files() {
             Some(path.to_string_lossy().as_ref())
         );
         assert!(report["input"].get("sha256").is_none());
-        assert!(!work.join("ed.resolved.toml").exists());
+        assert!(!work.join(".cache/ed.resolved.toml").exists());
         assert!(!work.join("stage").exists());
         if exists {
             assert_eq!(fs::read(path).unwrap(), [0xff]);
@@ -746,7 +747,7 @@ Summary: Broken subpackage
 #[test]
 fn cli_rejects_invalid_invocations() {
     let cases: &[(&[&str], &str)] = &[
-        (&[], "Usage: ruyipack <COMMAND>"),
+        (&[], "Usage: ruyipack [OPTIONS] <COMMAND>"),
         (&["unknown"], "error: unrecognized subcommand 'unknown'"),
         (&["inspect"], "Usage: ruyipack inspect"),
         (&["check"], "Usage: ruyipack check"),

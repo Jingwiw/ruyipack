@@ -55,13 +55,16 @@ fn source_context_accepts_known_ordered_values_and_rejects_ambiguity() {
             &[
                 "--spec=ed.spec",
                 "--set",
-                &format!("sources.0.url={URL}"),
+                &format!("sources.0.url={URL}?probe=1"),
                 "--stdout",
             ],
         );
         if known {
             success(&output);
-            assert_eq!(output.stdout, source.as_bytes());
+            assert_eq!(
+                output.stdout,
+                source.replace(URL, &format!("{URL}?probe=1")).as_bytes()
+            );
         } else {
             rejected(&output, "sources.0.url");
         }
@@ -74,8 +77,6 @@ fn source_context_accepts_known_ordered_values_and_rejects_ambiguity() {
         );
         let literal = source.replace(URL, "https://example.org/archive.tar.lz");
         fs::write(directory.path().join("ed.spec"), &literal).unwrap();
-        // This case deliberately starts a new baseline after changing fixture bytes.
-        fs::remove_dir_all(directory.path().join(".ruyipack-stage")).unwrap();
         only_source_url(
             &selected_view(directory.path(), "sources.0.url"),
             "https://example.org/archive.tar.lz",
@@ -103,17 +104,16 @@ fn unknown_include_and_statement_invalidate_context_not_literal_source_urls() {
                 &[
                     "--spec=ed.spec",
                     "--set",
-                    &format!("sources.0.url={URL}"),
+                    &format!("sources.0.url={URL}?probe=1"),
                     "--stdout",
                 ],
             ),
             "unavailable or ambiguous",
         );
         success(&selected_view(directory.path(), "package.summary"));
+        fs::remove_dir_all(directory.path().join(".ruyipack-draft")).unwrap();
         let literal = source.replace(URL, "https://example.org/archive.tar.lz");
         fs::write(directory.path().join("ed.spec"), &literal).unwrap();
-        // This case deliberately starts a new baseline after changing fixture bytes.
-        fs::remove_dir_all(directory.path().join(".ruyipack-stage")).unwrap();
         only_source_url(
             &selected_view(directory.path(), "sources.0.url"),
             "https://example.org/archive.tar.lz",
@@ -299,12 +299,18 @@ fn implicit_source_numbers_follow_rpm_before_field_selection() {
 
 #[test]
 fn uncertain_implicit_source_numbers_do_not_block_unrelated_edits() {
+    let source = format!(
+        "Vendor: %{{unknown_vendor}}\n{}",
+        SPEC.replace("Source0:", "Source:")
+    );
+    let directory = fixture(&source);
+    success(&selected_view(directory.path(), "sources.0.url"));
+    assert_file(directory.path().join("ed.spec"), &source);
     for prefix in [
         "%if %{unknown}\nSource3: https://example.org/conditional.tar.gz\n%endif\n",
         "%include absent.inc\n",
         "%{unknown_statement}\n",
         "%global number %{unknown_number}\n",
-        "Vendor: %{unknown_vendor}\n",
     ] {
         let source = format!("{prefix}{}", SPEC.replace("Source0:", "Source:"));
         let directory = fixture(&source);
@@ -373,7 +379,16 @@ fn a_damaged_selected_digest_can_be_repaired_without_changing_other_bytes() {
     success(&view);
     let document: toml::Table = toml::from_str(std::str::from_utf8(&view.stdout).unwrap()).unwrap();
     assert_eq!(document["sources"]["0"]["sha256"].as_str(), Some(damaged));
-    for invalid in [damaged, "still-invalid"] {
+    success(&run(
+        directory.path(),
+        &[
+            "--spec=ed.spec",
+            "--set",
+            "sources.0.sha256=INVALID",
+            "--apply",
+        ],
+    ));
+    for invalid in ["still-invalid", "also-invalid"] {
         rejected(
             &run(
                 directory.path(),
@@ -424,7 +439,7 @@ fn a_source_url_edit_preserves_its_unselected_damaged_digest() {
         &format!("sources.0.url={replacement}"),
         &source.replace(URL, replacement),
     );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("review required"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unverified source-authenticity"));
     assert_file(directory.path().join("ed.spec"), &source);
 }
 

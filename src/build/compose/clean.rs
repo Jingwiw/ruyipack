@@ -5,14 +5,13 @@
 //! Explicit cleanup of one receipt-bound project, never replaying stored commands.
 
 use super::super::{invalid, process::Runner, regular_file};
-use crate::output_cli::ReportFormat;
 use fs_err as fs;
 use serde::Serialize;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
     ffi::OsString,
-    io::{self, IsTerminal, Read, Write},
+    io::{self, Read},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -151,37 +150,6 @@ fn collect_resources(
     Ok(())
 }
 
-fn confirm(
-    root: &Path,
-    project: &str,
-    daemon: &str,
-    force: bool,
-    report: &CleanReport,
-) -> io::Result<()> {
-    writeln!(
-        io::stderr().lock(),
-        "Clean results: {}\nDocker project: {project}\nDocker daemon: {daemon}\nOwned resources: {:?}\nImages and volumes without Compose ownership labels are retained.",
-        root.display(),
-        report.scope
-    )?;
-    if !force {
-        write!(
-            io::stderr().lock(),
-            "Delete these resources and the result directory? [y/N] "
-        )?;
-        io::stderr().flush()?;
-        let mut answer = String::new();
-        io::stdin().read_line(&mut answer)?;
-        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "clean cancelled; nothing was deleted",
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn receipt_identity<'a>(
     receipt: &'a Value,
     context: Option<&'a str>,
@@ -219,7 +187,7 @@ fn receipt_identity<'a>(
 
 fn perform(
     path: &Path,
-    force: bool,
+    authorize: &mut dyn FnMut(&CleanReport) -> io::Result<()>,
     context: Option<&str>,
     timeout: Duration,
     report: &mut CleanReport,
@@ -237,15 +205,16 @@ fn perform(
     let mut original = Vec::new();
     lock.file().read_to_end(&mut original)?;
     let receipt: Value = serde_json::from_slice(&original).map_err(io::Error::other)?;
+    if receipt["resources_retained"] == false {
+        authorize(report)?;
+        fs::remove_dir_all(&root)?;
+        report.result_removed = true;
+        return Ok(());
+    }
     let (project, daemon, context) = receipt_identity(&receipt, context)?;
     report.project = Some(project.to_owned());
     report.daemon_id = Some(daemon.to_owned());
     report.context = context.map(str::to_owned);
-    if !force && (!io::stdin().is_terminal() || !io::stderr().is_terminal()) {
-        return Err(invalid(
-            "clean requires interactive confirmation; use --force in a non-terminal invocation",
-        ));
-    }
     if !root.join("host").exists() {
         fs::create_dir(root.join("host"))?;
     }
@@ -280,7 +249,7 @@ fn perform(
             project,
             report,
         )?;
-        confirm(&root, project, daemon, force, report)?;
+        authorize(report)?;
         for (&kind, names) in &report.scope {
             for name in names {
                 let mut args = vec![kind, "rm"];
@@ -321,20 +290,32 @@ fn perform(
     Ok(())
 }
 
-pub(crate) fn run(
+pub(crate) fn execute(
     path: &Path,
-    force: bool,
     context: Option<&str>,
     timeout: Duration,
-    format: ReportFormat,
-) -> io::Result<bool> {
-    let mut report = CleanReport {
+    authorize: &mut dyn FnMut(&CleanReport) -> io::Result<()>,
+) -> CleanReport {
+    let mut report = new_report(path, context);
+    match perform(path, authorize, context, timeout, &mut report) {
+        Ok(()) => report.success = true,
+        Err(error) => {
+            report.cancelled = error.kind() == io::ErrorKind::Interrupted;
+            report.error = Some(error.to_string());
+        }
+    }
+    report
+}
+
+pub(crate) fn new_report(path: &Path, context: Option<&str>) -> CleanReport {
+    CleanReport {
         format_version: 1,
         tool: crate::tool::identity(),
         operation: "clean",
         display_path: path.to_string_lossy().into_owned(),
         success: false,
         result_removed: false,
+        cancelled: false,
         project: None,
         daemon_id: None,
         context: context.map(str::to_owned),
@@ -346,48 +327,47 @@ pub(crate) fn run(
         retained_volumes: Vec::new(),
         commands: Vec::new(),
         error: None,
-    };
-    match perform(path, force, context, timeout, &mut report) {
-        Ok(()) => report.success = true,
-        Err(error) => report.error = Some(error.to_string()),
     }
-    let success = report.success;
-    match format {
-        ReportFormat::Toml => crate::report::write(&mut io::stdout().lock(), &report)?,
-        ReportFormat::Human => {
-            if success {
-                writeln!(io::stdout().lock(), "cleaned: {}", path.display())?;
-            } else {
-                writeln!(
-                    io::stderr().lock(),
-                    "clean failed: {}",
-                    report.error.as_deref().unwrap_or("unknown error")
-                )?;
-            }
-        }
-    }
-    Ok(success)
 }
 
 /// CLI evidence is typed; the retained build receipt protocol is migrated separately.
 #[derive(Serialize)]
-struct CleanReport {
+pub(crate) struct CleanReport {
     format_version: u32,
     tool: crate::tool::Identity,
     operation: &'static str,
-    display_path: String,
-    success: bool,
+    pub(crate) display_path: String,
+    pub(crate) success: bool,
     result_removed: bool,
+    pub(crate) cancelled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    project: Option<String>,
+    pub(crate) project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    daemon_id: Option<String>,
+    pub(crate) daemon_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     context: Option<String>,
-    scope: BTreeMap<&'static str, Vec<String>>,
-    removed: BTreeMap<&'static str, Vec<String>>,
+    pub(crate) scope: BTreeMap<&'static str, Vec<String>>,
+    pub(crate) removed: BTreeMap<&'static str, Vec<String>>,
     retained_volumes: Vec<String>,
     commands: Vec<super::super::CommandRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    pub(crate) error: Option<String>,
+}
+
+/// Validate local evidence without deleting resources or contacting a daemon.
+pub(crate) fn preflight(path: &Path) -> io::Result<()> {
+    let root = target(path)?;
+    let lock = crate::file_lock::FileLock::try_lock(
+        fs::File::open(root.join("receipt.json"))?.into_file(),
+    )?;
+    let receipt: Value = serde_json::from_reader(lock.file()).map_err(io::Error::other)?;
+    if receipt["format_version"] != 1 || receipt["backend"] != "compose" {
+        return Err(invalid(
+            "unsupported build receipt; clean or repair it before deletion",
+        ));
+    }
+    if receipt["resources_retained"] != false {
+        receipt_identity(&receipt, None)?;
+    }
+    Ok(())
 }

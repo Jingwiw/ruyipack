@@ -409,6 +409,12 @@ pub(crate) fn parse(source: &str) -> Result<Manifest, RenderError> {
     resolve(toml::from_str(source)?)
 }
 
+/// Validate field names and types while allowing unfinished authoring values.
+pub(crate) fn validate_structure(document: &toml::Table) -> Result<(), RenderError> {
+    let _: ManifestInput = toml::Value::Table(document.clone()).try_into()?;
+    Ok(())
+}
+
 /// Consumes an already parsed authoring document without a text round trip.
 pub(crate) fn parse_document(document: toml::Table) -> Result<Manifest, RenderError> {
     resolve(toml::Value::Table(document).try_into()?)

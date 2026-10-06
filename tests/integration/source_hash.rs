@@ -285,11 +285,11 @@ fn generation_completes_only_missing_hashes_and_never_publishes_stale_input() {
     assert!(!root.join("ed.spec").exists());
     success(&run(&[]));
     assert!(
-        fs::read_to_string(work.join("stage/ed.candidate.spec"))
+        fs::read_to_string(work.join(".cache/ed.candidate.spec"))
             .unwrap()
             .contains(&sha(b"/ed-1.22.5.tar.lz"))
     );
-    fs::remove_file(work.join("stage/ed.candidate.spec")).unwrap();
+    fs::remove_file(work.join(".cache/ed.candidate.spec")).unwrap();
     manifest["sources"]["0"]
         .as_table_mut()
         .unwrap()
@@ -298,12 +298,26 @@ fn generation_completes_only_missing_hashes_and_never_publishes_stale_input() {
     server.calls.lock().unwrap().clear();
     success(&run(&["--check", "--format", "toml"]));
     assert!(server.calls.lock().unwrap().is_empty()); // Declared hashes are never overwritten or verified by gen.
+    let duplicate = manifest["sources"]["0"].clone();
+    manifest["sources"]
+        .as_table_mut()
+        .unwrap()
+        .insert("1".into(), duplicate);
+    fs::write(&input, toml::to_string(&manifest).unwrap()).unwrap();
     let refreshed = run(&["--hash", "--check", "--format", "toml"]);
     success(&refreshed);
     assert_eq!(
         machine_report(&refreshed)["source_hashes"][0]["sha256"].as_str(),
         Some((sha(b"/ed-1.22.5.tar.lz")).as_str())
     );
+    assert_eq!(
+        machine_report(&refreshed)["source_hashes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    manifest["sources"].as_table_mut().unwrap().remove("1");
     assert_eq!(server.calls.lock().unwrap().len(), 1);
     let offline_hash = run(&["--offline", "--hash"]);
     assert_eq!(offline_hash.status.code(), Some(2));
@@ -428,16 +442,16 @@ fn edit_hashes_the_pending_candidate_and_keeps_drafts_and_stale_guards() {
     ]);
     assert_eq!(stale_result.status.code(), Some(1));
     assert!(server.calls.lock().unwrap().is_empty());
-    fs::remove_dir_all(root.join(".ruyipack-stage")).unwrap();
+    fs::remove_dir_all(root.join(".ruyipack-draft")).unwrap();
     fs::write(
         &input,
         source.replace("#!RemoteAsset", "#!RemoteAsset:  sha256:INVALID"),
     )
     .unwrap();
     success(&run(&["edit", "--spec=input.spec", "--hash-source", "0"])); // Damaged old hashes remain repairable.
-    let stage = root.join(".ruyipack-stage/input");
+    let stage = root.join(".ruyipack-draft/input");
     assert!(stage.join("input.toml").is_file());
-    fs::remove_dir_all(root.join(".ruyipack-stage")).unwrap();
+    fs::remove_dir_all(root.join(".ruyipack-draft")).unwrap();
     fs::write(&input, &source).unwrap();
     success(&run(&[
         "edit",
@@ -464,7 +478,7 @@ fn edit_hashes_the_pending_candidate_and_keeps_drafts_and_stale_guards() {
         "%description",
         "#!RemoteAsset\nSource1: local.tar\n%description",
     );
-    fs::remove_dir_all(root.join(".ruyipack-stage")).unwrap();
+    fs::remove_dir_all(root.join(".ruyipack-draft")).unwrap();
     fs::write(&input, &batch).unwrap();
     server.calls.lock().unwrap().clear();
     assert_eq!(
@@ -573,12 +587,12 @@ fn generation_hash_completion_uses_edited_urls_and_never_backfills_stale_baselin
             "--field",
             "sources.0",
             "--prepare",
-            "work/gen-work/stage",
+            "work/gen-work",
         ])
         .output()
         .unwrap();
     success(&prepare);
-    let stage = work.join("stage/ed.toml");
+    let stage = work.join("ed.toml");
     let edited = format!(
         "[package]\nversion = '2'\n[sources.0]\nurl = '{}/ed-%{{version}}.tar'\n",
         server.url
@@ -595,7 +609,7 @@ fn generation_hash_completion_uses_edited_urls_and_never_backfills_stale_baselin
     };
     success(&run(&["--offline"]));
     assert!(server.calls.lock().unwrap().is_empty());
-    let completed = work.join("stage/ed.resolved.toml");
+    let completed = work.join(".cache/ed.resolved.toml");
     let document: toml::Value = toml::from_str(&fs::read_to_string(&completed).unwrap()).unwrap();
     assert!(
         document["edit"]["values"]["sources"]["0"]
@@ -606,7 +620,7 @@ fn generation_hash_completion_uses_edited_urls_and_never_backfills_stale_baselin
     );
     let baseline_digest = "56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc";
     assert!(
-        fs::read_to_string(work.join("stage/ed.candidate.spec"))
+        fs::read_to_string(work.join(".cache/ed.candidate.spec"))
             .unwrap()
             .contains(baseline_digest)
     );
@@ -624,7 +638,7 @@ fn generation_hash_completion_uses_edited_urls_and_never_backfills_stale_baselin
         Some(observed.as_str())
     );
     assert_file(&stage, &edited);
-    assert_file(work.join("checkout/SPECS/ed/ed.spec"), &source);
+    assert_file(work.join("recipe/SPECS/ed/ed.spec"), &source);
     server.calls.lock().unwrap().clear();
     // An explicit digest remains a declaration; --hash alone requests re-observation.
     fs::write(&stage, format!("{edited}sha256 = '{baseline_digest}'\n")).unwrap();
@@ -639,9 +653,375 @@ fn generation_hash_completion_uses_edited_urls_and_never_backfills_stale_baselin
     );
     let refreshed = run(&["--hash", "--check", "--format=toml"]);
     success(&refreshed);
+    assert!(
+        machine_report(&refreshed)["authoring_warnings"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         machine_report(&refreshed)["source_hashes"][0]["sha256"].as_str(),
         Some(observed.as_str())
     );
     assert_eq!(server.calls.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn explicit_generation_hashes_preflight_all_sources_before_downloading() {
+    let server = Server::new(false, |path| response(path.as_bytes()));
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let source = include_str!("../fixtures/ed.spec")
+        .replace(
+            "https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz",
+            &format!("{}/archive", server.url),
+        )
+        .replace(
+            "BuildSystem:",
+            "#!RemoteAsset\nSource1: https://fixture:secret@example.invalid/archive\nBuildSystem:",
+        );
+    let work = recipe_workspace(root, "ed", "ed", &source);
+    success(&super::support::run(
+        root,
+        &[
+            "edit",
+            "ed",
+            "--field",
+            "package.version",
+            "--prepare",
+            "work/ed",
+        ],
+    ));
+    let stage = work.join("ed.toml");
+    let before = fs::read(&stage).unwrap();
+    let output = server
+        .command()
+        .current_dir(root)
+        .args(["gen", "ed", "--hash", "--check", "--format=toml"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let report = machine_report(&output);
+    assert_eq!(report["scope"].as_str(), Some("selected-generation-static"));
+    assert_eq!(
+        report["source_hash_failures"][0]["source_number"].as_integer(),
+        Some(1)
+    );
+    assert_eq!(
+        report["source_hash_failures"][0]["reason"].as_str(),
+        Some("url-policy")
+    );
+    assert!(server.calls.lock().unwrap().is_empty());
+    assert_eq!(fs::read(&stage).unwrap(), before);
+    assert_file(work.join("recipe/SPECS/ed/ed.spec"), &source);
+    assert!(!work.join(".cache/ed.resolved.toml").exists());
+    fs::write(&stage, "[").unwrap();
+    let malformed = super::support::run(root, &["gen", "ed", "--check", "--format=toml"]);
+    assert_eq!(malformed.status.code(), Some(1));
+    assert_eq!(
+        machine_report(&malformed)["scope"].as_str(),
+        Some("selected-generation-static")
+    );
+    assert_file(&stage, "[");
+}
+
+#[test]
+fn edit_partial_hash_failure_reports_observations_without_publishing_digests() {
+    let directory = tempfile::tempdir().unwrap();
+    let server = Server::new(true, |path| {
+        if path == "/fail" {
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec()
+        } else {
+            response(path.as_bytes())
+        }
+    });
+    let source = include_str!("../fixtures/ed.spec")
+        .replace(
+            "https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz",
+            &format!("{}/ok", server.url),
+        )
+        .replace(
+            "BuildSystem:",
+            &format!(
+                "#!RemoteAsset:  sha256:{}\nSource1: {}/fail\nBuildSystem:",
+                "a".repeat(64),
+                server.url
+            ),
+        );
+    let work = recipe_workspace(directory.path(), "ed", "ed", &source);
+    let run = |extra: &[&str]| {
+        server
+            .command()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .current_dir(directory.path())
+            .arg("edit")
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    success(&run(&["ed", "--prepare", "drafts"]));
+    let draft = directory.path().join("drafts/ed.toml");
+    let before = fs::read_to_string(&draft).unwrap();
+    let output = run(&["--from", "drafts", "--hash", "--apply", "--format=toml"]);
+    assert_eq!(output.status.code(), Some(1));
+    let report = machine_report(&output);
+    let file = &report["files"][0];
+    let observed = sha(b"/ok");
+    assert_eq!(
+        file["source_hashes"]["sources"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        file["source_hashes"]["sources"][0]["sha256"].as_str(),
+        Some(observed.as_str())
+    );
+    assert_eq!(file["error"]["source_number"].as_integer(), Some(1));
+    assert_eq!(file["error"]["http_status"].as_integer(), Some(404));
+    assert_file(&draft, &before);
+    assert_file(work.join("recipe/SPECS/ed/ed.spec"), &source);
+    assert_eq!(*server.calls.lock().unwrap(), ["/ok", "/fail"]);
+}
+
+#[test]
+fn check_repairs_only_missing_digests_and_retries_without_downloads() {
+    let server = hash_server();
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = include_str!("../fixtures/ed.spec");
+    let source = fixture
+        .replace("https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz", &format!("{}/asset", server.url))
+        .replace("#!RemoteAsset:  sha256:56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc", "#!RemoteAsset");
+    assert!(source.contains("#!RemoteAsset\n"));
+    let work = recipe_workspace(dir.path(), "repair", "ed", &source);
+    let run = || {
+        server
+            .command()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .current_dir(dir.path())
+            .args(["check", "repair", "--auto-fix", "--format", "toml"])
+            .output()
+            .unwrap()
+    };
+    let first = run();
+    success(&first);
+    let report = machine_report(&first);
+    assert_eq!(report["operation"].as_str(), Some("auto-fix"));
+    assert_eq!(report["files"][0]["created_work"].as_bool(), Some(true));
+    let fixed = source.replace(
+        "#!RemoteAsset\n",
+        &format!("#!RemoteAsset:  sha256:{}\n", sha(b"\0\xffasset\n")),
+    );
+    let spec = work.join("recipe/SPECS/ed/ed.spec");
+    assert_file(&spec, &fixed);
+    let calls = server.calls.lock().unwrap().len();
+    success(&run());
+    assert_file(&spec, &fixed);
+    assert_eq!(server.calls.lock().unwrap().len(), calls);
+    assert_file(dir.path().join("openruyi/SPECS/ed/ed.spec"), &source);
+}
+
+#[test]
+fn check_repair_keeps_recipe_on_download_failure_and_refuses_pending_edits() {
+    let server = hash_server();
+    let dir = tempfile::tempdir().unwrap();
+    let source = include_str!("../fixtures/ed.spec").replace(
+        "%description\n",
+        &format!(
+            "#!RemoteAsset\nSource1: {}/fail\n\n%description\n",
+            server.url
+        ),
+    );
+    let work = recipe_workspace(dir.path(), "repair", "ed", &source);
+    let run = || {
+        server
+            .command()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .current_dir(dir.path())
+            .args(["check", "repair", "--auto-fix", "--format", "toml"])
+            .output()
+            .unwrap()
+    };
+    let failed = run();
+    assert_eq!(failed.status.code(), Some(1));
+    assert_eq!(machine_report(&failed)["success"].as_bool(), Some(false));
+    assert_file(work.join("recipe/SPECS/ed/ed.spec"), &source);
+    assert_eq!(*server.calls.lock().unwrap(), ["/fail"]);
+    let input = work.join("ed.toml");
+    let mut values: toml::Table = toml::from_str(&fs::read_to_string(&input).unwrap()).unwrap();
+    values["sources"]["1"]["sha256"] = sha(b"pending").into();
+    let pending = toml::to_string(&values).unwrap();
+    fs::write(&input, &pending).unwrap();
+    let refused = run();
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&refused.stdout).contains("pending TOML edits"));
+    assert_file(input, &pending);
+    assert_file(work.join("recipe/SPECS/ed/ed.spec"), &source);
+    assert_eq!(*server.calls.lock().unwrap(), ["/fail"]);
+}
+
+#[test]
+fn check_repair_does_not_apply_unrelated_authoring_scripts() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = authoring_workspace(
+        dir.path(),
+        "authoring",
+        "ed",
+        include_str!("../../examples/ed/ed.toml"),
+    );
+    success(
+        &command()
+            .current_dir(dir.path())
+            .args(["gen", "authoring", "--offline", "--apply"])
+            .output()
+            .unwrap(),
+    );
+    let spec = work.join("recipe/SPECS/ed/ed.spec");
+    let original = fs::read(&spec).unwrap();
+    let input = work.join("ed.toml");
+    let pending = format!(
+        "{}\n[build.stages.build]\nappend = 'echo pending-script'\n",
+        fs::read_to_string(&input).unwrap()
+    );
+    fs::write(&input, &pending).unwrap();
+    let refused = command()
+        .current_dir(dir.path())
+        .args(["check", "authoring", "--auto-fix", "--format", "toml"])
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&refused.stdout).contains("pending TOML edits"));
+    assert_file(input, &pending);
+    assert_eq!(fs::read(spec).unwrap(), original);
+}
+
+#[test]
+fn auto_fix_summary_is_literal_local_and_repeatable() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = include_str!("../fixtures/ed.spec");
+    let summary = fixture
+        .lines()
+        .find(|line| line.starts_with("Summary:"))
+        .unwrap();
+    let source = fixture.replace(summary, &format!("{summary}."));
+    let work = recipe_workspace(directory.path(), "repair", "ed", &source);
+    let run = || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_ruyipack"))
+            .current_dir(directory.path())
+            .args(["check", "repair", "--auto-fix", "--format", "toml"])
+            .output()
+            .unwrap()
+    };
+    let first = run();
+    success(&first);
+    assert_file(work.join("recipe/SPECS/ed/ed.spec"), fixture);
+    let report = machine_report(&first);
+    assert!(
+        report["files"][0]["changed_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field.as_str() == Some("package.summary"))
+    );
+    success(&run());
+    assert_file(work.join("recipe/SPECS/ed/ed.spec"), fixture);
+}
+
+#[test]
+fn version_warning_preserves_static_policy_and_recipe() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = include_str!("../fixtures/ed.spec")
+        .replace("Name:           ed", "Name:           %{unknown_pkg}")
+        .replace(
+            "Summary:        A line-oriented text editor",
+            "Summary:        A line-oriented text editor.",
+        );
+    let work = recipe_workspace(directory.path(), "review", "ed", &source);
+    for (policy, exit) in [("authoring", 0), ("submit", 1)] {
+        let output = command()
+            .current_dir(directory.path())
+            .args([
+                "check",
+                "review",
+                "--upgrade",
+                "--policy",
+                policy,
+                "--format",
+                "toml",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(exit));
+        let report = machine_report(&output);
+        assert_eq!(report["upgrade"]["status"].as_str(), Some("unavailable"));
+        assert!(
+            report["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding["code"].as_str() == Some("RPK006"))
+        );
+        assert_file(directory.path().join("openruyi/SPECS/ed/ed.spec"), &source);
+        assert!(!work.join("recipe").exists());
+    }
+}
+
+#[test]
+fn basic_fix_does_not_resolve_downloads_when_digests_exist() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = include_str!("../fixtures/ed.spec")
+        .replace(
+            "https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz",
+            "%{unknown_source}",
+        )
+        .replace(
+            "Summary:        A line-oriented text editor",
+            "Summary:        A line-oriented text editor.",
+        );
+    let work = recipe_workspace(directory.path(), "repair", "ed", &source);
+    let output = command()
+        .current_dir(directory.path())
+        .args(["check", "repair", "--auto-fix", "--format", "toml"])
+        .output()
+        .unwrap();
+    success(&output);
+    assert_file(
+        work.join("recipe/SPECS/ed/ed.spec"),
+        &source.replace(
+            "Summary:        A line-oriented text editor.",
+            "Summary:        A line-oriented text editor",
+        ),
+    );
+}
+
+#[test]
+fn basic_fix_removes_unused_signature_without_fetching_and_is_idempotent() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = include_str!("../fixtures/ed.spec").replace(
+        "BuildSystem:    autotools",
+        "#!RemoteAsset\nSource1: https://invalid.example/ed.sig.asc\nBuildSystem:    autotools",
+    );
+    let work = recipe_workspace(directory.path(), "signature", "ed", &source);
+    let original = directory.path().join("openruyi/SPECS/ed/ed.sig.asc");
+    std::fs::write(&original, "local signature").unwrap();
+    crate::support::git(&directory.path().join("openruyi"), &["add", "."]);
+    crate::support::git(
+        &directory.path().join("openruyi"),
+        &["commit", "-m", "Add signature material"],
+    );
+    for _ in 0..2 {
+        let output = command()
+            .current_dir(directory.path())
+            .args(["check", "signature", "--auto-fix", "--format", "toml"])
+            .output()
+            .unwrap();
+        success(&output);
+        assert_file(
+            work.join("recipe/SPECS/ed/ed.spec"),
+            &source.replace(
+                "#!RemoteAsset\nSource1: https://invalid.example/ed.sig.asc\n",
+                "",
+            ),
+        );
+        assert!(!work.join("recipe/SPECS/ed/ed.sig.asc").exists());
+    }
+    assert_file(&original, "local signature");
 }

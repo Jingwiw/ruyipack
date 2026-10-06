@@ -4,6 +4,7 @@
   "policy_source": "https://github.com/openRuyi-Project/openRuyi/blob/94fa4d323665d3057a7ee01c8bec47242f883df5/.github/build/_config",
   "repository": "https://repo.build.openruyi.cn/openruyi/x86_64/",
   "repository_snapshot": null,
-  "release_policy": "development: upstream autorelease/autochangelog macros, without OBS CI_CNT/B_CNT release injection",
-  "package_signature_verification": false
+  "release_policy": "development: bundled Mock config overrides autorelease/autochangelog; OBS release/changelog services are not validated",
+  "package_signature_verification": false,
+  "repository_fallback": "https://boat.openruyi.cn/unstable/x86_64/"
 }

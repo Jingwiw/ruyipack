@@ -12,16 +12,24 @@ use std::{io, path::PathBuf, time::Duration};
 
 #[derive(Args)]
 pub(crate) struct Options {
-    /// Workspace development area; with --dir, an explicit build receipt's recipe key.
-    #[arg(value_name = "WORK")]
-    work: String,
-    /// Advanced: look up DIR/RECIPE instead of the managed WORK/build result.
-    #[arg(long, value_name = "DIR")]
-    dir: Option<PathBuf>,
+    #[command(flatten)]
+    input: super::history::Selection,
+    /// Run a command in the Mock build directory instead of opening an interactive shell.
+    #[arg(last = true, conflicts_with = "export_patch")]
+    command: Vec<String>,
+    /// Export selected text-file changes from a successful prep baseline; does not modify SPEC.
+    #[arg(long, requires_all = ["source_root", "paths"])]
+    export_patch: Option<PathBuf>,
+    /// Source subtree relative to the native RPM build directory (for example busybox-1.37.0).
+    #[arg(long, requires = "export_patch", value_hint = clap::ValueHint::Other)]
+    source_root: Option<PathBuf>,
+    /// File relative to --source-root; repeat to select changes, including additions/deletions.
+    #[arg(long = "path", requires = "export_patch", value_hint = clap::ValueHint::Other)]
+    paths: Vec<PathBuf>,
     /// Override Docker's current connection; the recorded daemon must still match.
     #[arg(long)]
     context: Option<String>,
-    /// Deadline for each environment check and stop, not for the interactive shell.
+    /// Deadline for each check, command or stop; interactive shells remain unbounded.
     #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
     timeout: u64,
 }
@@ -35,6 +43,7 @@ struct Receipt {
     context: Option<String>,
     config: PathBuf,
     execution: Execution,
+    resources_retained: Option<bool>,
 }
 #[derive(Deserialize)]
 struct Execution {
@@ -42,28 +51,9 @@ struct Execution {
 }
 
 pub(crate) fn run(options: &Options) -> io::Result<bool> {
-    crate::check::metadata::Field::Name
-        .validate(&options.work)
-        .map_err(invalid)?;
-    // The explicit --dir route is an advanced receipt consumer, never a missing-WORK fallback.
-    let development = if options.dir.is_none() {
-        let workspace = crate::workspace::discover()?;
-        Some(workspace.existing_development(&options.work)?)
-    } else {
-        None
-    };
-    let package = development
-        .as_ref()
-        .map_or(options.work.as_str(), |area| area.package());
-    let requested_output = match &development {
-        Some(area) => area.directory().join("build"),
-        None => options
-            .dir
-            .as_ref()
-            .expect("explicit receipt directory")
-            .join(&options.work),
-    };
-    let output = directory(&requested_output)?;
+    let selected = options.input.resolve()?;
+    let development = selected.development;
+    let output = directory(&selected.path)?;
     let path = output.join("receipt.json");
     regular_file(&path)?;
     // Serialize shell sessions so a second opener cannot pass the stopped-worker
@@ -76,11 +66,20 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
         ))
     })?;
     let receipt: Receipt = serde_json::from_reader(lock.file()).map_err(io::Error::other)?;
-    if receipt.format_version != 1 || receipt.package != package {
+    if receipt.resources_retained == Some(false) {
+        return Err(invalid(
+            "this historical attempt no longer owns the worker; use the current build",
+        ));
+    }
+    if receipt.format_version != 1
+        || development
+            .as_ref()
+            .is_some_and(|area| receipt.package != area.package())
+    {
         return Err(invalid("build receipt does not identify this recipe"));
     }
     let engine: &dyn Engine = match receipt.engine.as_str() {
-        "mock" => &Mock,
+        "mock" => &Mock(super::Stage::Build),
         _ => return Err(invalid("unsupported recorded build engine")),
     };
     let context = options.context.as_deref().or(receipt.context.as_deref());
@@ -95,11 +94,49 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
         },
         _ => return Err(invalid("unsupported recorded build backend")),
     };
+    if options.command.is_empty() && options.export_patch.is_none() {
+        crate::output_cli::stderr().message(
+            crate::output_cli::HumanLevel::Info,
+            None,
+            format_args!("Mock chroot; changes remain here until explicitly exported"),
+        )?;
+    }
+    if let Some(area) = &development {
+        crate::output_cli::stderr().message(
+            crate::output_cli::HumanLevel::Debug,
+            None,
+            format_args!("recipe directory {}", area.package_directory().display()),
+        )?;
+    }
     // Never replay configuration paths or recovery commands from a receipt.
+    let mut invocation = if options.export_patch.is_some() {
+        engine.export_patch()
+    } else {
+        engine.shell()
+    };
+    if options.export_patch.is_some() {
+        invocation.extend([
+            "--source-root".into(),
+            options
+                .source_root
+                .as_ref()
+                .expect("clap requires source root")
+                .to_string_lossy()
+                .into_owned(),
+        ]);
+        for path in &options.paths {
+            invocation.extend(["--path".into(), path.to_string_lossy().into_owned()]);
+        }
+    }
+    if !options.command.is_empty() {
+        invocation.push("--".into());
+        invocation.extend(options.command.iter().cloned());
+    }
     backend.shell(
         &output,
-        &engine.shell(),
+        &invocation,
         &receipt.execution.details,
+        options.export_patch.as_deref(),
         Duration::from_secs(options.timeout),
     )
 }

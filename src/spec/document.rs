@@ -8,8 +8,10 @@
 //! Capture owns AST/range mapping; render validates replacements and preserves other bytes.
 
 mod capture;
+mod dependencies;
 mod render;
 pub(crate) mod schema;
+mod scripts;
 pub(crate) mod table;
 
 use std::{borrow::Cow, collections::BTreeMap, ops::Range};
@@ -45,6 +47,8 @@ pub(crate) struct Snapshot<'src> {
     digest_markers: BTreeMap<String, Range<usize>>,
     lists: BTreeMap<String, List>,
     copyright: Option<Copyright>,
+    dependencies: Vec<dependencies::Group>,
+    scripts: Vec<scripts::Script>,
 }
 
 impl Snapshot<'_> {
@@ -57,6 +61,8 @@ impl Snapshot<'_> {
             digest_markers: self.digest_markers,
             lists: self.lists,
             copyright: self.copyright,
+            dependencies: self.dependencies,
+            scripts: self.scripts,
         }
     }
 
@@ -133,3 +139,12 @@ fn validate_comments(value: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests;
+
+// TOML carries logical field values; original byte ranges retain SPEC line endings.
+fn logical_text(value: &str) -> Cow<'_, str> {
+    if value.contains('\r') {
+        Cow::Owned(value.replace("\r\n", "\n"))
+    } else {
+        Cow::Borrowed(value)
+    }
+}

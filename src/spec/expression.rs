@@ -9,8 +9,8 @@
 
 use rpm_spec::{
     ast::{
-        BinOp, ConcatPart, CondExpr, CondKind, ConditionalMacro, ExprAst, MacroDef, MacroDefKind,
-        MacroKind, Span, Text, TextSegment,
+        BinOp, BuiltinMacro, ConcatPart, CondExpr, CondKind, ConditionalMacro, ExprAst, MacroDef,
+        MacroDefKind, MacroKind, Span, Text, TextSegment,
     },
     parser::{Input, ParserState, text::parse_text},
 };
@@ -133,7 +133,7 @@ impl Context {
                     && reference.args.is_empty() => {
                         let name = reference.name.as_str();
                         let definition = self.definitions.get(name).and_then(|defs| defs.last())
-                            .ok_or_else(|| format!("unsupported source macro {name:?}: unavailable or ambiguous; supply its static value with --define"))?;
+                            .ok_or_else(|| format!("unsupported source macro {name:?}: unavailable or ambiguous; material values require a static definition or a literal URL/path"))?;
                         let definition = definition.as_ref().map_err(Clone::clone)?;
                         if matches!(reference.conditional, ConditionalMacro::IfNotDefined) {
                             continue;
@@ -151,6 +151,50 @@ impl Context {
                         }
                     }
                 _ => return Err("unsupported Source expression: dynamic or parameterized macros are not executed".into()),
+            }
+        }
+        Ok(())
+    }
+
+    /// Non-material scalar fields may retain opaque environment values. Inspect
+    /// known definitions for execution or injected lines, without requiring the
+    /// target's directory/release macros to be available on the host.
+    pub(crate) fn check_scalar(&self, value: &str) -> Result<(), String> {
+        self.scalar(&parse(value)?, 0)
+    }
+
+    fn scalar(&self, text: &Text, depth: usize) -> Result<(), String> {
+        self.step()?;
+        if depth >= 64 {
+            return Err("excessively nested scalar macro expression".into());
+        }
+        for segment in &text.segments {
+            self.step()?;
+            match segment {
+                TextSegment::Literal(value) if !value.contains(['\n', '\r', '\0']) => {}
+                TextSegment::Macro(reference)
+                    if matches!(reference.kind, MacroKind::Plain | MacroKind::Braced)
+                        || matches!(
+                            reference.kind,
+                            MacroKind::Builtin(BuiltinMacro::With | BuiltinMacro::Without)
+                        ) =>
+                {
+                    for arg in &reference.args {
+                        self.scalar(arg, depth + 1)?;
+                    }
+                    if let Some(value) = &reference.with_value {
+                        self.scalar(value, depth + 1)?;
+                    }
+                    if let Some(Ok(body)) =
+                        self.definitions.get(&reference.name).and_then(|d| d.last())
+                    {
+                        self.scalar(body, depth + 1)?;
+                    }
+                }
+                _ => return Err(
+                    "non-material field may execute macros or inject declarations; not evaluated"
+                        .into(),
+                ),
             }
         }
         Ok(())

@@ -48,10 +48,12 @@ if args[0] == 'context': print(json.dumps([{'Name': 'personalDocker', 'Endpoints
 elif args[:2] == ['compose', 'version']: print('fixture-compose')
 elif args[0] == 'compose':
     operation = args[args.index('--project-name') + 2]
+    if operation == 'config': print(json.dumps({'services': {'worker': {'platform': 'linux/amd64'}}}))
     if operation == 'create': (state / 'project').write_text(args[args.index('--project-name') + 1])
     if operation == 'ps': print('abcdef0123456789')
     if operation == 'down' and mode in ('cleanup-failure', 'engine-cleanup-failure', 'bad-hash-cleanup'): sys.exit(19)
 elif args[0] == 'info': print(json.dumps({'ID': 'fixture-daemon', 'OSType': 'windows' if mode == 'windows-daemon' else 'linux', 'ServerVersion': 'fixture', 'Architecture': 'x86_64', 'KernelVersion': 'fixture-kernel'}))
+elif args[:2] == ['image', 'inspect']: print(json.dumps([{'Architecture': 'amd64'}]))
 elif args[0] == 'inspect': print(json.dumps([{'Image': 'sha256:fixture-image', 'Config': {'Env': [], 'Labels': {'com.docker.compose.project': 'other' if mode == 'wrong-label' else (state / 'project').read_text()}}, 'State': {'Running': mode == 'running-worker'}, 'HostConfig': {'Privileged': True}, 'Mounts': []}]))
 elif args[0] == 'cp':
     if args[1].startswith('abcdef0123456789:'):
@@ -61,15 +63,22 @@ elif args[0] == 'cp':
     else:
         shutil.copytree(args[1], state / 'input', dirs_exist_ok=True)
 elif args[0] == 'exec':
-    if '--shell' in args:
+    if '-c' in args and 'Probe this worker only' in args[args.index('-c')+1]:
+        if mode == 'probe-failure': print('mount denied'); sys.exit(31)
+        print(json.dumps({'target_arch':'x86_64', 'rpm_arch':'x86_64', 'image_arch':'amd64', 'mount':True, 'chroot':True, 'translator':'unknown'})); sys.exit(0)
+    if '-c' in args and args[1] != '--interactive':
+        for name in ('input', 'engine'):
+            shutil.rmtree(state / name, ignore_errors=True)
+        sys.exit(0)
+    if args[1] == '--interactive':
         assert args[1:3] == ['--interactive', 'abcdef0123456789'], args
-        assert args[-3:] == ['python3', '/input/engine.py', '--shell'], args
+        if '--' in args: print(json.dumps(args[args.index('--')+1:]))
         print('mock chroot shell fixture')
         sys.exit(42 if mode == 'shell-failure' else 0)
     assert args[1] == 'abcdef0123456789'
     (state / 'engine').mkdir(exist_ok=True)
     (state / 'engine' / 'artifact.rpm').write_bytes(b'fixture RPM bytes')
-    receipt = {'format_version': 1, 'engine': 'mock', 'success': mode != 'failed-receipt',
+    receipt = {'format_version': 1, 'engine': 'mock', 'target_stage': args[args.index('--stage')+1] if '--stage' in args else 'build', 'success': mode != 'failed-receipt',
                'artifacts': [{'path': 'artifact.rpm', 'size': len(b'fixture RPM bytes'),
                  'sha256': '0' * 64 if mode in ('bad-hash', 'bad-hash-cleanup') else hashlib.sha256(b'fixture RPM bytes').hexdigest(),
                  'identity': 'fixture\t1\t1.or\tx86_64'}]}
@@ -89,6 +98,7 @@ elif args[0] in ('container', 'network', 'volume'):
         labels = {'com.docker.compose.project': 'different-project' if mode == 'wrong-label' else (state / 'project').read_text()}
         if kind == 'volume' and args[2] == 'owned-volume': labels['com.docker.compose.volume'] = 'data'
         print(json.dumps([{'Config': {'Labels': labels}, 'Labels': labels}]))
+    elif operation == 'rm' and kind == 'network' and mode == 'remove-network-failure': sys.exit(29)
     elif operation != 'rm': raise AssertionError(args)
 elif args[0] in ('start', 'kill', 'stop'): pass
 else: raise AssertionError(args)
@@ -166,7 +176,7 @@ impl Fixture {
         command
             .arg("--source-dir")
             .arg(&self.source)
-            .arg("--dir")
+            .arg("--output-dir")
             .arg(self.output.parent().unwrap())
             .arg("--timeout")
             .arg(timeout.to_string())
@@ -232,7 +242,7 @@ impl Fixture {
 }
 
 #[test]
-fn named_build_and_shell_share_binding_checkout_and_workspace_configuration() {
+fn named_build_and_shell_share_binding_recipe_and_workspace_configuration() {
     let mut fixture = Fixture::new();
     let workspace = fixture.workspace("distro/recipes", "fixture", "fixture.spec");
     let recipes = workspace.join("recipes");
@@ -275,11 +285,10 @@ fn named_build_and_shell_share_binding_checkout_and_workspace_configuration() {
     assert_eq!(receipt["package"], "fixture");
     assert!(receipt["context"].is_null());
     let area = workspace.join("areas/fixture-test");
-    assert_eq!(
-        fs::read_to_string(area.join(".config.toml")).unwrap(),
-        "pkg = \"fixture\"\n"
-    );
-    let package_directory = area.join("checkout/distro/recipes/fixture");
+    let binding: toml::Table =
+        toml::from_str(&fs::read_to_string(area.join(".config.toml")).unwrap()).unwrap();
+    assert_eq!(binding["pkg"].as_str(), Some("fixture"));
+    let package_directory = area.join("recipe/SPECS/fixture");
     assert_eq!(
         receipt["spec"],
         fs::canonicalize(package_directory.join("fixture.spec"))
@@ -346,7 +355,7 @@ fn named_build_and_shell_share_binding_checkout_and_workspace_configuration() {
         fs::read(fixture.root.path().join("calls.jsonl")).unwrap(),
         calls_before
     );
-    drop(binding_lock);
+    binding_lock.unlock().unwrap();
     let unreachable_recipes = workspace.join("temporarily-unreachable-recipes");
     fs::rename(&recipes, &unreachable_recipes).unwrap();
     let shell = fixture
@@ -368,21 +377,52 @@ fn named_build_and_shell_share_binding_checkout_and_workspace_configuration() {
         .args(["build", "fixture-test", "--format", "toml"])
         .output()
         .unwrap();
-    assert_eq!(repeated.status.code(), Some(1), "{repeated:?}");
-    assert!(support::output_text(&repeated.stderr).contains("already exists"));
+    support::success(&repeated);
+    let history = fixture.output.parent().unwrap().join("build-history");
+    let previous = fs::read_dir(&history)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
     assert_eq!(
-        fs::read(fixture.output.join("receipt.json")).unwrap(),
+        fs::read(previous.join("receipt.json")).unwrap(),
         receipt_bytes
     );
+    // The fake daemon models one inspect identity at a time; select the archived worker.
+    let current_project = fs::read(fixture.root.path().join("project")).unwrap();
+    fs::write(
+        fixture.root.path().join("project"),
+        receipt["execution"]["details"]["project"].as_str().unwrap(),
+    )
+    .unwrap();
+    support::success(
+        &fixture
+            .command("default-context")
+            .current_dir(&cwd)
+            .args(["shell", "fixture-test", "--attempt"])
+            .arg(previous.file_name().unwrap())
+            .output()
+            .unwrap(),
+    );
+    fs::write(fixture.root.path().join("project"), current_project).unwrap();
     let manifest = area.join("fixture.toml");
     fs::write(&manifest, "authoring input, not a build artifact\n").unwrap();
-    let head = fs::read(area.join("checkout/.git")).unwrap();
+    let head = fs::read(area.join(".config.toml")).unwrap();
     fs::rename(&recipes, &unreachable_recipes).unwrap();
     support::success(
         &fixture
             .command("default-context")
             .current_dir(&cwd)
-            .args(["clean", "fixture-test", "--force", "--format", "toml"])
+            .args([
+                "clean",
+                "fixture-test",
+                "--attempt",
+                "current",
+                "--force",
+                "--format",
+                "toml",
+            ])
             .output()
             .unwrap(),
     );
@@ -391,7 +431,7 @@ fn named_build_and_shell_share_binding_checkout_and_workspace_configuration() {
         fs::read_to_string(&manifest).unwrap(),
         "authoring input, not a build artifact\n"
     );
-    assert_eq!(fs::read(area.join("checkout/.git")).unwrap(), head);
+    assert_eq!(fs::read(area.join(".config.toml")).unwrap(), head);
     assert!(package_directory.join("fixture.spec").is_file());
 }
 
@@ -399,7 +439,7 @@ fn named_build_and_shell_share_binding_checkout_and_workspace_configuration() {
 fn named_build_refuses_directory_overrides_and_missing_specs_before_creation() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("SPECS", "fixture", "fixture.spec");
-    for flag in ["--dir", "--source-dir"] {
+    for flag in ["--output-dir", "--source-dir"] {
         let output = fixture
             .command("default-context")
             .current_dir(&workspace)
@@ -435,7 +475,8 @@ fn build_copies_inputs_and_returns_a_receipt_without_context_mutation() {
     let fixture = Fixture::new();
     let output = fixture.run("", 10);
     support::success(&output);
-    assert!(support::output_text(&output.stderr).contains("build: engine; stdout:"));
+    assert!(support::output_text(&output.stderr).contains("engine stdout"));
+    assert!(support::output_text(&output.stderr).contains("engine stderr"));
     let receipt = fixture.reported_receipt(&output);
     assert_eq!(receipt["execution"]["success"], true);
     assert_eq!(receipt["success"], true);
@@ -482,7 +523,15 @@ fn build_copies_inputs_and_returns_a_receipt_without_context_mutation() {
                 .join(command["stderr"].as_str().unwrap())
                 .is_file()
         );
-        if command["argv"][3] == "exec" {
+        if command["argv"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|arg| arg == "/input/engine.py")
+        {
+            let terminal = String::from_utf8_lossy(&output.stderr);
+            assert!(terminal.contains("engine stdout\n"), "{terminal}");
+            assert!(terminal.contains("engine stderr\n"), "{terminal}");
             assert_eq!(
                 fs::read(fixture.output.join(command["stdout"].as_str().unwrap())).unwrap(),
                 b"engine stdout\n"
@@ -506,7 +555,11 @@ fn build_copies_inputs_and_returns_a_receipt_without_context_mutation() {
 #[test]
 fn build_retains_a_stopped_worker_by_default() {
     let fixture = Fixture::new();
-    support::success(&fixture.run("default-retain", 30));
+    let output = fixture.run("default-retain", 30);
+    support::success(&output);
+    let report = support::machine_report(&output);
+    assert_eq!(report["next_steps"]["shell"][1].as_str(), Some("shell"));
+    assert!(std::path::Path::new(report["artifacts"].as_str().unwrap()).is_dir());
     let receipt = fixture.receipt();
     assert_eq!(receipt["remove_requested"], false);
     let execution = &receipt["execution"];
@@ -677,7 +730,7 @@ fn build_refuses_existing_outputs_and_nested_source_outputs() {
 fn build_rejects_symlink_inputs_before_starting_backend() {
     let fixture = Fixture::new();
     symlink(&fixture.spec, fixture.source.join("linked.spec")).unwrap();
-    let output = fixture.run("", 10);
+    let output = fixture.run("default-retain", 10);
     assert_eq!(output.status.code(), Some(1));
     let receipt = fixture.receipt();
     assert!(
@@ -693,6 +746,21 @@ fn build_rejects_symlink_inputs_before_starting_backend() {
             .is_empty()
     );
     assert!(!fixture.root.path().join("calls.jsonl").exists());
+    assert_eq!(receipt["resources_retained"], false);
+    let report = support::machine_report(&output);
+    assert!(report["next_steps"].get("shell").is_none());
+    let clean = report["next_steps"]["clean"].as_array().unwrap();
+    let cleaned = fixture
+        .command("default-retain")
+        .args(clean.iter().skip(1).map(|arg| arg.as_str().unwrap()))
+        .arg("--force")
+        .output()
+        .unwrap();
+    support::success(&cleaned);
+    assert!(!fixture.output.exists());
+    assert!(!fixture.root.path().join("calls.jsonl").exists());
+    fs::remove_file(fixture.source.join("linked.spec")).unwrap();
+    support::success(&fixture.run("default-retain", 10));
 }
 
 #[test]
@@ -882,9 +950,11 @@ fn clean_requires_confirmation_then_removes_only_receipt_owned_resources() {
             .unwrap()
             .contains("--force")
     );
+    assert!(refused.stderr.is_empty(), "{refused:?}");
     assert!(fixture.output.is_dir());
     let output = clean(true);
     support::success(&output);
+    assert!(output.stderr.is_empty(), "{output:?}");
     let report = support::machine_report(&output);
     for (kind, id) in [
         ("container", "abcdef0123456789"),
@@ -1079,8 +1149,8 @@ fn shell_reuses_the_owned_worker_and_stops_it_without_rewriting_the_build_receip
         let calls_before = fs::read(fixture.root.path().join("calls.jsonl")).unwrap();
         let blocked = fixture
             .command(mode)
-            .args(["shell", "fixture", "--dir"])
-            .arg(fixture.output.parent().unwrap())
+            .args(["shell", "--build-dir"])
+            .arg(&fixture.output)
             .output()
             .unwrap();
         assert_eq!(blocked.status.code(), Some(1));
@@ -1109,11 +1179,13 @@ fn shell_reuses_the_owned_worker_and_stops_it_without_rewriting_the_build_receip
             before
         );
         assert!(fixture.output.is_dir());
-        drop(lock);
+        // Releasing the fixture lease must not depend on the last descriptor closing.
+        let _descriptor_copy = lock.try_clone().unwrap();
+        lock.unlock().unwrap();
         let result = fixture
             .command(mode)
-            .args(["shell", "fixture", "--dir"])
-            .arg(fixture.output.parent().unwrap())
+            .args(["shell", "--build-dir"])
+            .arg(&fixture.output)
             .output()
             .unwrap();
         assert_eq!(
@@ -1125,11 +1197,18 @@ fn shell_reuses_the_owned_worker_and_stops_it_without_rewriting_the_build_receip
             fs::read(fixture.output.join("receipt.json")).unwrap(),
             before
         );
+        if mode == "shell-failure" {
+            let stderr = support::output_text(&result.stderr);
+            assert!(
+                stderr.contains("[ERROR] shell: exit status: 42"),
+                "{stderr}"
+            );
+        }
         let record = fs::read_dir(fixture.output.join("host"))
             .unwrap()
             .map(|e| e.unwrap().path())
             .find(|p| p.extension().is_some_and(|e| e == "json"))
-            .unwrap();
+            .unwrap_or_else(|| panic!("mode={mode:?}; missing shell record: {result:?}"));
         let report: Value = serde_json::from_slice(&fs::read(record).unwrap()).unwrap();
         let launched = mode.is_empty() || mode == "shell-failure";
         assert_eq!(
@@ -1163,4 +1242,403 @@ fn unsupported_daemon_fails_before_creating_a_worker() {
             .contains("Linux Docker daemon")
     );
     assert!(!fixture.root.path().join("project").exists());
+}
+
+#[test]
+fn build_fetches_only_checksum_verified_missing_materials() {
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+    for matches in [true, false] {
+        let fixture = Fixture::new();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}/archive.tar", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .unwrap();
+                        let mut request = [0; 4096];
+                        assert!(stream.read(&mut request).unwrap() > 0);
+                        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\narchive\n").unwrap();
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline);
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(e) => panic!("{e}"),
+                }
+            }
+        });
+        let hash = if matches {
+            format!("{:x}", Sha256::digest(b"archive\n"))
+        } else {
+            "0".repeat(64)
+        };
+        let spec =
+            format!("Name: fixture\nVersion: 1\n#!RemoteAsset:  sha256:{hash}\nSource0: {url}\n");
+        fs::write(&fixture.spec, &spec).unwrap();
+        let output = fixture
+            .build_command("default-retain", 30)
+            .output()
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            output.status.success(),
+            matches,
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read_to_string(&fixture.spec).unwrap(), spec);
+        if matches {
+            assert_eq!(
+                fs::read(fixture.source.join("archive.tar")).unwrap(),
+                b"archive\n"
+            );
+            assert_eq!(
+                fs::read(fixture.output.join("input/SOURCES/archive.tar")).unwrap(),
+                b"archive\n"
+            );
+        } else {
+            assert!(!fixture.source.join("archive.tar").exists());
+            assert!(!fixture.root.path().join("calls.jsonl").exists());
+        }
+    }
+}
+
+#[test]
+fn repeated_build_preflights_then_reuses_worker_and_preserves_logs() {
+    let fixture = Fixture::new();
+    support::success(&fixture.run("default-retain", 10));
+    let receipt = fs::read(fixture.output.join("receipt.json")).unwrap();
+    fs::write(
+        fixture.output.join("maintainer.log"),
+        "previous failure details",
+    )
+    .unwrap();
+    let calls = fs::read(fixture.root.path().join("calls.jsonl")).unwrap();
+    fs::write(
+        &fixture.spec,
+        "Name: fixture\nVersion: 1\nSource0: missing.patch\n",
+    )
+    .unwrap();
+    let rejected = fixture
+        .build_command("default-retain", 10)
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert_eq!(
+        fs::read(fixture.output.join("receipt.json")).unwrap(),
+        receipt
+    );
+    assert_eq!(
+        fs::read(fixture.root.path().join("calls.jsonl")).unwrap(),
+        calls
+    );
+    fs::write(fixture.source.join("missing.patch"), "material").unwrap();
+    support::success(
+        &fixture
+            .build_command("default-retain", 10)
+            .output()
+            .unwrap(),
+    );
+    let archives: Vec<_> = fs::read_dir(fixture.output.parent().unwrap().join("build-history"))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(archives.len(), 1);
+    let previous: Value =
+        serde_json::from_slice(&fs::read(archives[0].path().join("receipt.json")).unwrap())
+            .unwrap();
+    assert_eq!(previous["resources_retained"], false);
+    let current = fixture.receipt();
+    assert_eq!(
+        previous["execution"]["details"],
+        current["execution"]["details"]
+    );
+    let calls = fs::read_to_string(fixture.root.path().join("calls.jsonl")).unwrap();
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|line| line.contains("\"create\""))
+            .count(),
+        1
+    );
+    assert!(!calls.lines().any(|line| line.contains("\"rm\"")));
+    assert_eq!(
+        fs::read_to_string(archives[0].path().join("maintainer.log")).unwrap(),
+        "previous failure details"
+    );
+    assert!(fixture.output.join("engine/artifact.rpm").is_file());
+    let calls_before = fs::read(fixture.root.path().join("calls.jsonl")).unwrap();
+    support::success(
+        &fixture
+            .command("default-retain")
+            .args(["clean", "--build-dir"])
+            .arg(archives[0].path())
+            .arg("--force")
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        fs::read(fixture.root.path().join("calls.jsonl")).unwrap(),
+        calls_before
+    );
+    assert!(fixture.output.join("receipt.json").is_file());
+}
+
+#[test]
+fn prep_reports_stage_without_claiming_a_full_build() {
+    let fixture = Fixture::new();
+    let output = fixture
+        .build_command("default-retain", 10)
+        .args(["--stage", "prep"])
+        .output()
+        .unwrap();
+    support::success(&output);
+    assert_eq!(fixture.receipt()["stage"], "prep");
+    let engine: Value =
+        serde_json::from_slice(&fs::read(fixture.output.join("engine/receipt.json")).unwrap())
+            .unwrap();
+    assert_eq!(engine["target_stage"], "prep");
+}
+
+#[test]
+fn work_material_inventory_fetch_and_build_share_content_addressed_sources() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("SPECS", "fixture", "fixture.spec");
+    let recipes = workspace.join("recipes");
+    let bytes = b"cached archive\n";
+    let hash = format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(bytes));
+    fs::write(recipes.join("SPECS/fixture/fixture.spec"), format!("Name: fixture\nVersion: 1\n#!RemoteAsset:  sha256:{hash}\nSource0: https://example.invalid/archive.tar\n")).unwrap();
+    git(&recipes, &["add", "."]);
+    git(&recipes, &["commit", "--quiet", "-m", "Declared material"]);
+    support::success(
+        &fixture
+            .command("default-retain")
+            .current_dir(&workspace)
+            .args(["inspect", "fixture"])
+            .output()
+            .unwrap(),
+    );
+    let objects = workspace.join("areas/fixture/sources/.objects");
+    fs::create_dir_all(&objects).unwrap();
+    fs::write(objects.join(&hash), bytes).unwrap();
+    let fetch = fixture
+        .command("default-retain")
+        .current_dir(&workspace)
+        .args([
+            "source",
+            "fetch",
+            "fixture",
+            "--offline",
+            "--format",
+            "toml",
+        ])
+        .output()
+        .unwrap();
+    support::success(&fetch);
+    assert!(!fixture.root.path().join("calls.jsonl").exists());
+    let check = fixture
+        .command("default-retain")
+        .current_dir(&workspace)
+        .args(["check", "fixture", "--materials", "--format", "toml"])
+        .output()
+        .unwrap();
+    let report: toml::Value = toml::from_str(std::str::from_utf8(&check.stdout).unwrap()).unwrap();
+    assert_eq!(report["materials"]["valid"].as_bool(), Some(true));
+    support::success(
+        &fixture
+            .command("default-retain")
+            .current_dir(&workspace)
+            .args([
+                "build",
+                "fixture",
+                "--offline",
+                "--context",
+                "personalDocker",
+            ])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        fs::read(workspace.join("areas/fixture/build/input/SOURCES/archive.tar")).unwrap(),
+        bytes
+    );
+    let checkout = workspace.join("areas/fixture/recipe/SPECS/fixture/archive.tar");
+    fs::write(checkout, "different bytes").unwrap();
+    let conflict = fixture
+        .command("default-retain")
+        .current_dir(&workspace)
+        .args(["source", "fetch", "fixture", "--offline"])
+        .output()
+        .unwrap();
+    assert!(!conflict.status.success());
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("conflict"));
+    assert_eq!(fs::read(objects.join(hash)).unwrap(), bytes);
+}
+
+#[test]
+fn capability_failure_stops_before_input_copy_or_engine() {
+    let fixture = Fixture::new();
+    let output = fixture.run("probe-failure", 30);
+    assert_eq!(output.status.code(), Some(1));
+    let receipt = fixture.receipt();
+    assert!(!receipt["success"].as_bool().unwrap());
+    let calls = fs::read_to_string(fixture.root.path().join("calls.jsonl")).unwrap();
+    assert!(!calls.contains("/input/engine.py"));
+    assert!(!fixture.root.path().join("input").exists());
+    assert!(calls.contains("stop"));
+}
+
+#[test]
+fn shell_command_keeps_argv_logs_and_marks_the_environment() {
+    let fixture = Fixture::new();
+    support::success(&fixture.run("default-retain", 30));
+    let output = fixture
+        .command("")
+        .args(["shell", "--build-dir"])
+        .arg(&fixture.output)
+        .args(["--", "printf", "%s", "literal; $HOME"])
+        .output()
+        .unwrap();
+    support::success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("literal; $HOME"));
+    assert!(output.stderr.is_empty(), "{:?}", output.stderr);
+    let session: toml::Table =
+        toml::from_str(&fs::read_to_string(fixture.output.join("session.toml")).unwrap()).unwrap();
+    assert_eq!(
+        session["environment_may_have_changed"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        session["argv"].as_array().unwrap().last().unwrap().as_str(),
+        Some("literal; $HOME")
+    );
+    let logs = fs::read_dir(fixture.output.join("host"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .contains("command.stdout.log")
+        })
+        .map(|entry| fs::read_to_string(entry.path()).unwrap())
+        .collect::<Vec<_>>();
+    assert!(logs.iter().any(|log| log.contains("literal; $HOME")));
+    let record = fs::read_dir(fixture.output.join("host"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .unwrap();
+    let report: Value = serde_json::from_slice(&fs::read(record.path()).unwrap()).unwrap();
+    assert_eq!(report["exit_code"], 0);
+}
+
+#[test]
+fn delete_preserves_partial_resource_cleanup_and_unfinished_authoring_work() {
+    let fixture = Fixture::new();
+    support::success(&fixture.run("default-retain", 30));
+    let workspace = tempfile::tempdir().unwrap();
+    let area = support::recipe_workspace(
+        workspace.path(),
+        "review",
+        "ed",
+        include_str!("../fixtures/ed.spec"),
+    );
+    fs::write(area.join("ed.toml"), "# unfinished authoring\n").unwrap();
+    support::success(&support::run(
+        workspace.path(),
+        &["open", "review", "--editor=true"],
+    ));
+    fs::rename(&fixture.output, area.join("build")).unwrap();
+    let output = fixture
+        .command("remove-network-failure")
+        .current_dir(workspace.path())
+        .args(["delete", "review", "--force", "--format=toml"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let report = support::machine_report(&output);
+    let cleanup = &report["cleanup"][0];
+    assert_eq!(
+        cleanup["removed"]["container"][0].as_str(),
+        Some("abcdef0123456789")
+    );
+    assert!(cleanup["removed"]["network"].as_array().unwrap().is_empty());
+    assert_eq!(cleanup["result_removed"].as_bool(), Some(false));
+    assert!(report["completed"].as_array().unwrap().is_empty());
+    assert!(area.join("recipe/SPECS/ed/ed.spec").is_file());
+    assert!(area.join("ed.toml").is_file());
+    assert!(area.join("build/receipt.json").is_file());
+}
+
+#[test]
+fn imported_local_recipe_builds_rebuilds_and_enters_the_same_retained_environment() {
+    let mut fixture = Fixture::new();
+    let workspace = fixture.root.path().join("local-workspace");
+    support::success(
+        &fixture
+            .command("default-context")
+            .args(["init"])
+            .arg(&workspace)
+            .output()
+            .unwrap(),
+    );
+    fs::copy(&fixture.spec, fixture.source.join("fixture.spec")).unwrap();
+    support::success(
+        &fixture
+            .command("default-context")
+            .current_dir(&workspace)
+            .args(["new", "trial", "--pkgname=fixture", "--from-dir"])
+            .arg(&fixture.source)
+            .output()
+            .unwrap(),
+    );
+    fixture.output = workspace.join("work/trial/build");
+    for _ in 0..2 {
+        let output = fixture
+            .command("default-context")
+            .current_dir(&workspace)
+            .args(["build", "trial", "--format=toml"])
+            .output()
+            .unwrap();
+        support::success(&output);
+        assert_eq!(fixture.reported_receipt(&output)["package"], "fixture");
+        assert_eq!(
+            fs::read(fixture.output.join("input/SOURCES/source.txt")).unwrap(),
+            b"original material\n"
+        );
+    }
+    let shell = fixture
+        .command("default-context")
+        .current_dir(&workspace)
+        .args(["shell", "trial", "--", "true"])
+        .output()
+        .unwrap();
+    support::success(&shell);
+    assert!(support::output_text(&shell.stdout).contains("mock chroot shell fixture"));
+    support::success(
+        &fixture
+            .command("default-context")
+            .current_dir(&workspace)
+            .args(["clean", "trial", "--force", "--format=toml"])
+            .output()
+            .unwrap(),
+    );
+    assert!(!fixture.output.exists());
+    assert!(
+        workspace
+            .join("work/trial/recipe/SPECS/fixture/fixture.spec")
+            .exists()
+    );
 }

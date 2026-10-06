@@ -10,48 +10,49 @@ use crate::output_cli::ReportFormat;
 use clap::Args;
 use std::path::PathBuf;
 
-#[derive(Args)]
+#[derive(Args, Default)]
 #[command(
-    after_help = "Default: open a persistent TOML stage in $VISUAL, $EDITOR, or vim.
---menu selects fields, then edits their values inline; --field edits known fields inline.
---set FIELD=VALUE is non-interactive. Use --field FIELD --editor COMMAND for selected TOML editing.
-Neither mode writes SPEC files by default.
---check checks the edit; --diff caches a candidate SPEC and saves/displays its diff.
---apply checks local-edit admission and explicitly publishes to the development checkout.
---check, --diff and --apply may be combined. Unchanged confirmed legacy issues may remain.
---hash refreshes every remote Source (including signatures, excluding local files).
---hash-source N refreshes only selected Sources. Hashes use the edited candidate and return to its stage.
-Use --from DIR to resume a stage; --editor reopens its TOML.
-Examples:
-  ruyipack edit ed
-  ruyipack edit ed --menu --check
-  ruyipack edit ed --field package.version --diff
-  ruyipack edit ed --set package.version=1.22 --diff
-  ruyipack edit ed --set package.version=1.22 --hash --check --diff --apply
-  ruyipack edit --from work/ed/stage --apply"
+    after_help = "Edit selected SPEC fields in a TOML draft by default. The recipe stays unchanged until --apply.
+--set FIELD=VALUE replaces values; --add FIELD=VALUE appends a new line. --field and --menu edit values in the terminal.
+Lists are edited one item at a time. Unchanged terminal values create no draft.
+--diff and --apply use saved edits when no new values are given; no editor opens.
+--diff shows changes. --check checks the candidate. --apply checks and writes the SPEC.
+--hash refreshes remote Source digests using the candidate version and URLs.
+--menu offers conf, then -p (prepend), -a (append), or replace.
+Use --set build.stages.conf.prepend='SCRIPT' for the same noninteractive edit.
+Unchanged issues can remain. New errors and incomplete checks block publication.
+Example: ruyipack edit ed --set package.version=1.22.6 --hash --diff --apply"
 )]
 pub(crate) struct Options {
     /// Development areas to edit; repeat for a batch.
     #[arg(value_name = "WORK", required_unless_present_any = ["specs", "from"], conflicts_with_all = ["specs", "from"])]
     pub works: Vec<String>,
+    /// Internal check repair: preserve declared digests and refuse pending edits.
+    #[arg(skip)]
+    pub repair_missing: bool,
+    #[arg(skip)]
+    pub upgrade: Option<Box<crate::check::upgrade::Report>>,
     /// Edit explicit SPEC files instead of development areas.
     #[arg(long = "spec", value_name = "PATH", conflicts_with_all = ["works", "from", "pkgname"])]
     pub specs: Vec<PathBuf>,
     /// Package binding for a new development area.
     #[arg(long, value_name = "PKG", requires = "works")]
     pub pkgname: Option<String>,
-    /// Resume saved TOML stage values; --editor reopens it.
-    #[arg(long, value_name = "DIR", conflicts_with_all = ["prepare", "set", "fields", "menu"])]
+    /// Resume saved TOML draft values; --editor reopens it.
+    #[arg(long, value_name = "DIR", value_hint = clap::ValueHint::DirPath, conflicts_with_all = ["prepare", "set", "add", "fields", "menu"], help_heading = "Advanced options", hide_short_help = true)]
     pub from: Option<PathBuf>,
-    /// Prepare a persistent stage in this directory without opening the editor.
-    #[arg(long, value_name = "DIR", conflicts_with_all = ["editor", "menu"])]
+    /// Prepare a persistent draft in this directory without opening the editor.
+    #[arg(long, value_name = "DIR", value_hint = clap::ValueHint::DirPath, conflicts_with_all = ["editor", "menu"], help_heading = "Advanced options", hide_short_help = true)]
     pub prepare: Option<PathBuf>,
     /// Choose fields from a menu and edit their existing values inline.
-    #[arg(long, conflicts_with_all = ["set", "editor", "all"])]
+    #[arg(long, conflicts_with_all = ["set", "add", "editor", "all"])]
     pub menu: bool,
     /// Set an existing string or TOML string-array field; repeat for more fields.
     #[arg(long, value_name = "FIELD=VALUE", value_parser = assignment, conflicts_with_all = ["fields", "editor"])]
     pub set: Vec<(String, String)>,
+    /// Append text on a new line to a string field; repeat to append more text.
+    #[arg(long, value_name = "FIELD=VALUE", value_parser = assignment, conflicts_with_all = ["fields", "editor"])]
+    pub add: Vec<(String, String)>,
     /// Refresh SHA-256 for all remote Sources, including signature Sources.
     #[arg(long)]
     pub hash: bool,
@@ -62,13 +63,13 @@ pub(crate) struct Options {
     #[arg(short = 'D', long = "define", value_name = "MACRO EXPR")]
     pub defines: Vec<String>,
     /// Refuse an operation unless its original SHA-256 matches.
-    #[arg(long, value_name = "HASH", value_parser = parse_expected_sha256)]
+    #[arg(long, value_name = "HASH", value_parser = parse_expected_sha256, help_heading = "Advanced options", hide_short_help = true)]
     pub expect_sha256: Option<String>,
     /// Edit a field or table inline; --editor or --prepare instead uses TOML.
     #[arg(long = "field", value_name = "FIELD")]
     pub fields: Vec<String>,
     /// Require a complete mapping of every construct instead of a safe projection.
-    #[arg(long, conflicts_with_all = ["fields", "set", "from"])]
+    #[arg(long, conflicts_with_all = ["fields", "set", "add", "from"], help_heading = "Advanced options", hide_short_help = true)]
     pub all: bool,
     /// Check local-edit admission after editing; does not publish by itself.
     #[arg(long)]
@@ -76,7 +77,7 @@ pub(crate) struct Options {
     /// Explicitly publish the candidate after local-edit admission succeeds.
     #[arg(long)]
     pub apply: bool,
-    /// Select the stage, check, or publication report format.
+    /// Select the draft, check, or publication report format.
     #[arg(long, value_enum, conflicts_with_all = ["stdout", "editor", "menu"])]
     pub format: Option<ReportFormat>,
     /// Cache the candidate SPEC and save/display its unified diff; no implicit check.
@@ -97,12 +98,37 @@ pub(crate) struct Options {
         conflicts_with = "stdout"
     )]
     pub output: Option<PathBuf>,
-    /// Override the TOML editor command; GUI editors must wait.
+    /// Override the configured editor for TOML; GUI editors must wait.
     #[arg(long, value_name = "COMMAND")]
     pub editor: Option<String>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Interaction {
+    Editor,
+    Inline,
+    None,
+}
+
 impl Options {
+    pub(super) fn interaction(&self) -> Interaction {
+        if self.editor.is_some() {
+            Interaction::Editor
+        } else if self.prepare.is_some()
+            || self.from.is_some()
+            || !self.set.is_empty()
+            || !self.add.is_empty()
+        {
+            Interaction::None
+        } else if self.menu || !self.fields.is_empty() {
+            Interaction::Inline
+        } else if self.generates_candidate() {
+            Interaction::None
+        } else {
+            Interaction::Editor
+        }
+    }
+
     pub(super) fn generates_candidate(&self) -> bool {
         self.check
             || self.apply
@@ -119,6 +145,7 @@ impl Options {
             && self.prepare.is_none()
             && self.from.is_none()
             && self.set.is_empty()
+            && self.add.is_empty()
             && self.fields.is_empty()
             && !self.menu
             && !self.hash

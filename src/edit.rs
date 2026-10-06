@@ -4,9 +4,8 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Persistent source-bound edit stages and explicit candidate operations.
+//! Source-bound editable documents and explicit candidate operations.
 
-mod editor;
 mod error;
 mod fields;
 mod options;
@@ -14,11 +13,12 @@ mod report;
 
 pub(crate) use error::EditError;
 use error::Kind;
+use options::Interaction;
 pub(crate) use options::Options;
 
 use crate::output_cli::{self, HumanLevel, ReportFormat};
 use crate::spec::{ParsedSpec, candidate, document::Snapshot};
-use crate::{file_output, stage, utf8_file, workspace};
+use crate::{draft, file_output, utf8_file, workspace};
 use fs_err as fs;
 use std::{
     fmt::Write as _,
@@ -32,12 +32,15 @@ struct Edit {
     snapshot: Snapshot<'static>,
     baseline: Option<crate::check_report::CheckReport>,
     draft: Option<PathBuf>,
-    stage_dir: PathBuf,
+    authoring: bool,
+    created_work: bool,
+    draft_dir: PathBuf,
     subject: PathBuf,
     // Retain the cooperative WORK lock throughout staging and publication.
     development: Option<workspace::Development>,
     committed_main: bool,
-    expand_stage: bool,
+    expand_fields: bool,
+    input_changed: Option<bool>,
     candidate: Option<Result<candidate::Candidate, EditError>>,
     cache: Option<Cached>,
     source_hashes: Option<crate::source::SourceHashes>,
@@ -51,10 +54,43 @@ impl Edit {
             .as_ref()
     }
 
+    fn document(&self) -> Result<Table, EditError> {
+        let Some(path) = &self.draft else {
+            return Ok(self.snapshot.document().clone());
+        };
+        let document = draft::read_document_path(path).map_err(|error| {
+            EditError::at(Kind::InvalidDraft, path, self.snapshot.selection(), error)
+        })?;
+        if !self.authoring {
+            return Ok(document);
+        }
+        let mut selected = self.snapshot.document().clone();
+        fields::overlay(&mut selected, &document);
+        Ok(selected)
+    }
+
+    fn save_document(&self, path: &Path, values: &Table) -> Result<(), EditError> {
+        if self.authoring {
+            let mut document = draft::read_document_path(path)?;
+            fields::update_authoring(&mut document, &self.document()?, values)?;
+            crate::render::manifest::validate_structure(&document)
+                .map_err(|error| EditError::from(error.to_string()))?;
+            draft::save_document(path, &document)?;
+        } else if self.expand_fields {
+            draft::update(path, self.snapshot.selection(), values, None)?;
+        } else {
+            draft::save_document(path, values)?;
+        }
+        Ok(())
+    }
+
     fn assign(&mut self, options: &Options, inline: bool) -> Result<(), EditError> {
-        let path = self.draft.as_ref().expect("editing creates a stage");
-        let mut edited = stage::read_document_path(path)?;
-        fields::assign(&mut edited, &options.set).map_err(|error| {
+        let mut edited = self.document()?;
+        if self.expand_fields {
+            draft::complete_missing(&mut edited, self.snapshot.document());
+        }
+        let original = edited.clone();
+        fields::assign(&mut edited, &options.set, &options.add).map_err(|error| {
             EditError::at(
                 Kind::InvalidAssignment,
                 &self.path,
@@ -65,23 +101,50 @@ impl Edit {
         if inline {
             fields::edit_inline(&mut edited, &options.fields)?;
         }
-        stage::save_document(path, &edited)?;
-        self.select_edit_input()?;
+        self.input_changed = Some(edited != original);
+        if edited != original {
+            self.ensure_unchanged()?;
+            if let Some(path) = &self.draft {
+                self.save_document(path, &edited)?;
+            } else {
+                self.draft = draft::create(
+                    &self.draft_dir,
+                    &[draft::Input {
+                        path: &self.path,
+                        destination: None,
+                        original: self.snapshot.source(),
+                        fields: self.snapshot.selection(),
+                        values: &edited,
+                    }],
+                )?
+                .pop();
+            }
+        }
         Ok(())
+    }
+
+    fn artifact_directory(&self) -> PathBuf {
+        self.development.as_ref().map_or_else(
+            || self.draft_dir.clone(),
+            |area| area.directory().join(".cache"),
+        )
     }
 
     fn cache_candidate(&mut self, diff: bool, show_diff: bool) -> Result<(), EditError> {
         if let Some(Ok(candidate)) = &self.candidate {
+            if candidate.spec.source() == self.snapshot.source() {
+                return Ok(());
+            }
             let stem = self
                 .path
                 .file_stem()
                 .and_then(|stem| stem.to_str())
                 .ok_or("SPEC stem must be UTF-8")?;
-            let path = stage::cache(&self.stage_dir, stem, candidate.spec.source())?;
+            let path = draft::cache(&self.artifact_directory(), stem, candidate.spec.source())?;
             let diff = if diff {
                 let text =
-                    stage::diff(&self.path, self.snapshot.source(), candidate.spec.source())?;
-                let diff_path = stage::save_diff(&self.stage_dir, stem, &text)?;
+                    draft::diff(&self.path, self.snapshot.source(), candidate.spec.source())?;
+                let diff_path = draft::save_diff(&self.artifact_directory(), stem, &text)?;
                 if show_diff {
                     io::stdout()
                         .lock()
@@ -93,30 +156,6 @@ impl Edit {
                 None
             };
             self.cache = Some(Cached { path, diff });
-        }
-        Ok(())
-    }
-
-    fn select_edit_input(&mut self) -> Result<(), EditError> {
-        if let Some(area) = &mut self.development {
-            // create/load return canonical draft paths. External prepared stages
-            // are not the WORK input consumed by gen.
-            if self.draft.as_deref().and_then(Path::parent)
-                != Some(area.directory().join("stage").as_path())
-            {
-                return Ok(());
-            }
-            area.select_input(workspace::GenerationInput::Edit)
-                .map_err(|error| {
-                    EditError::at(
-                        Kind::OperationFailed,
-                        &self.subject,
-                        self.snapshot.selection(),
-                        format!(
-                            "stage saved, but cannot select it as the generation input: {error}"
-                        ),
-                    )
-                })?;
         }
         Ok(())
     }
@@ -138,7 +177,7 @@ impl Edit {
                 &self.path,
                 self.snapshot.selection(),
                 format!(
-                    "{}: source changed; prepare a fresh stage",
+                    "{}: source changed; prepare a fresh draft",
                     self.path.display()
                 ),
             ));
@@ -148,19 +187,16 @@ impl Edit {
 }
 
 pub(crate) fn run(mut options: Options) -> Result<bool, EditError> {
-    if options.menu && options.fields.is_empty() {
-        let field = output_cli::select_edit_field()?
-            .ok_or("--menu requires a terminal; use --set FIELD=VALUE for CLI-only editing")?;
-        options.fields.push(field.to_owned());
-    }
-    let result = execute(&options);
+    let result = execute(&mut options);
     if !matches!(options.format, Some(ReportFormat::Toml)) {
         return result.and_then(|result| {
-            let success = result.is_success();
+            let success = result.success_for(&options);
             result.publication.map(|_| success)
         });
     }
-    let success = result.as_ref().is_ok_and(EditResult::is_success);
+    let success = result
+        .as_ref()
+        .is_ok_and(|result| result.success_for(&options));
     let envelope = report::envelope(&result, &options);
     crate::report::write(&mut io::stdout().lock(), &envelope).map_err(|error| {
         let mut message = format!("failed to write output to stdout: {error}");
@@ -194,7 +230,7 @@ fn input(
     parsed: &ParsedSpec<'_>,
     fields: &[String],
     safe: bool,
-    stage_dir: PathBuf,
+    draft_dir: PathBuf,
     draft: Option<PathBuf>,
     checked: bool,
 ) -> Result<Edit, EditError> {
@@ -220,10 +256,13 @@ fn input(
         snapshot,
         baseline,
         draft,
-        stage_dir,
+        authoring: false,
+        created_work: false,
+        draft_dir,
         development: None,
         committed_main: false,
-        expand_stage: false,
+        expand_fields: false,
+        input_changed: None,
         candidate: None,
         cache: None,
         source_hashes: None,
@@ -236,20 +275,20 @@ fn load_inputs(options: &Options) -> Result<Vec<Edit>, EditError> {
     }
     let checked = options.check || options.apply;
     let inputs = if let Some(dir) = &options.from {
-        stage::load(dir)?
+        draft::load(dir)?
             .into_iter()
             .map(|draft| {
-                let stage_dir = draft
+                let draft_dir = draft
                     .path
                     .parent()
-                    .expect("stage file has a parent")
+                    .expect("draft file has a parent")
                     .to_owned();
                 input(
                     draft.source,
                     &ParsedSpec::parse(draft.original),
                     &draft.fields,
                     false,
-                    stage_dir,
+                    draft_dir,
                     Some(draft.path),
                     checked,
                 )
@@ -257,7 +296,13 @@ fn load_inputs(options: &Options) -> Result<Vec<Edit>, EditError> {
             .collect::<Result<Vec<_>, _>>()?
     } else {
         let mut fields = options.fields.clone();
-        fields.extend(options.set.iter().map(|(field, _)| field.clone()));
+        fields.extend(
+            options
+                .set
+                .iter()
+                .chain(&options.add)
+                .map(|(field, _)| field.clone()),
+        );
         for number in &options.hash_sources {
             let field = format!("sources.{number}.sha256");
             if !fields.contains(&field) {
@@ -320,7 +365,9 @@ fn validate_inputs(inputs: &[Edit], options: &Options) -> Result<(), EditError> 
                     )
                 })?;
             }
-            stage::protect_output(output, item.draft.as_deref())?;
+            if !item.authoring {
+                draft::protect_output(output, item.draft.as_deref())?;
+            }
         }
     }
     Ok(())
@@ -334,7 +381,8 @@ fn load_input(
 ) -> Result<Edit, EditError> {
     let io_error =
         |error: io::Error| EditError::at(Kind::InputRead, path, fields, error.to_string());
-    let (requested, source, stage_dir, development, committed_main) = if let Some(work) = work {
+    let mut created_work = false;
+    let (requested, source, draft_dir, development, committed_main) = if let Some(work) = work {
         let workspace = workspace::discover().map_err(io_error)?;
         let mut area = workspace
             .development(work, options.pkgname.as_deref(), false)
@@ -343,32 +391,45 @@ fn load_input(
             let (requested, source, revision) = area.source().map_err(io_error)?;
             (requested, source, revision.is_some())
         } else {
+            created_work = !area.directory().join("recipe").exists();
             area.create().map_err(io_error)?;
+            if created_work && !matches!(options.format, Some(ReportFormat::Toml)) {
+                output_cli::stderr()
+                    .message(
+                        HumanLevel::Info,
+                        Some(Path::new(work)),
+                        format_args!(
+                            "created: {}",
+                            output_cli::human_path(area.directory()).display()
+                        ),
+                    )
+                    .map_err(|error| EditError::from(error.to_string()))?;
+            }
             let requested = area.spec().map_err(io_error)?;
             let source = utf8_file::read(&requested).map_err(|error| {
                 EditError::at(Kind::InputRead, &requested, fields, error.to_string())
             })?;
             (requested, source, false)
         };
-        let stage_dir = options
+        let draft_dir = options
             .prepare
             .clone()
-            .unwrap_or_else(|| area.directory().join("stage"));
-        (requested, source, stage_dir, Some(area), committed_main)
+            .unwrap_or_else(|| area.directory().to_path_buf());
+        (requested, source, draft_dir, Some(area), committed_main)
     } else {
         let requested = fs::canonicalize(path).map_err(io_error)?;
         let source = utf8_file::read(&requested).map_err(|error| {
             EditError::at(Kind::InputRead, &requested, fields, error.to_string())
         })?;
         let stem = requested.file_stem().ok_or("SPEC file has no stem")?;
-        let stage_dir = options.prepare.clone().unwrap_or_else(|| {
+        let draft_dir = options.prepare.clone().unwrap_or_else(|| {
             requested
                 .parent()
                 .expect("canonical path has parent")
-                .join(".ruyipack-stage")
+                .join(".ruyipack-draft")
                 .join(stem)
         });
-        (requested, source, stage_dir, None, false)
+        (requested, source, draft_dir, None, false)
     };
     let parsed = ParsedSpec::parse(source);
     let safe = !options.all && fields.is_empty();
@@ -377,6 +438,17 @@ fn load_input(
         // Field discovery proves replacement locations, not that old URLs can be downloaded.
         let editable = Snapshot::capture_supported(&parsed)
             .map_err(|error| EditError::at(Kind::UnmappableFields, &requested, &selected, error))?;
+        if options.repair_missing
+            && editable
+                .document()
+                .get("package")
+                .and_then(|value| value.get("summary"))
+                .and_then(toml::Value::as_str)
+                .and_then(crate::check::metadata::fixed_summary)
+                .is_some()
+        {
+            selected.push("package.summary".into());
+        }
         if let Some(sources) = editable
             .document()
             .get("sources")
@@ -391,21 +463,25 @@ fn load_input(
         }
     }
     // Resume existing values instead of replacing unfinished editor work.
-    let saved = if options.prepare.is_none() && stage_dir.join(".state/index.toml").exists() {
-        stage::load(&stage_dir)?
+    let saved = if options.prepare.is_none() && draft_dir.join(".state/index.toml").exists() {
+        draft::load(&draft_dir)?
             .into_iter()
             .find(|draft| draft.source == requested)
     } else {
         None
     };
-    let (selected, draft, safe, expand_stage) = if let Some(draft) = saved {
+    let authoring = development
+        .as_ref()
+        .is_some_and(|area| !area.spec_authoring())
+        && options.prepare.is_none();
+    let (selected, draft, safe, expand_fields) = if let Some(draft) = saved {
         if draft.original != parsed.source() {
             return Err(EditError::at(
                 Kind::SourceChanged,
                 &requested,
                 &draft.fields,
                 format!(
-                    "{}: stage baseline no longer matches the source; prepare a fresh stage",
+                    "{}: draft baseline no longer matches the source; prepare a fresh draft",
                     requested.display()
                 ),
             ));
@@ -413,12 +489,15 @@ fn load_input(
         let previous = draft.fields.clone();
         let mut union = draft.fields;
         if options.all {
-            // --all is an explicit full mapping, even when a narrow stage exists.
+            // --all is an explicit full mapping, even when a narrow draft exists.
             union.clear();
-        } else if safe && (options.editor.is_some() || !options.generates_candidate()) {
+        } else if safe
+            && !options.menu
+            && (options.editor.is_some() || !options.generates_candidate())
+        {
             // Reopen unfinished selected TOML before trying to expand
             // its scope. An explicit new selection still requires repair.
-            let pending = stage::read_text(&draft.path)?;
+            let pending = draft::read_text(&draft.path)?;
             if toml::from_str::<Table>(&pending).is_ok() {
                 union = Snapshot::capture_supported(&parsed)
                     .map_err(EditError::from)?
@@ -435,31 +514,34 @@ fn load_input(
         let expand = union != previous;
         (union, Some(draft.path), false, expand)
     } else {
-        (selected, None, safe, false)
+        let path = authoring.then(|| development.as_ref().expect("WORK").manifest());
+        (selected, path, safe, false)
     };
     let mut item = input(
         requested,
         &parsed,
         &selected,
         safe,
-        stage_dir,
+        draft_dir,
         draft,
         options.check || options.apply,
     )?;
+    item.authoring = authoring;
+    item.created_work = created_work;
     item.development = development;
     item.committed_main = committed_main;
-    item.expand_stage = expand_stage;
+    item.expand_fields = expand_fields;
     item.subject = work.map_or_else(|| item.path.clone(), PathBuf::from);
     Ok(item)
 }
 
-fn create_stages(inputs: &mut [Edit]) -> Result<(), EditError> {
-    // Existing selected stages may need more fields in their immutable mapping.
+fn create_drafts(inputs: &mut [Edit]) -> Result<(), EditError> {
+    // Existing selected drafts may need more fields in their immutable mapping.
     for item in inputs.iter_mut() {
         if let Some(path) = &item.draft
-            && item.expand_stage
+            && item.expand_fields
         {
-            let mut document = stage::read_document_path(path).map_err(|error| {
+            let mut document = draft::read_document_path(path).map_err(|error| {
                 EditError::at(
                     Kind::InvalidDraft,
                     path,
@@ -467,8 +549,8 @@ fn create_stages(inputs: &mut [Edit]) -> Result<(), EditError> {
                     format!("{error}; repair saved TOML before expanding the field selection"),
                 )
             })?;
-            stage::complete_missing(&mut document, item.snapshot.document());
-            stage::update(path, item.snapshot.selection(), &document, None)?;
+            draft::complete_missing(&mut document, item.snapshot.document());
+            draft::update(path, item.snapshot.selection(), &document, None)?;
         }
     }
     for index in 0..inputs.len() {
@@ -477,11 +559,11 @@ fn create_stages(inputs: &mut [Edit]) -> Result<(), EditError> {
         }
         let group = (index..inputs.len())
             .filter(|&other| {
-                inputs[other].draft.is_none() && inputs[other].stage_dir == inputs[index].stage_dir
+                inputs[other].draft.is_none() && inputs[other].draft_dir == inputs[index].draft_dir
             })
             .collect::<Vec<_>>();
         if group.len() > 1 {
-            let dir = &inputs[index].stage_dir;
+            let dir = &inputs[index].draft_dir;
             let resolved = fs::canonicalize(dir).ok().or_else(|| {
                 let parent = dir
                     .parent()
@@ -496,24 +578,25 @@ fn create_stages(inputs: &mut [Edit]) -> Result<(), EditError> {
                 inputs[index]
                     .development
                     .as_ref()
-                    .is_some_and(|area| resolved.as_ref() == Some(&area.directory().join("stage")))
+                    .is_some_and(|area| resolved.as_ref() == Some(&area.directory().to_path_buf()))
             }) {
-                return Err("a WORK stage must contain exactly its bound package; prepare this batch in an external DIR".into());
+                return Err("a WORK draft must contain exactly its bound package; prepare this batch in an external DIR".into());
             }
         }
         let sources = group
             .iter()
             .map(|&index| {
                 let item = &inputs[index];
-                (
-                    item.path.as_path(),
-                    item.snapshot.source(),
-                    item.snapshot.selection(),
-                    item.snapshot.document(),
-                )
+                draft::Input {
+                    path: &item.path,
+                    destination: None,
+                    original: item.snapshot.source(),
+                    fields: item.snapshot.selection(),
+                    values: item.snapshot.document(),
+                }
             })
             .collect::<Vec<_>>();
-        let paths = stage::create(&inputs[index].stage_dir, &sources)?;
+        let paths = draft::create(&inputs[index].draft_dir, &sources)?;
         for (index, path) in group.into_iter().zip(paths) {
             inputs[index].draft = Some(path);
         }
@@ -521,9 +604,12 @@ fn create_stages(inputs: &mut [Edit]) -> Result<(), EditError> {
     Ok(())
 }
 
-fn execute(options: &Options) -> Result<EditResult, EditError> {
-    let inline = options.menu
-        || (!options.fields.is_empty() && options.editor.is_none() && options.prepare.is_none());
+fn execute(options: &mut Options) -> Result<EditResult, EditError> {
+    let interaction = options.interaction();
+    let inline = interaction == Interaction::Inline;
+    if interaction == Interaction::Editor && matches!(options.format, Some(ReportFormat::Toml)) {
+        return Err("TOML reports require an explicit non-interactive action: --set, --hash, --prepare, --from, or --check".into());
+    }
     if inline {
         if matches!(options.format, Some(ReportFormat::Toml)) {
             return Err("interactive field editing cannot produce a TOML report; use --set FIELD=VALUE, or --prepare DIR to save selected TOML fields".into());
@@ -533,57 +619,124 @@ fn execute(options: &Options) -> Result<EditResult, EditError> {
         }
     }
     let mut inputs = load_inputs(options)?;
-    let pure_check = options.checks_only();
-    let resumes = inputs.iter().all(|item| item.draft.is_some());
-    let requested_operation = options.generates_candidate();
-    let opens_editor = options.editor.is_some()
-        || (options.from.is_none()
-            && options.prepare.is_none()
-            && options.set.is_empty()
-            && !inline
-            && !options.hash
-            && options.hash_sources.is_empty()
-            && !pure_check
-            && !(resumes && requested_operation && options.fields.is_empty() && !options.all));
-    if opens_editor && matches!(options.format, Some(ReportFormat::Toml)) {
-        return Err("TOML reports require an explicit non-interactive action: --set, --hash, --prepare, --from, or --check".into());
-    }
-    if !pure_check {
-        create_stages(&mut inputs)?;
-        if options.prepare.is_some() {
-            for item in &mut inputs {
-                item.select_edit_input()?;
+    if options.repair_missing {
+        for item in &inputs {
+            if item.authoring {
+                let path = item.draft.as_ref().expect("authoring path");
+                let manifest =
+                    crate::render::manifest::parse_document(draft::read_document_path(path)?)
+                        .map_err(|error| EditError::from(error.to_string()))?;
+                let candidate = crate::render::run(&manifest)
+                    .map_err(|error| EditError::from(error.to_string()))?;
+                if candidate.source() != item.snapshot.source() {
+                    return Err(
+                        "WORK has pending TOML edits; apply or resolve them before auto-fix".into(),
+                    );
+                }
+            }
+            let mut document = item.document()?;
+            draft::complete_missing(&mut document, item.snapshot.document());
+            if document != *item.snapshot.document() {
+                return Err(
+                    "WORK has pending TOML edits; apply or resolve them before auto-fix".into(),
+                );
             }
         }
     }
-    if opens_editor {
+    if options.menu && options.fields.is_empty() {
+        let [item] = inputs.as_mut_slice() else {
+            return Err("--menu edits one SPEC at a time; use --set for multiple inputs".into());
+        };
+        let parsed = ParsedSpec::parse(item.snapshot.source());
+        let available = Snapshot::capture_supported(&parsed).map_err(EditError::from)?;
+        let field = output_cli::select_edit_field(&available)?
+            .ok_or("--menu requires a terminal; use --set FIELD=VALUE")?;
+        let mut selected = if item.draft.is_some() && !item.authoring {
+            item.snapshot.selection().to_vec()
+        } else {
+            vec![]
+        };
+        if !selected.contains(&field) {
+            selected.push(field.clone());
+        }
+        let snapshot = Snapshot::capture_selected(&parsed, &selected)
+            .map_err(EditError::from)?
+            .into_owned();
+        item.expand_fields |= !item.authoring
+            && item.draft.is_some()
+            && snapshot.selection() != item.snapshot.selection();
+        item.snapshot = snapshot;
+        options.fields.push(field);
+    }
+    let pure_check = options.checks_only();
+    let requested_operation = options.generates_candidate();
+    if interaction == Interaction::None
+        && requested_operation
+        && !pure_check
+        && options.set.is_empty()
+        && options.add.is_empty()
+        && !options.hash
+        && options.hash_sources.is_empty()
+        && options.prepare.is_none()
+        && let Some(item) = inputs.iter().find(|item| item.draft.is_none())
+    {
+        return Err(EditError::at(
+            Kind::InputRead,
+            &item.path,
+            item.snapshot.selection(),
+            "no saved edits; edit values first with --set FIELD=VALUE or explicitly use --editor COMMAND".into(),
+        ));
+    }
+    if !pure_check
+        && ((!inline && options.set.is_empty() && options.add.is_empty())
+            || options.prepare.is_some()
+            || options.hash
+            || !options.hash_sources.is_empty())
+    {
+        create_drafts(&mut inputs)?;
+    }
+    if interaction == Interaction::Editor {
         let paths = inputs
             .iter()
             .filter_map(|item| item.draft.as_deref())
             .collect::<Vec<_>>();
-        editor::open(&paths, options.editor.as_deref()).map_err(|error| {
+        crate::editor::open(
+            &paths,
+            options.editor.as_deref(),
+            inputs[0]
+                .path
+                .parent()
+                .expect("canonical source has a parent"),
+        )
+        .map_err(|error| {
             EditError::from(format!(
-                "{error}\nPersistent stage retained: {}",
-                inputs[0].stage_dir.display()
+                "{error}\nEdits retained: {}",
+                inputs[0].draft_dir.display()
             ))
         })?;
-        for item in &mut inputs {
-            item.select_edit_input()?;
-        }
     }
-    if inline || !options.set.is_empty() {
+    if inline || !options.set.is_empty() || !options.add.is_empty() {
         for item in &mut inputs {
             item.assign(options, inline)?;
         }
     }
-    if !matches!(options.format, Some(ReportFormat::Toml)) {
+    if !options.repair_missing && !matches!(options.format, Some(ReportFormat::Toml)) {
         for item in &inputs {
-            if let Some(path) = &item.draft {
+            if item.input_changed == Some(false) && !options.hash && options.hash_sources.is_empty()
+            {
                 output_cli::stderr()
                     .message(
                         HumanLevel::Info,
                         Some(&item.subject),
-                        format_args!("stage saved: {}", output_cli::human_path(path).display()),
+                        format_args!("Nothing changed"),
+                    )
+                    .map_err(|error| error.to_string())?;
+            } else if let Some(path) = &item.draft {
+                output_cli::stderr()
+                    .message(
+                        HumanLevel::Info,
+                        Some(&item.subject),
+                        format_args!("saved: {}", output_cli::human_path(path).display()),
                     )
                     .map_err(|error| error.to_string())?;
             }
@@ -616,18 +769,41 @@ fn execute(options: &Options) -> Result<EditResult, EditError> {
 }
 
 fn read_candidate(item: &mut Edit, options: &Options) -> Result<candidate::Candidate, EditError> {
-    item.ensure_unchanged()?;
-    let mut document = if let Some(path) = &item.draft {
-        stage::read_document_path(path).map_err(|error| {
-            EditError::at(Kind::InvalidDraft, path, item.snapshot.selection(), error)
-        })?
-    } else {
-        item.snapshot.document().clone()
+    let unchanged = match item.ensure_unchanged() {
+        Err(error) if !options.apply || options.hash || !options.hash_sources.is_empty() => {
+            return Err(error);
+        }
+        result => result,
     };
+    let mut document = item.document()?;
+    if item.expand_fields {
+        draft::complete_missing(&mut document, item.snapshot.document());
+    }
+    if options.repair_missing
+        && options
+            .upgrade
+            .as_ref()
+            .is_none_or(|r| !r.applies_candidate())
+        && document != *item.snapshot.document()
+    {
+        return Err(EditError::from(
+            "WORK has pending TOML edits; apply or resolve them before auto-fix",
+        ));
+    }
+    if options.repair_missing
+        && let Some(summary) = document
+            .get_mut("package")
+            .and_then(|value| value.get_mut("summary"))
+        && let Some(fixed) = summary
+            .as_str()
+            .and_then(crate::check::metadata::fixed_summary)
+    {
+        *summary = toml::Value::String(fixed.to_owned());
+    }
     if options.hash || !options.hash_sources.is_empty() {
         complete_hashes(item, &mut document, options)?;
     }
-    candidate::prepare(
+    let mut candidate = candidate::prepare(
         &item.snapshot,
         &document,
         &options.defines,
@@ -640,7 +816,94 @@ fn read_candidate(item: &mut Edit, options: &Options) -> Result<candidate::Candi
             item.snapshot.selection(),
             error,
         )
-    })
+    })?;
+    if item.authoring {
+        let path = item.draft.as_ref().expect("authoring path");
+        let manifest = crate::render::manifest::parse_document(draft::read_document_path(path)?)
+            .map_err(|error| EditError::from(error.to_string()))?;
+        let spec =
+            crate::render::run(&manifest).map_err(|error| EditError::from(error.to_string()))?;
+        candidate.report = (options.check || options.apply)
+            .then(|| crate::check::analyze(&spec, crate::check::Policy::Authoring, &[]));
+        candidate.spec = spec;
+    }
+    if options.repair_missing
+        && let Some(cleanup) =
+            crate::spec::signature::cleanup(&candidate.spec, &options.defines, true)
+                .map_err(EditError::from)?
+    {
+        let original = ParsedSpec::parse(item.snapshot.source());
+        let old =
+            crate::spec::sources::resolve(&original, &options.defines).map_err(EditError::from)?;
+        for number in &cleanup.removed {
+            if let Some(url) = old.sources.get(number).and_then(|s| s.url.as_ref().ok()) {
+                let name = crate::spec::sources::filename(url).map_err(EditError::from)?;
+                // A retained Source may intentionally share a local filename.
+                let shared = old.sources.iter().any(|(n, source)| {
+                    !cleanup.removed.contains(n)
+                        && source
+                            .url
+                            .as_ref()
+                            .is_ok_and(|url| crate::spec::sources::filename(url) == Ok(name))
+                });
+                if shared {
+                    continue;
+                }
+                let path = item.path.parent().ok_or("SPEC has no parent")?.join(name);
+                match crate::file_digest::read(&path) {
+                    Ok(content) => {
+                        if !candidate.removed_materials.iter().any(|(p, _)| p == &path) {
+                            candidate.removed_materials.push((path, content));
+                        }
+                    }
+                    Err(crate::file_digest::Error::Io(e))
+                        if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(EditError::from(e.to_string())),
+                }
+            }
+        }
+        candidate.spec = cleanup.spec;
+        candidate.source_numbers = Some(cleanup.numbers);
+        candidate.changed_fields.push("sources".into());
+        candidate.report = (options.check || options.apply).then(|| {
+            crate::check::analyze(
+                &candidate.spec,
+                crate::check::Policy::Authoring,
+                &options.defines,
+            )
+        });
+    }
+    if options.repair_missing
+        && let Some((spec, fields)) =
+            crate::spec::policy_fix::apply(&candidate.spec).map_err(EditError::from)?
+    {
+        candidate.spec = spec;
+        candidate.changed_fields.extend(fields);
+        candidate.report = (options.check || options.apply).then(|| {
+            crate::check::analyze(
+                &candidate.spec,
+                crate::check::Policy::Authoring,
+                &options.defines,
+            )
+        });
+    }
+    if let Err(error) = unchanged {
+        // Retry a completed publication, never trust a cached candidate or overwrite drift.
+        if static_check_error(item, &candidate).is_some()
+            || !utf8_file::is_unchanged(&item.path, candidate.spec.source())
+                .map_err(|error| error.to_string())?
+        {
+            return Err(error);
+        }
+        item.snapshot =
+            Snapshot::capture_selected(&candidate.spec, item.snapshot.selection())?.into_owned();
+        item.baseline = Some(crate::check::analyze(
+            &candidate.spec,
+            crate::check::Policy::Authoring,
+            &[],
+        ));
+    }
+    Ok(candidate)
 }
 
 fn complete_hashes(
@@ -648,6 +911,30 @@ fn complete_hashes(
     document: &mut Table,
     options: &Options,
 ) -> Result<(), EditError> {
+    if options.repair_missing
+        && options
+            .upgrade
+            .as_ref()
+            .is_none_or(|r| !r.applies_candidate())
+        && document
+            .get("sources")
+            .and_then(toml::Value::as_table)
+            .is_none_or(|sources| {
+                sources.values().all(|source| {
+                    source
+                        .get("sha256")
+                        .and_then(toml::Value::as_str)
+                        .is_some_and(|hash| !hash.is_empty())
+                })
+            })
+    {
+        // No digest was requested. Unrelated URL evaluation cannot make a local repair safer.
+        item.ensure_unchanged()?;
+        if let Some(path) = &item.draft {
+            item.save_document(path, document)?;
+        }
+        return Ok(());
+    }
     let pending = item
         .snapshot
         .render_before_hashing(document, &options.defines)
@@ -659,6 +946,13 @@ fn complete_hashes(
                 error,
             )
         })?;
+    let pending = if options.repair_missing {
+        crate::spec::signature::remove_unused(&pending, &options.defines)
+            .map_err(EditError::from)?
+            .unwrap_or(pending)
+    } else {
+        pending
+    };
     let resolved = crate::spec::sources::resolve(&pending, &options.defines).map_err(|error| {
         EditError::source_hash(
             crate::source::Error::resolution(error),
@@ -666,20 +960,53 @@ fn complete_hashes(
             item.snapshot.selection(),
         )
     })?;
-    let urls = if options.hash {
+    let mut urls = if options.hash {
         crate::source::prepare_remote(&resolved)
     } else {
         crate::source::prepare_selected(&resolved, &options.hash_sources)
     }
     .map_err(|error| EditError::source_hash(error, &item.path, item.snapshot.selection()))?;
+    if options.repair_missing {
+        let baseline = ParsedSpec::parse(item.snapshot.source());
+        let original =
+            crate::spec::sources::resolve(&baseline, &options.defines).map_err(EditError::from)?;
+        let upgrading = options
+            .upgrade
+            .as_ref()
+            .is_some_and(|r| r.applies_candidate());
+        // Fragments name local archives; only the HTTP request identifies remote bytes.
+        let changed: std::collections::BTreeSet<_> =
+            urls.iter()
+                .filter_map(|(&number, remote)| {
+                    let same = original.sources.get(&number).is_some_and(|old| {
+                        old.url.as_ref().is_ok_and(|url| remote.same_request(url))
+                    });
+                    (!same).then_some(number)
+                })
+                .collect();
+        if upgrading && changed.is_empty() {
+            return Err(EditError::from(
+                "upgrade did not change any remote Source request URL; update the source mapping before applying",
+            ));
+        }
+        urls.retain(|number, _| {
+            matches!(resolved.sources[number].digest, Ok(None))
+                || (upgrading && changed.contains(number))
+        });
+    }
     for number in urls.keys() {
         let field = format!("sources.{number}.sha256");
-        if options.set.iter().any(|(key, _)| key == &field) {
+        if options
+            .set
+            .iter()
+            .chain(&options.add)
+            .any(|(key, _)| key == &field)
+        {
             return Err(EditError::at(
                 Kind::SourceHashFailed,
                 &item.path,
                 item.snapshot.selection(),
-                format!("{field}: choose either --set or --hash, not both"),
+                format!("{field}: choose either --set/--add or --hash, not both"),
             ));
         }
         if crate::spec::document::table::lookup(document, &field).is_none() {
@@ -687,24 +1014,32 @@ fn complete_hashes(
                 Kind::SourceHashFailed,
                 &item.path,
                 item.snapshot.selection(),
-                format!("{field}: stage does not include this digest field"),
+                format!("{field}: not selected in this draft. Prepare a new draft with this field"),
             ));
         }
     }
-    let hashes = crate::source::SourceHashes {
+    item.source_hashes = Some(crate::source::SourceHashes {
         input_sha256: utf8_file::sha256(pending.source()),
         defines: options.defines.clone(),
-        sources: crate::source::download_prepared(urls).map_err(|error| {
-            EditError::source_hash(error, &item.path, item.snapshot.selection())
-        })?,
-    };
+        sources: Default::default(),
+    });
+    crate::source::download_prepared(
+        urls,
+        item.development
+            .as_ref()
+            .map(workspace::Development::sources)
+            .as_deref(),
+        &mut item.source_hashes.as_mut().expect("hash operation").sources,
+    )
+    .map_err(|error| EditError::source_hash(error, &item.path, item.snapshot.selection()))?;
     item.ensure_unchanged()?;
-    stage::complete_digests(document, &hashes.sources)?;
+    draft::complete_digests(
+        document,
+        &item.source_hashes.as_ref().expect("hash operation").sources,
+    )?;
     if let Some(path) = &item.draft {
-        stage::save_document(path, document)?;
-        item.select_edit_input()?;
+        item.save_document(path, document)?;
     }
-    item.source_hashes = Some(hashes);
     Ok(())
 }
 
@@ -792,7 +1127,9 @@ fn publish(options: &Options, inputs: &[Edit]) -> Result<Vec<file_output::EditOu
                     source,
                 })
             })?;
-            stage::protect_output(output, item.draft.as_deref())?;
+            if !item.authoring {
+                draft::protect_output(output, item.draft.as_deref())?;
+            }
         }
     }
     let files = inputs
@@ -811,12 +1148,31 @@ fn publish(options: &Options, inputs: &[Edit]) -> Result<Vec<file_output::EditOu
             if options.force {
                 Ok(file_output::ConflictAction::Overwrite)
             } else {
-                output_cli::select_edit_action(path)
+                output_cli::select_edit_action(path, options.format.unwrap_or(ReportFormat::Human))
             }
         },
     )
     .map_err(EditError::publication)?;
-    rebase_stages(inputs, &outcomes)?;
+    for item in inputs {
+        if outcomes.iter().any(|outcome|matches!(outcome,file_output::EditOutcome::Written(path)|file_output::EditOutcome::Unchanged(path) if path==&item.path))
+            && let Ok(candidate) = item.result()
+        {
+            for (path, expected) in &candidate.removed_materials {
+            let deletion = (|| -> io::Result<()> {
+                let actual=crate::file_digest::read(path).map_err(io::Error::other)?;
+                if &actual!=expected {return Err(io::Error::other("signature file changed; retained"));}
+                fs::remove_file(path)
+            })();
+            if let Err(error)=deletion {
+                return Err(EditError::recovery(file_output::OutputError::Partial {
+                    written: outcomes.iter().filter_map(|o|match o{file_output::EditOutcome::Written(p)=>Some(p.clone()),_=>None}).collect(),
+                    source:Box::new(file_output::OutputError::Write{path:path.clone(),source:error}),
+                }, "SPEC was written; signature file removal failed".into()));
+            }
+        }
+    }
+    }
+    rebase_drafts(inputs, &outcomes)?;
     if !matches!(options.format, Some(ReportFormat::Toml)) {
         for outcome in &outcomes {
             output_cli::write_outcome(&mut output_cli::stderr(), outcome)
@@ -826,24 +1182,35 @@ fn publish(options: &Options, inputs: &[Edit]) -> Result<Vec<file_output::EditOu
     Ok(outcomes)
 }
 
-fn rebase_stages(inputs: &[Edit], outcomes: &[file_output::EditOutcome]) -> Result<(), EditError> {
+fn rebase_drafts(inputs: &[Edit], outcomes: &[file_output::EditOutcome]) -> Result<(), EditError> {
     // Only publication to the bound source advances its recovery baseline.
     // A copy output leaves the original binding and its pending edit intact.
     for item in inputs {
         if outcomes.iter().any(|outcome| matches!(outcome,
             file_output::EditOutcome::Written(path) | file_output::EditOutcome::Unchanged(path) if path == &item.path))
+            && !item.authoring
             && let Some(path) = &item.draft
         {
             let candidate = item.result().expect("published candidate");
-            let document = Snapshot::capture_selected(&candidate.spec, item.snapshot.selection())
+            let selection: Vec<_> = item.snapshot.selection().iter().filter_map(|field| {
+                let Some(mapping) = &candidate.source_numbers else { return Some(field.clone()) };
+                let Some(rest) = field.strip_prefix("sources.") else { return Some(field.clone()) };
+                let (number, suffix) = rest.split_once('.').map_or((rest, ""), |(n,s)| (n,s));
+                let number: u32 = number.parse().ok()?;
+                mapping.get(&number).map(|new| if suffix.is_empty() { format!("sources.{new}") } else { format!("sources.{new}.{suffix}") })
+            }).collect();
+            let document = Snapshot::capture_selected(&candidate.spec, &selection)
                 .map_err(EditError::from)?;
-            stage::update(path, item.snapshot.selection(), document.document(), Some(candidate.spec.source()))
-                .map_err(|error| EditError::publication(file_output::OutputError::Partial {
+            draft::update(path, &selection, document.document(), Some(candidate.spec.source()))
+                .map_err(|error| {
+                    let message = format!("SPEC publication completed, but draft recovery state could not advance: {error}; retry with edit --from {} --apply after fixing the state storage", shell_words::quote(&item.draft_dir.to_string_lossy()));
+                    EditError::recovery(file_output::OutputError::Partial {
                     written: outcomes.iter().filter_map(|outcome| match outcome {
                         file_output::EditOutcome::Written(path) => Some(path.clone()), _ => None,
                     }).collect(),
                     source: Box::new(file_output::OutputError::Write { path: path.clone(), source: io::Error::other(error) }),
-                }))?;
+                }, message)
+                })?;
         }
     }
     Ok(())
@@ -860,6 +1227,10 @@ struct EditResult {
 }
 
 impl EditResult {
+    fn success_for(&self, options: &Options) -> bool {
+        self.is_success() && (!options.repair_missing || self.static_valid() == Some(true))
+    }
+
     fn is_success(&self) -> bool {
         self.publication.is_ok()
             && self.inputs.iter().all(|item| {
@@ -880,5 +1251,61 @@ impl EditResult {
                 .is_success();
         }
         Some(valid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn version_change_removes_the_original_signature_material() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ed.spec");
+        let source = include_str!("../tests/fixtures/ed.spec").replace(
+            "BuildSystem:",
+            "#!RemoteAsset\nSource1: https://example.org/ed-%{version}.sign\nBuildSystem:",
+        );
+        std::fs::write(&path, &source).unwrap();
+        let signature = dir.path().join("ed-1.22.5.sign");
+        std::fs::write(&signature, b"signature bytes").unwrap();
+        let mut options = super::Options {
+            specs: vec![path.clone()],
+            set: vec![("package.version".into(), "1.22.6".into())],
+            repair_missing: true,
+            apply: true,
+            check: true,
+            format: Some(crate::output_cli::ReportFormat::Toml),
+            upgrade: Some(Box::new(crate::check::upgrade::Report {
+                project: Some("ed".into()),
+                current: Some("1.22.5".into()),
+                candidate: Some("1.22.6".into()),
+                status: "upgrade-available",
+                error: None,
+                input_sha256: crate::utf8_file::sha256(&source),
+            })),
+            ..Default::default()
+        };
+        let result = super::execute(&mut options).unwrap();
+        assert!(
+            result.success_for(&options),
+            "publication={:?}; candidates={:?}",
+            result.publication.as_ref().err().map(ToString::to_string),
+            result
+                .inputs
+                .iter()
+                .map(|item| item.candidate.as_ref().map(|r| match r {
+                    Err(e) => e.to_string(),
+                    Ok(c) => format!(
+                        "checked={:?}",
+                        c.report
+                            .as_ref()
+                            .map(crate::check_report::CheckReport::is_success)
+                    ),
+                }))
+                .collect::<Vec<_>>()
+        );
+        assert!(!signature.exists());
+        let edited = std::fs::read_to_string(path).unwrap();
+        assert!(edited.contains("Version:        1.22.6"));
+        assert!(!edited.contains("Source1:"));
     }
 }

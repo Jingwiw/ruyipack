@@ -18,7 +18,7 @@ use std::{
 use super::{Backend, Execution, process::Runner};
 use fs_err as fs;
 
-fn operation_id(prefix: &str) -> String {
+pub(super) fn operation_id(prefix: &str) -> String {
     format!(
         "{prefix}-{}-{}",
         std::process::id(),
@@ -35,6 +35,7 @@ struct Resources {
     container_id: Option<String>,
     image_id: Option<String>,
     daemon_id: Option<String>,
+    environment: Option<serde_json::Value>,
 }
 
 pub(super) struct Compose<'a> {
@@ -90,7 +91,7 @@ impl Compose<'_> {
             "compose-version",
             remaining(),
         )?;
-        runner.run(
+        runner.capture(
             &docker(
                 self.context,
                 ["context".into(), "inspect".into()]
@@ -121,11 +122,17 @@ impl Compose<'_> {
         if daemon["OSType"] != "linux" {
             return Err("the build worker requires a Linux Docker daemon".into());
         }
-        runner.run(
-            &self.compose(&resources.project, &["config", "--quiet"]),
+        let config = runner.capture(
+            &self.compose(&resources.project, &["config", "--format", "json"]),
             "config",
             remaining(),
         )?;
+        let config: serde_json::Value = serde_json::from_str(&config).map_err(|e| e.to_string())?;
+        resources.environment = Some(serde_json::json!({
+            "daemon_arch": daemon["Architecture"],
+            "requested_platform": config["services"]["worker"]["platform"],
+            "translator": "unknown",
+        }));
         runner.run(
             &self.compose(&resources.project, &["create", "--build", "worker"]),
             "create",
@@ -157,6 +164,34 @@ impl Compose<'_> {
             return Err("container inspect returned no image identity".to_owned());
         }
         resources.image_id = Some(image.to_owned());
+        let image_info = runner.capture(
+            &docker(
+                self.context,
+                ["image".into(), "inspect".into(), image.into()],
+            ),
+            "image-platform",
+            remaining(),
+        )?;
+        let image_info: serde_json::Value =
+            serde_json::from_str(&image_info).map_err(|e| e.to_string())?;
+        let architecture = image_info[0]["Architecture"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .ok_or("image architecture missing")?;
+        let environment = resources
+            .environment
+            .as_mut()
+            .expect("prepared daemon facts");
+        environment["image_arch"] = architecture.into();
+        if let Some(platform) = environment["requested_platform"].as_str() {
+            let requested = platform
+                .split('/')
+                .nth(1)
+                .ok_or("invalid worker platform")?;
+            if requested != architecture {
+                return Err("Compose platform differs from worker image architecture".into());
+            }
+        }
         Ok(())
     }
 
@@ -178,9 +213,9 @@ impl Compose<'_> {
             // the evidence, and retained workers consume no running build resources.
             let stop = docker(
                 self.context,
-                ["stop".into(), "--time".into(), "0".into(), id.into()],
+                ["stop".into(), "--timeout".into(), "0".into(), id.into()],
             );
-            if let Err(error) = runner.run(&stop, "worker-stop", timeout) {
+            if let Err(error) = runner.capture(&stop, "worker-stop", timeout) {
                 result.cleanup_failure = Some(error);
                 if let Err(error) = runner.run(
                     &docker(self.context, ["kill".into(), id.into()]),
@@ -241,13 +276,15 @@ impl Backend for Compose<'_> {
         output: &Path,
         invocation: &[String],
         resources: &serde_json::Value,
+        export: Option<&Path>,
         timeout: Duration,
     ) -> std::io::Result<bool> {
-        shell::attach(self.context, output, invocation, resources, timeout)
+        shell::attach(self.context, output, invocation, resources, export, timeout)
     }
 
     fn execute(
         &self,
+        previous: Option<&serde_json::Value>,
         invocation: &[String],
         staged_input: &Path,
         output: &Path,
@@ -258,12 +295,20 @@ impl Backend for Compose<'_> {
                 return Execution::failed(format!("create {}: {error}", directory.display()));
             }
         }
-        let project = operation_id("ruyipack");
-        let mut resources = Resources {
-            project,
-            container_id: None,
-            image_id: None,
-            daemon_id: None,
+        let mut resources = match previous {
+            Some(value) => match serde_json::from_value::<Resources>(value.clone()) {
+                Ok(resources) => resources,
+                Err(error) => {
+                    return Execution::failed(format!("invalid retained environment: {error}"));
+                }
+            },
+            None => Resources {
+                project: operation_id("ruyipack"),
+                container_id: None,
+                image_id: None,
+                daemon_id: None,
+                environment: None,
+            },
         };
         let mut runner = Runner {
             cancellable: true,
@@ -274,14 +319,67 @@ impl Backend for Compose<'_> {
         let remaining = || timeout.saturating_sub(start.elapsed());
         // Recovery has its own bound; the build deadline cannot prevent evidence retrieval.
         let recovery_timeout = timeout.min(Duration::from_secs(60));
+        let mut verified = previous.is_none();
         let primary = (|| -> Result<(), String> {
-            self.prepare(&mut runner, &mut resources, &remaining)?;
+            if previous.is_some() {
+                shell::verify_worker(
+                    &mut runner,
+                    self.context,
+                    "reuse",
+                    resources.container_id.as_deref().unwrap_or_default(),
+                    resources.daemon_id.as_deref().unwrap_or_default(),
+                    &resources.project,
+                    remaining(),
+                )
+                .map_err(|error| error.to_string())?;
+            } else {
+                self.prepare(&mut runner, &mut resources, &remaining)?;
+            }
+            verified = true;
             let id = resources.container_id.as_ref().expect("prepared worker");
-            runner.run(
-                &self.compose(&resources.project, &["start", "worker"]),
+            runner.capture(
+                &docker(self.context, ["start".into(), id.into()]),
                 "start",
                 remaining(),
             )?;
+            let image_arch = resources
+                .environment
+                .as_ref()
+                .and_then(|facts| facts["image_arch"].as_str())
+                .ok_or("retained worker lacks platform evidence; clean and rebuild")?;
+            let probe = runner.capture(
+                &docker(
+                    self.context,
+                    [
+                        "exec".into(),
+                        "--user".into(),
+                        "0".into(),
+                        id.into(),
+                        "python3".into(),
+                        "-c".into(),
+                        include_str!("probe.py").into(),
+                        image_arch.into(),
+                    ],
+                ),
+                "worker-capabilities",
+                remaining(),
+            )?;
+            let probe: serde_json::Value =
+                serde_json::from_str(&probe).map_err(|e| e.to_string())?;
+            eprintln!(
+                "build: target={} daemon={} image={} mount={} chroot={} translator=unknown",
+                probe["target_arch"],
+                resources.environment.as_ref().expect("worker facts")["daemon_arch"],
+                image_arch,
+                probe["mount"],
+                probe["chroot"]
+            );
+            resources.environment.as_mut().expect("worker facts")["probe"] = probe;
+            if previous.is_some() {
+                runner.run(&docker(self.context, ["exec".into(), "--user".into(), "0".into(), id.into(), "python3".into(), "-c".into(),
+                    "import shutil,pathlib; [(shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()) for root in ('/input','/output') for p in pathlib.Path(root).iterdir()]".into()]),
+                    "reset-attempt-files", remaining())?;
+            }
             runner.run(
                 &docker(
                     self.context,
@@ -303,7 +401,9 @@ impl Backend for Compose<'_> {
             failure: primary.err(),
             ..Execution::default()
         };
-        self.recover(&mut runner, &resources, &mut result, recovery_timeout);
+        if verified {
+            self.recover(&mut runner, &resources, &mut result, recovery_timeout);
+        }
         result.success = result.failure.is_none()
             && result.artifact_error.is_none()
             && result.cleanup_failure.is_none();

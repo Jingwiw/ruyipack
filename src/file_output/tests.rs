@@ -65,6 +65,20 @@ fn stage_artifacts_refuse_symlink_and_hardlink_aliases_without_changing_bytes() 
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn publication_rejects_nonregular_targets_before_reading_or_prompting() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("socket");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    for path in [directory.path(), socket.as_path()] {
+        assert_matches!(
+            publish(&mut io::sink(), path, "candidate", no_prompt),
+            Err(OutputError::Read { source, .. }) if source.kind() == io::ErrorKind::InvalidInput
+        );
+    }
+}
+
 #[test]
 fn diff_headers_preserve_data_paths_and_terminate_spaced_filenames() {
     let path = Path::new("dir with spaces/pkg.spec");

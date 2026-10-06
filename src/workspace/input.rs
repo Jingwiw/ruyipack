@@ -27,9 +27,9 @@ pub(crate) struct SpecOptions {
 pub(crate) struct SpecInput {
     pub(crate) path: PathBuf,
     pub(crate) source: String,
-    /// Present only when reading an immutable main commit without a checkout.
+    /// Present only when reading an immutable main commit without a materialize.
     pub(crate) revision: Option<String>,
-    _development: Option<Development>,
+    development: Option<Development>,
     canonical: Option<PathBuf>,
 }
 
@@ -43,6 +43,14 @@ impl SpecOptions {
     }
 
     pub(crate) fn resolve(&self) -> io::Result<SpecInput> {
+        self.resolve_with_materials(false)
+    }
+
+    pub(crate) fn resolve_materials(&self) -> io::Result<SpecInput> {
+        self.resolve_with_materials(true)
+    }
+
+    fn resolve_with_materials(&self, materialize: bool) -> io::Result<SpecInput> {
         if let Some(path) = &self.spec {
             let path = path.clone();
             let source = crate::utf8_file::read(&path).map_err(io::Error::other)?;
@@ -51,7 +59,7 @@ impl SpecOptions {
                 path,
                 source,
                 revision: None,
-                _development: None,
+                development: None,
                 canonical: Some(canonical),
             });
         }
@@ -60,6 +68,9 @@ impl SpecOptions {
             .as_deref()
             .ok_or_else(|| invalid("select WORK or --spec PATH"))?;
         let mut development = discover()?.development(work, self.pkgname.as_deref(), false)?;
+        if materialize {
+            development.create()?;
+        }
         let (path, source, revision) = development.source()?;
         development.ensure_work()?;
         let canonical = revision
@@ -70,13 +81,21 @@ impl SpecOptions {
             path,
             source,
             revision,
-            _development: Some(development),
+            development: Some(development),
             canonical,
         })
     }
 }
 
 impl SpecInput {
+    pub(crate) fn development(&self) -> Option<&Development> {
+        self.development.as_ref()
+    }
+
+    pub(crate) fn sources(&self) -> Option<PathBuf> {
+        self.development.as_ref().map(Development::sources)
+    }
+
     pub(crate) fn directory(&self) -> &Path {
         self.canonical
             .as_ref()

@@ -78,24 +78,29 @@ impl Comparison {
         expression: String,
         url: Result<String, String>,
         digest: Result<Option<String>, String>,
+        downloads: &mut source::Downloads<'_>,
     ) -> Self {
         let outcome = match url {
             Err(message) => Outcome::Unresolved {
                 error: source::Error::resolution(message),
             },
-            Ok(url) if !url.contains(':') => Outcome::NotApplicable {
-                reason: "local material; remote verification only",
-            },
             Ok(url) => {
                 let download = (|| {
+                    let Some(remote) = source::RemoteSource::classify(&url)? else {
+                        return Ok(None);
+                    };
                     let digest = digest.as_ref().map_err(source::Error::invalid_digest)?;
                     if let Some(hash) = digest {
                         source::validate_sha256(hash).map_err(source::Error::invalid_digest)?;
                     }
-                    source::RemoteSource::parse(&url)?.download()
+                    downloads.fetch(remote).map(Some)
                 })();
                 match download {
-                    Ok(download) => match digest.as_ref().ok().and_then(|hash| hash.as_ref()) {
+                    Ok(None) => Outcome::NotApplicable {
+                        reason: "local material; remote verification only",
+                    },
+                    Ok(Some(download)) => match digest.as_ref().ok().and_then(|hash| hash.as_ref())
+                    {
                         None => Outcome::Missing { download },
                         Some(hash) if hash.eq_ignore_ascii_case(&download.sha256) => {
                             Outcome::Match { download }
@@ -237,7 +242,12 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
             writeln!(stdout, "Source{number}: {item}").map_err(|e| e.to_string())?;
         }
         result.map_err(|(_, message)| message)?;
-        writeln!(stdout, "Input unchanged; no digests written. Matching bytes do not prove upstream authenticity.").map_err(|e| e.to_string())?;
+        writeln!(
+            stdout,
+            "Sources: {}. Declarations unchanged. Authenticity not checked.",
+            if valid { "PASS" } else { "FAIL" }
+        )
+        .map_err(|e| e.to_string())?;
     }
     Ok(valid)
 }
@@ -248,6 +258,7 @@ fn compare_manifest(
 ) -> Result<(), (&'static str, String)> {
     let manifest = manifest::parse(original).map_err(|e| ("invalid-manifest", e.to_string()))?;
     let package = &manifest.package;
+    let mut downloads = source::Downloads::new(None);
     for (number, material) in manifest.sources {
         let comparison = match material {
             manifest::Source::Local { path } => Comparison {
@@ -260,7 +271,7 @@ fn compare_manifest(
             manifest::Source::Remote { url, sha256 } => {
                 let resolved =
                     manifest::resolve_source(&url, &package.name, &package.version, &package.url);
-                Comparison::compare(url, resolved, Ok(sha256))
+                Comparison::compare(url, resolved, Ok(sha256), &mut downloads)
             }
         };
         sources.insert(number, comparison);
@@ -276,6 +287,7 @@ fn compare_spec(
     let parsed = spec::ParsedSpec::parse(original);
     let resolved =
         spec::sources::resolve(&parsed, defines).map_err(|e| ("source-resolution", e))?;
+    let mut downloads = source::Downloads::new(None);
     for (&number, source) in &resolved.sources {
         sources.insert(
             number,
@@ -283,6 +295,7 @@ fn compare_spec(
                 source.expression.clone(),
                 source.url.clone(),
                 source.digest.clone(),
+                &mut downloads,
             ),
         );
     }

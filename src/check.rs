@@ -10,6 +10,7 @@ pub(crate) mod build;
 pub(crate) mod license;
 pub(crate) mod materials;
 pub(crate) mod metadata;
+pub(crate) mod upgrade;
 
 use std::{
     io,
@@ -39,6 +40,11 @@ pub(crate) const SOURCE_DIGEST_RULE: SelectedRule = SelectedRule {
     severity: Severity::Warn,
 };
 
+pub(crate) const FILE_LIST_RULE: SelectedRule = SelectedRule {
+    code: "RPK008",
+    severity: Severity::Warn,
+};
+
 /// Purpose changes admission, not field identity or editing safety.
 #[derive(Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -51,7 +57,7 @@ pub(crate) enum Policy {
 impl Policy {
     fn severity(self, code: &str, severity: Severity) -> Severity {
         match (self, code) {
-            (Self::Submit, "RPK005") => Severity::Deny,
+            (Self::Submit, "RPK005" | "RPK006" | "RPK007" | "RPK008") => Severity::Deny,
             _ => severity,
         }
     }
@@ -90,6 +96,8 @@ pub(crate) fn analyze(spec: &ParsedSpec<'_>, policy: Policy, defines: &[String])
     selected_rules.extend(metadata::RULES);
     selected_rules.push(build::RULE);
     selected_rules.push(SOURCE_DIGEST_RULE);
+    selected_rules.push(crate::spec::policy_fix::RULE);
+    selected_rules.push(FILE_LIST_RULE);
     let mut result = if parser_error {
         RuleResult {
             incomplete_reasons: vec![IncompleteReason::ParserError],
@@ -110,6 +118,15 @@ pub(crate) fn analyze(spec: &ParsedSpec<'_>, policy: Policy, defines: &[String])
 pub(crate) struct Options {
     #[command(flatten)]
     input: SpecOptions,
+    /// Apply supported metadata, formatting and Source repairs in WORK.
+    #[arg(long, requires = "work", conflicts_with_all = ["manifest", "spec", "materials", "policy"])]
+    auto_fix: bool,
+    /// Also report Repology versions; only --auto-fix applies simple, patch-free upgrades.
+    #[arg(long, conflicts_with = "manifest")]
+    upgrade: bool,
+    /// Override the Repology project identity, for example python:requests.
+    #[arg(long, requires = "upgrade")]
+    repology_project: Option<String>,
     /// Check an authoring manifest by rendering it in memory, without downloads or writes.
     #[arg(long, conflicts_with_all = ["work", "spec", "pkgname", "defines"],
         value_name = "PATH")]
@@ -117,8 +134,8 @@ pub(crate) struct Options {
     /// Also check staged Source/Patch files and report sizes and SHA-256 digests.
     #[arg(long)]
     materials: bool,
-    /// Prepared RPM _sourcedir; defaults to the input directory, but must be explicit without a checkout.
-    #[arg(long, requires = "materials", value_name = "DIR")]
+    /// Prepared RPM _sourcedir; defaults to the input directory, but must be explicit without local recipe files.
+    #[arg(long, requires = "materials", value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
     source_dir: Option<PathBuf>,
     /// Static admission policy; neither policy verifies native builds.
     #[arg(long, value_enum, default_value_t = Policy::Authoring)]
@@ -131,6 +148,49 @@ pub(crate) struct Options {
 }
 
 pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
+    if options.auto_fix {
+        let upgrade = if options.upgrade {
+            let input = options
+                .input
+                .resolve()
+                .map_err(|e| ReportError::Projection(e.to_string()))?;
+            Some(upgrade::query(
+                &input.source,
+                options.repology_project.as_deref(),
+            ))
+        } else {
+            None
+        };
+        if matches!(options.format, ReportFormat::Human)
+            && let Some(reason) = upgrade.as_ref().and_then(|report| report.error.as_deref())
+        {
+            crate::output_cli::stderr().message(
+                crate::output_cli::HumanLevel::Warn,
+                Some(Path::new(&options.input.display())),
+                format_args!("upgrade not applied: {reason}; continuing basic fixes"),
+            )?;
+        }
+        return crate::edit::run(crate::edit::Options {
+            works: vec![options.input.work.clone().expect("auto-fix requires WORK")],
+            pkgname: options.input.pkgname.clone(),
+            hash: true,
+            repair_missing: true,
+            set: upgrade
+                .as_ref()
+                .filter(|r| r.applies_candidate())
+                .and_then(|r| r.candidate.as_ref())
+                .map(|v| vec![("package.version".into(), v.clone())])
+                .unwrap_or_default(),
+            expect_sha256: upgrade.as_ref().map(|r| r.input_sha256.clone()),
+            upgrade: upgrade.map(Box::new),
+
+            apply: true,
+            defines: options.defines.clone(),
+            format: Some(options.format),
+            ..Default::default()
+        })
+        .map_err(|error| ReportError::Projection(error.to_string()));
+    }
     let spec_input = if options.manifest.is_none() {
         let Some(input) = report_input(
             options.input.resolve(),
@@ -184,6 +244,12 @@ pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
         ParsedSpec::parse(original)
     };
     let mut report = analyze(&parsed, options.policy, &options.defines);
+    if options.upgrade {
+        report.upgrade = Some(upgrade::query(
+            original,
+            options.repology_project.as_deref(),
+        ));
+    }
     if options.manifest.is_some() {
         report.set_manifest_input(original);
     }
@@ -205,7 +271,13 @@ pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
                 |input| input.revision.is_none().then(|| input.directory()),
             )
         });
-        let mut inventory = materials::analyze(directory, &parsed, &options.defines);
+        let cache = options
+            .source_dir
+            .is_none()
+            .then(|| spec_input.as_ref().and_then(|input| input.sources()))
+            .flatten();
+        let mut inventory =
+            materials::analyze(directory, cache.as_deref(), &parsed, &options.defines);
         let unchanged = if let Some(input) = &spec_input {
             input.is_unchanged()
         } else {

@@ -4,7 +4,7 @@
 
 //! A development area's package binding and cooperative operation lock.
 
-use super::{Workspace, checkout, directory, invalid};
+use super::{Workspace, directory, invalid, recipe};
 use crate::{check::metadata::Field, file_lock::FileLock};
 use fs_err as fs;
 use serde::{Deserialize, Serialize};
@@ -17,20 +17,22 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
-/// The selected user-owned input; derived SPEC artifacts never select themselves.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum GenerationInput {
-    Authoring,
-    Edit,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Binding {
     pkg: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    input: Option<GenerationInput>,
+    #[serde(default)]
+    kind: DevelopmentKind,
+}
+
+/// A WORK's fixed recipe and authoring layout, never inferred from cached files.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum DevelopmentKind {
+    Local,
+    #[default]
+    Repository,
+    Spec,
 }
 
 pub(crate) struct Development {
@@ -38,12 +40,17 @@ pub(crate) struct Development {
     binding: Binding,
     binding_contents: Option<String>,
     package_directory: PathBuf,
-    plan: Option<checkout::Plan>,
-    // This dedicated inode stays stable when the binding is atomically replaced.
+    plan: Option<recipe::Plan>,
+    // The dedicated inode serializes operations independently of configuration contents.
     lock: Option<FileLock>,
 }
 
 impl Workspace {
+    fn package_directory(path: &Path, binding: &Binding) -> io::Result<PathBuf> {
+        let relative = Path::new("recipe").join("SPECS").join(&binding.pkg);
+        directory(path, &relative, false)
+    }
+
     pub(crate) fn existing_development(&self, work: &str) -> io::Result<Development> {
         Field::Name
             .validate_at(work, "development area name")
@@ -60,8 +67,7 @@ impl Workspace {
         })?;
         // Retained build consumers need only the binding, not a reachable recipe repository.
         let (binding, lock, contents) = read_binding(&path, None, false)?;
-        let checkout_path = path.join("checkout");
-        let package_directory = checkout_path.join(&self.specs).join(&binding.pkg);
+        let package_directory = Self::package_directory(&path, &binding)?;
         Ok(Development {
             path,
             binding,
@@ -77,28 +83,19 @@ impl Workspace {
         let work_root = fs::canonicalize(&self.work)?;
         if development.path.parent() != Some(work_root.as_path())
             || development.package_directory
-                != development
-                    .path
-                    .join("checkout")
-                    .join(&self.specs)
-                    .join(&development.binding.pkg)
+                != Self::package_directory(&development.path, &development.binding)?
         {
             return Err(invalid("development area belongs to a different workspace"));
         }
         development.verify_binding()?;
-        let checkout_path = development.path.join("checkout");
-        let work = development
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| invalid("development area has no UTF-8 name"))?;
-        development.plan = checkout::prepare(
-            &self.recipes,
-            &checkout_path,
-            &self.specs,
-            development.package(),
-            work,
-        )?;
+        if development.binding.kind == DevelopmentKind::Repository {
+            development.plan = recipe::prepare(
+                &self.recipes,
+                &development.package_directory,
+                &self.specs,
+                development.package(),
+            )?;
+        }
         development.create()?;
         development.verify_binding()
     }
@@ -109,6 +106,26 @@ impl Workspace {
         package: Option<&str>,
         preview: bool,
     ) -> io::Result<Development> {
+        self.resolve_development(work, package, preview, None)
+    }
+
+    pub(crate) fn new_development(
+        &self,
+        work: &str,
+        package: Option<&str>,
+        preview: bool,
+        kind: DevelopmentKind,
+    ) -> io::Result<Development> {
+        self.resolve_development(work, package, preview, Some(kind))
+    }
+
+    fn resolve_development(
+        &self,
+        work: &str,
+        package: Option<&str>,
+        preview: bool,
+        new: Option<DevelopmentKind>,
+    ) -> io::Result<Development> {
         Field::Name
             .validate_at(work, "development area name")
             .map_err(invalid)?;
@@ -116,7 +133,7 @@ impl Workspace {
             Field::Name.validate(package).map_err(invalid)?;
         }
         let path = directory(&self.work, Path::new(work), false)?;
-        let checkout_path = path.join("checkout");
+
         let existing = match fs::symlink_metadata(&path) {
             Ok(_) => true,
             Err(error) if error.kind() == io::ErrorKind::NotFound => false,
@@ -129,26 +146,35 @@ impl Workspace {
             (
                 Binding {
                     pkg: package.unwrap_or(work).to_owned(),
-                    input: None,
+                    kind: new.unwrap_or_default(),
                 },
                 None,
                 None,
             )
         };
-        let plan = checkout::prepare(
-            &self.recipes,
-            &checkout_path,
-            &self.specs,
-            &binding.pkg,
-            work,
-        )?;
+        if new.is_some_and(|kind| kind != binding.kind) {
+            return Err(invalid(
+                "existing WORK has a different recipe or authoring kind; use another WORK",
+            ));
+        }
+        let plan = if binding.kind == DevelopmentKind::Repository {
+            recipe::prepare(
+                &self.recipes,
+                &Self::package_directory(&path, &binding)?,
+                &self.specs,
+                &binding.pkg,
+            )?
+        } else {
+            None
+        };
         if !existing
+            && new.is_none()
             && package.is_none()
             && let Some(plan) = &plan
         {
             plan.spec_name()?;
         }
-        let manifest = path.join(format!("{}.toml", binding.pkg));
+        let manifest = binding.manifest(&path);
         match fs::symlink_metadata(&manifest) {
             Ok(metadata) if !metadata.is_file() => {
                 return Err(invalid(format!(
@@ -160,7 +186,7 @@ impl Workspace {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
-        let package_directory = checkout_path.join(&self.specs).join(&binding.pkg);
+        let package_directory = Self::package_directory(&path, &binding)?;
         Ok(Development {
             path,
             binding,
@@ -172,7 +198,35 @@ impl Workspace {
     }
 }
 
+impl Binding {
+    fn manifest(&self, root: &Path) -> PathBuf {
+        if self.kind != DevelopmentKind::Local {
+            let spec =
+                super::recipe::spec_in(&root.join("recipe/SPECS").join(&self.pkg), Some(&self.pkg))
+                    .unwrap_or_else(|_| PathBuf::from(format!("{}.spec", self.pkg)));
+            return root.join(
+                spec.with_extension("toml")
+                    .file_name()
+                    .expect("SPEC filename"),
+            );
+        }
+        root.join(format!("{}.toml", self.pkg))
+    }
+}
+
 impl Development {
+    pub(crate) fn spec_authoring(&self) -> bool {
+        self.binding.kind != DevelopmentKind::Local
+    }
+
+    pub(crate) fn editor_directory(&self) -> PathBuf {
+        self.package_directory.clone()
+    }
+
+    pub(crate) fn sources(&self) -> PathBuf {
+        self.directory().join("sources")
+    }
+
     pub(crate) fn directory(&self) -> &Path {
         &self.path
     }
@@ -181,21 +235,12 @@ impl Development {
         &self.package_directory
     }
 
-    /// Resolve from the pinned commit before first allocation, or from the current checkout.
+    /// Resolve from the pinned commit before first allocation, or from the current recipe.
     pub(crate) fn spec(&self) -> io::Result<PathBuf> {
         if let Some(plan) = &self.plan {
             return Ok(self.package_directory.join(plan.spec_name()?));
         }
-        let path = self
-            .package_directory
-            .join(format!("{}.spec", self.binding.pkg));
-        if !fs::symlink_metadata(&path)?.is_file() {
-            return Err(invalid(format!(
-                "{} must be a regular SPEC, not a symlink",
-                path.display()
-            )));
-        }
-        Ok(path)
+        super::recipe::spec_in(&self.package_directory, Some(self.package()))
     }
 
     pub(crate) fn source(&self) -> io::Result<(PathBuf, String, Option<String>)> {
@@ -214,24 +259,21 @@ impl Development {
     }
 
     pub(crate) fn manifest(&self) -> PathBuf {
-        self.path.join(format!("{}.toml", self.binding.pkg))
-    }
-
-    /// A WORK with no completed input selection defaults to authoring, never a stage scan.
-    pub(crate) fn generation_input(&self) -> GenerationInput {
-        self.binding.input.unwrap_or(GenerationInput::Authoring)
+        self.binding.manifest(&self.path)
     }
 
     /// An explicit SPEC destination cannot replace either WORK input or binding state.
     pub(crate) fn protect_output(&self, output: &Path) -> io::Result<()> {
+        if self.spec_authoring() {
+            crate::draft::protect_output(output, Some(&self.manifest())).map_err(invalid)?;
+        }
         let target = crate::file_output::output_path(output).ok();
         for protected in [
             self.manifest(),
-            self.path
-                .join("stage")
-                .join(format!("{}.toml", self.package())),
             self.path.join(".config.toml"),
             self.path.join(".lock"),
+            self.path.join("baseline.toml"),
+            self.path.join("commit.toml"),
         ] {
             if target.as_ref() == Some(&protected)
                 || crate::file_output::aliases(output, &protected)
@@ -245,22 +287,7 @@ impl Development {
         Ok(())
     }
 
-    /// Select an input only after the caller has completed the requested operation.
-    pub(crate) fn select_input(&mut self, input: GenerationInput) -> io::Result<()> {
-        self.verify_binding()?;
-        if self.binding.input == Some(input) {
-            return Ok(());
-        }
-        let mut binding = self.binding.clone();
-        binding.input = Some(input);
-        let contents = toml::to_string(&binding).map_err(io::Error::other)?;
-        crate::file_output::write_artifact(&self.path.join(".config.toml"), contents.as_bytes())?;
-        self.binding = binding;
-        self.binding_contents = Some(contents);
-        Ok(())
-    }
-
-    fn verify_binding(&self) -> io::Result<()> {
+    pub(super) fn verify_binding(&self) -> io::Result<()> {
         let lock = self.lock.as_ref().ok_or_else(|| {
             invalid("cannot update a development area without the operation lock")
         })?;
@@ -276,13 +303,6 @@ impl Development {
         Ok(())
     }
 
-    pub(crate) fn author_directory(&self) -> PathBuf {
-        self.plan.as_ref().map_or_else(
-            || self.path.join("checkout"),
-            |plan| plan.repository().to_owned(),
-        )
-    }
-
     /// Publish only the package binding. Read-only operations stop here.
     pub(crate) fn ensure_work(&mut self) -> io::Result<()> {
         if self.lock.is_some() {
@@ -295,25 +315,75 @@ impl Development {
         fs::create_dir_all(parent)?;
         fs::create_dir(&self.path)?;
         let lock = open_lock(&self.path)?;
-        let text = toml::to_string(&self.binding).map_err(io::Error::other)?;
-        let mut file = tempfile::NamedTempFile::new_in(&self.path)?;
-        file.write_all(text.as_bytes())?;
-        file.as_file().sync_all()?;
-        file.persist_noclobber(self.path.join(".config.toml"))
-            .map_err(|error| error.error)?;
+        let text = self.write_binding(&self.path)?;
         self.binding_contents = Some(text);
         self.lock = Some(lock);
         Ok(())
     }
 
-    /// Materialize the editable checkout without resetting an existing branch.
+    fn write_binding(&self, directory: &Path) -> io::Result<String> {
+        let text = toml::to_string(&self.binding).map_err(io::Error::other)?;
+        let mut file = tempfile::NamedTempFile::new_in(directory)?;
+        file.write_all(text.as_bytes())?;
+        file.as_file().sync_all()?;
+        file.persist_noclobber(directory.join(".config.toml"))
+            .map_err(|error| error.error)?;
+        Ok(text)
+    }
+
+    /// Publish a complete import without replacing even an empty competing WORK.
+    pub(crate) fn publish_prepared(&mut self, directory: &Path) -> io::Result<()> {
+        if self.lock.is_some() || self.binding.kind != DevelopmentKind::Spec {
+            return Err(invalid("import requires a new SPEC development area"));
+        }
+        let lock = open_lock(directory)?;
+        let text = self.write_binding(directory)?;
+        publish_directory(directory, &self.path)?;
+        self.binding_contents = Some(text);
+        self.lock = Some(lock);
+        Ok(())
+    }
+
+    /// Copy committed package files once; subsequent edits stay in the ordinary recipe directory.
     pub(crate) fn create(&mut self) -> io::Result<()> {
         self.ensure_work()?;
         if let Some(plan) = &self.plan {
-            plan.create()?;
+            plan.create(&self.path)?;
             self.plan = None;
+        } else {
+            fs::create_dir_all(&self.package_directory)?;
+            if !self.path.join("baseline.toml").exists() {
+                super::baseline::save(
+                    &self.path.join("baseline.toml"),
+                    &super::baseline::Baseline {
+                        files: super::baseline::Files::new(),
+                        allow_create: true,
+                    },
+                )?;
+            }
         }
         Ok(())
+    }
+}
+
+pub(super) fn publish_directory(source: &Path, target: &Path) -> io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+        renameat_with(CWD, source, CWD, target, RenameFlags::NOREPLACE).map_err(|error| {
+            io::Error::new(
+                io::Error::from(error).kind(),
+                format!("cannot publish WORK {}: {error}", target.display()),
+            )
+        })
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (source, target);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "atomic WORK import requires Linux or macOS",
+        ))
     }
 }
 
@@ -439,116 +509,53 @@ mod tests {
             path: path.to_path_buf(),
             binding,
             binding_contents: Some(contents),
-            package_directory: path.join("checkout/SPECS/ed"),
+            package_directory: path.join("recipe/SPECS/ed"),
             plan: None,
             lock,
         }
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn unselected_binding_defaults_to_authoring_without_inspecting_stage() {
-        let directory = fixture("pkg = 'ed'\n");
-        fs::create_dir_all(directory.path().join("stage/.state")).unwrap();
-        fs::write(
-            directory.path().join("stage/.state/index.toml"),
-            "not a valid index",
-        )
-        .unwrap();
-        let development = open(directory.path(), false);
-        assert_eq!(development.generation_input(), GenerationInput::Authoring);
+    fn prepared_directory_never_replaces_an_existing_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("prepared");
+        let target = root.path().join("work");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("recipe"), "candidate").unwrap();
+        fs::create_dir(&target).unwrap();
+        assert!(publish_directory(&source, &target).is_err());
+        assert!(target.read_dir().unwrap().next().is_none());
+        fs::write(target.join("recipe"), "existing").unwrap();
+        assert!(publish_directory(&source, &target).is_err());
+        assert_eq!(
+            fs::read_to_string(target.join("recipe")).unwrap(),
+            "existing"
+        );
+        fs::remove_dir_all(&target).unwrap();
+        publish_directory(&source, &target).unwrap();
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read_to_string(target.join("recipe")).unwrap(),
+            "candidate"
+        );
     }
 
     #[test]
-    fn preview_reads_without_creating_a_lock_or_selecting_an_input() {
-        let directory = fixture("pkg = 'ed'\ninput = 'edit'\n");
-        let mut development = open(directory.path(), true);
-        assert_eq!(development.generation_input(), GenerationInput::Edit);
+    fn external_binding_edits_are_detected_without_overwriting_them() {
+        let directory = fixture("pkg = 'ed'\n");
+        let development = open(directory.path(), false);
+        let config = directory.path().join(".config.toml");
+        let changed = "pkg = 'other'\n# user note\n";
+        fs::write(&config, changed).unwrap();
         assert!(
             development
-                .select_input(GenerationInput::Authoring)
-                .is_err()
+                .verify_binding()
+                .unwrap_err()
+                .to_string()
+                .contains("changed during the operation")
         );
-        assert!(!directory.path().join(".lock").exists());
-        assert_eq!(
-            fs::read_to_string(directory.path().join(".config.toml")).unwrap(),
-            "pkg = 'ed'\ninput = 'edit'\n"
-        );
-    }
-
-    #[test]
-    fn atomic_selection_keeps_the_operation_lock_and_pending_draft() {
-        let directory = fixture("pkg = 'ed'\n");
-        let path = directory.path();
-        fs::create_dir(path.join("stage")).unwrap();
-        fs::write(path.join("stage/ed.toml"), "unfinished user draft\n").unwrap();
-        let mut development = open(path, false);
-        #[cfg(unix)]
-        let identity = fs::metadata(path.join(".lock")).unwrap().ino();
-        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let reader_done = done.clone();
-        let config = path.join(".config.toml");
-        let reader = std::thread::spawn(move || {
-            while !reader_done.load(std::sync::atomic::Ordering::Acquire) {
-                let binding: Binding =
-                    toml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
-                assert_eq!(binding.pkg, "ed");
-            }
-        });
-        for input in [GenerationInput::Edit, GenerationInput::Authoring]
-            .into_iter()
-            .cycle()
-            .take(32)
-        {
-            development.select_input(input).unwrap();
-            assert_eq!(development.generation_input(), input);
-            let error = read_binding(path, None, false).err().unwrap();
-            assert!(
-                error.to_string().contains("cannot lock development area"),
-                "{error}"
-            );
-            #[cfg(unix)]
-            assert_eq!(fs::metadata(path.join(".lock")).unwrap().ino(), identity);
-        }
-        done.store(true, std::sync::atomic::Ordering::Release);
-        reader.join().unwrap();
-        assert_eq!(
-            fs::read_to_string(path.join("stage/ed.toml")).unwrap(),
-            "unfinished user draft\n"
-        );
-        #[cfg(unix)]
-        let inherited = development
-            .lock
-            .as_ref()
-            .unwrap()
-            .file()
-            .try_clone()
-            .unwrap();
-        drop(development);
-        assert_eq!(
-            open(path, false).generation_input(),
-            GenerationInput::Authoring
-        );
-        #[cfg(unix)]
-        drop(inherited);
-    }
-
-    #[test]
-    fn external_binding_edits_are_not_lost_during_selection() {
-        let directory = fixture("pkg = 'ed'\n");
-        let mut development = open(directory.path(), false);
-        let config = directory.path().join(".config.toml");
-        fs::write(&config, "pkg = 'ed'\ninput = 'edit'\n# user note\n").unwrap();
-        let error = development
-            .select_input(GenerationInput::Authoring)
-            .unwrap_err();
-        assert!(
-            error.to_string().contains("changed during the operation"),
-            "{error}"
-        );
-        assert_eq!(
-            fs::read_to_string(config).unwrap(),
-            "pkg = 'ed'\ninput = 'edit'\n# user note\n"
-        );
+        assert_eq!(fs::read_to_string(config).unwrap(), changed);
     }
 
     #[test]
@@ -588,29 +595,32 @@ mod tests {
             assert!(output.status.success(), "{output:?}");
         }
         let workspace = Workspace {
+            repology: Default::default(),
             root: root.to_path_buf(),
             recipes,
             work: root.join("work"),
             specs: PathBuf::from("SPECS"),
+            editor: None,
+            author: None,
         };
         let area = workspace.work.join("review");
         fs::create_dir_all(&area).unwrap();
-        let contents = "pkg = 'ed'\ninput = 'authoring'\n# user binding note\n";
+        let contents = "pkg = 'ed'\n# user binding note\n";
         fs::write(area.join(".config.toml"), contents).unwrap();
         let mut development = workspace.existing_development("review").unwrap();
         #[cfg(unix)]
         let identity = fs::metadata(area.join(".lock")).unwrap().ino();
-        assert!(!area.join("checkout").exists());
+        assert!(!area.join("recipe/SPECS/ed").exists());
         workspace.materialize(&mut development).unwrap();
         assert_eq!(
-            development.author_directory(),
-            fs::canonicalize(area.join("checkout")).unwrap()
+            development.editor_directory(),
+            fs::canonicalize(area.join("recipe/SPECS/ed")).unwrap()
         );
         assert_eq!(
             fs::read_to_string(development.spec().unwrap()).unwrap(),
             "recipe baseline\n"
         );
-        // Existing checkout validation must also reuse, not reacquire, this lock.
+        // Existing recipe validation must also reuse, not reacquire, this lock.
         workspace.materialize(&mut development).unwrap();
         let error = workspace.existing_development("review").err().unwrap();
         assert!(
@@ -623,7 +633,6 @@ mod tests {
             fs::read_to_string(area.join(".config.toml")).unwrap(),
             contents
         );
-        assert_eq!(development.generation_input(), GenerationInput::Authoring);
         drop(development);
         assert!(workspace.existing_development("review").is_ok());
     }
@@ -647,11 +656,11 @@ mod tests {
             assert_eq!(fs::read_to_string(target).unwrap(), "user bytes\n");
         }
         let directory = fixture("pkg = 'ed'\n");
-        let mut development = open(directory.path(), false);
+        let development = open(directory.path(), false);
         let lock_path = directory.path().join(".lock");
         fs::rename(&lock_path, directory.path().join("old.lock")).unwrap();
         fs::write(&lock_path, "").unwrap();
-        let error = development.select_input(GenerationInput::Edit).unwrap_err();
+        let error = development.verify_binding().unwrap_err();
         assert!(
             error
                 .to_string()

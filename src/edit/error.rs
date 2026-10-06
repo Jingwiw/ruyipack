@@ -24,6 +24,7 @@ pub(super) enum Kind {
     InvalidAssignment,
     InvalidCandidate,
     StaticCheckFailed,
+    DraftRecoveryFailed,
 }
 
 #[derive(Debug, thiserror::Error, Serialize)]
@@ -87,6 +88,13 @@ impl EditError {
         let mut result = Self::from(error.to_string());
         result.cause = Some(Box::new(Cause::Publication(error)));
         result
+    }
+
+    pub(super) fn recovery(error: crate::file_output::OutputError, message: String) -> Self {
+        let mut failure = Self::publication(error);
+        failure.code = Kind::DraftRecoveryFailed;
+        failure.message = message;
+        failure
     }
 
     pub(super) fn written_paths(&self) -> &[PathBuf] {
@@ -156,6 +164,7 @@ impl Serialize for Cause {
                 ErrorKind::NotFound => "not-found",
                 ErrorKind::AlreadyExists => "already-exists",
                 ErrorKind::IsADirectory => "is-a-directory",
+                ErrorKind::InvalidInput => "invalid-input",
                 ErrorKind::NotADirectory => "not-a-directory",
                 ErrorKind::ReadOnlyFilesystem => "read-only-filesystem",
                 ErrorKind::StorageFull => "storage-full",

@@ -43,6 +43,7 @@ pub(crate) fn required_tags(
                 lint.take_diagnostics()
                     .into_iter()
                     .map(|diagnostic| Finding {
+                        build_requirements: None,
                         producer: "rpm-spec-analyzer",
                         code: diagnostic.lint_id,
                         severity: Severity::Deny,

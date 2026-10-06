@@ -99,12 +99,12 @@ fn batch_edit_parser_diagnostics_distinguish_same_named_candidate_files() {
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     let stderr = support::output_text(&output.stderr);
-    let sections: Vec<_> = stderr.split("candidate static blockers:").skip(1).collect();
+    let sections: Vec<_> = stderr.split("candidate").skip(1).collect();
     assert_eq!(sections.len(), 2, "{stderr}");
     for (path, section) in [&first, &second].into_iter().zip(sections) {
         assert!(
             stderr.contains(&format!(
-                "[INFO] {}: candidate static blockers:",
+                "[INFO] {}: candidate",
                 path.strip_prefix(directory.path()).unwrap().display()
             )),
             "{stderr}"

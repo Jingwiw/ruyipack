@@ -90,7 +90,7 @@ fn spec_license_header_scope_keeps_missing_and_duplicate_edit_policy() {
         SPEC.replace(SPEC_LICENSE, ""),
         SPEC.replace(SPEC_LICENSE, &format!("{SPEC_LICENSE}{second_header}")),
     ] {
-        let _ = fs::remove_dir_all(dir.path().join(".ruyipack-stage"));
+        let _ = fs::remove_dir_all(dir.path().join(".ruyipack-draft"));
         fs::write(dir.path().join("ed.spec"), &source).unwrap();
         let checked = run(dir.path(), &["check", "--spec=ed.spec"]);
         assert!(checked.status.success(), "{checked:?}");
@@ -150,7 +150,7 @@ fn invalid_license_is_rejected_by_check_gen_and_edit_without_writes() {
     );
     for args in [
         vec!["check", "--spec=invalid.spec"],
-        vec!["gen", "review", "--offline", "--spec=auto", "--force"],
+        vec!["gen", "review", "--offline", "--apply", "--force"],
         vec![
             "edit",
             "--spec=ed.spec",
@@ -210,7 +210,7 @@ fn license_checks_visit_subpackages_and_conditions_without_expanding_macros() {
         } else {
             format!("{head}{extra}%description{sections}")
         };
-        let _ = fs::remove_dir_all(dir.path().join(".ruyipack-stage"));
+        let _ = fs::remove_dir_all(dir.path().join(".ruyipack-draft"));
         fs::write(dir.path().join("ed.spec"), &source).unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_ruyipack"))
             .current_dir(dir.path())
@@ -343,7 +343,7 @@ fn editor_and_saved_drafts_share_metadata_checks() {
         assert_eq!(output.status.code(), Some(1), "{output:?}");
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(
-            error.contains("RPK002") && error.contains("stage"),
+            error.contains("RPK002") && error.contains("package.version"),
             "{error}"
         );
         assert_file(directory.path().join("ed.spec"), SPEC);
@@ -428,12 +428,12 @@ fn autotools_requirements_are_checked_by_check_gen_and_saved_edits() {
         directory.path(),
         &["edit", "--from", "drafts", "--check", "--format", "toml"],
     );
-    assert_eq!(checked.status.code(), Some(1));
+    assert_eq!(checked.status.code(), Some(0));
     assert!(checked.stderr.is_empty());
     let report = super::support::machine_report(&checked);
     assert_eq!(
         report["files"][0]["introduced_static_blockers"].as_bool(),
-        Some(true)
+        Some(false)
     );
     assert_eq!(
         report["files"][0]["baseline_report"]["evidence"]["status"].as_str(),
@@ -447,33 +447,46 @@ fn autotools_requirements_are_checked_by_check_gen_and_saved_edits() {
     );
     for args in [
         vec!["check", "--spec=invalid.spec"],
-        vec!["gen", "review", "--offline", "--spec=auto", "--force"],
+        vec![
+            "gen",
+            "review",
+            "--offline",
+            "--output=generated.spec",
+            "--force",
+        ],
         vec!["edit", "--from", "drafts", "--apply"],
     ] {
         let output = run(directory.path(), &args);
-        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        assert_eq!(output.status.code(), Some(0), "{args:?}: {output:?}");
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(
             error.contains("RPK004") && error.contains("autoconf"),
             "{error}"
         );
-        assert_file(directory.path().join("ed.spec"), SPEC);
+        let expected = if args[0] == "edit" {
+            SPEC.replace("BuildRequires:  autoconf\n", "")
+        } else {
+            SPEC.to_owned()
+        };
+        assert_file(directory.path().join("ed.spec"), &expected);
     }
 }
 
 #[test]
 fn build_requirements_do_not_guess_conditions_macros_or_unknown_systems() {
     let directory = tempfile::tempdir().unwrap();
-    for dependency in [
+    let sources = [
         "%if 0\nBuildRequires: autoconf\n%endif",
         "BuildRequires: %{autoconf_requirement}",
         "BuildRequires: (autoconf or other-tool)",
-    ] {
-        fs::write(
-            directory.path().join("ed.spec"),
-            SPEC.replace("BuildRequires:  autoconf", dependency),
-        )
-        .unwrap();
+    ]
+    .map(|dependency| SPEC.replace("BuildRequires:  autoconf", dependency));
+    let dynamic = SPEC.replace("BuildRequires:  autoconf\n", "").replace(
+        "%description",
+        "%generate_buildrequires\necho autoconf\n\n%description",
+    );
+    for source in sources.into_iter().chain([dynamic]) {
+        fs::write(directory.path().join("ed.spec"), source).unwrap();
         let output = run(
             directory.path(),
             &["check", "--spec=ed.spec", "--format", "toml"],
@@ -481,15 +494,15 @@ fn build_requirements_do_not_guess_conditions_macros_or_unknown_systems() {
         let report = super::support::machine_report(&output);
         assert_eq!(
             report["evidence"]["status"].as_str(),
-            Some("incomplete"),
+            Some("pass"),
             "{report}"
         );
         assert_eq!(
             report["evidence"]["incomplete_reasons"],
-            toml::Value::Array(vec![toml::Value::from("unresolved-build-requirements")])
+            toml::Value::Array(vec![])
         );
         assert_eq!(report["findings"][0]["severity"].as_str(), Some("warn"));
-        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.status.code(), Some(0));
     }
     for system in ["meson", "custom-system", "%{build_system}"] {
         let source = SPEC
@@ -548,10 +561,7 @@ fn independent_incomplete_reasons_survive_each_other_and_confirmed_failures() {
         assert_eq!(report["evidence"]["status"].as_str(), Some(status));
         assert_eq!(
             report["evidence"]["incomplete_reasons"],
-            toml::Value::Array(vec![
-                toml::Value::from("unresolved-license"),
-                toml::Value::from("unresolved-build-requirements")
-            ])
+            toml::Value::Array(vec![toml::Value::from("unresolved-license")])
         );
         let findings = report["findings"].as_array().unwrap();
         for rule in ["RPK001", "RPK004"] {
@@ -569,7 +579,7 @@ fn independent_incomplete_reasons_survive_each_other_and_confirmed_failures() {
         assert_eq!(human.status.code(), Some(1));
         let diagnostics = String::from_utf8(human.stderr).unwrap();
         assert!(diagnostics.contains("license expressions require RPM evaluation"));
-        assert!(diagnostics.contains("build requirements require RPM evaluation"));
+        assert!(diagnostics.contains("not statically confirmed"));
         assert_file(&path, &source);
     }
 }
@@ -618,7 +628,7 @@ fn static_policy_changes_admission_without_inventing_source_facts() {
         (String::new(), false, false),
     ] {
         let source = format!("{}{}{}", &SPEC[..start], declarations, &SPEC[end..]);
-        let _ = fs::remove_dir_all(dir.path().join(".ruyipack-stage"));
+        let _ = fs::remove_dir_all(dir.path().join(".ruyipack-draft"));
         fs::write(dir.path().join("ed.spec"), &source).unwrap();
         for policy in ["authoring", "submit"] {
             let output = run(

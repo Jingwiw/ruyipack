@@ -69,6 +69,13 @@ fn init_clone_materializes_a_local_repository_and_never_repeats_implicitly() {
         "recipe fixture\n"
     );
     fs::write(recipes.join("content.txt"), "local edit\n").unwrap();
+    let pr_template = root.join(".ruyiconfig/pr.md");
+    assert!(
+        fs::read_to_string(&pr_template)
+            .unwrap()
+            .contains("{{summary}}")
+    );
+    fs::write(&pr_template, "User template").unwrap();
     let config = fs::read(root.join(".ruyiconfig/config.toml")).unwrap();
     let repeated = command()
         .current_dir(&root)
@@ -78,6 +85,7 @@ fn init_clone_materializes_a_local_repository_and_never_repeats_implicitly() {
         .unwrap();
     success(&repeated);
     assert!(output_text(&repeated.stderr).contains("already initialized"));
+    assert_eq!(fs::read_to_string(&pr_template).unwrap(), "User template");
     let explicit = clone(&root, Path::new("."), source.path().as_os_str());
     assert_eq!(explicit.status.code(), Some(1), "{explicit:?}");
     assert!(
@@ -230,7 +238,10 @@ fn init_materializes_defaults_without_external_tools() {
         .output()
         .unwrap();
     success(&output);
-    assert!(output.stderr.is_empty(), "{output:?}");
+    assert!(
+        output_text(&output.stderr).contains("author is missing or invalid"),
+        "{output:?}"
+    );
     let config: toml::Value =
         toml::from_str(&fs::read_to_string(root.join(".ruyiconfig/config.toml")).unwrap()).unwrap();
     assert_eq!(config["recipes"].as_str(), Some("openruyi"));
@@ -345,4 +356,183 @@ fn init_does_not_follow_marker_or_managed_path_symlinks() {
         "{output:?}"
     );
     assert_eq!(fs::read_dir(external.path()).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn recipe_editor_updates_real_files_without_staging_and_propagates_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let area = super::support::recipe_workspace(
+        root.path(),
+        "review",
+        "ed",
+        include_str!("../fixtures/ed.spec"),
+    );
+    let editor = root.path().join("editor.sh");
+    fs::write(
+        &editor,
+        "printf 'patch edit\\n' > \"$1/fix.patch\"\nexit 7\n",
+    )
+    .unwrap();
+    let output = run(
+        root.path(),
+        &[
+            "open",
+            "review",
+            "--editor",
+            &format!("/bin/sh {}", shell_words::quote(&editor.to_string_lossy())),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output_text(&output.stderr).contains("editor exited"));
+    assert_eq!(
+        fs::read_to_string(area.join("recipe/SPECS/ed/fix.patch")).unwrap(),
+        "patch edit\n"
+    );
+    assert!(!area.join("stage").exists());
+    fs::write(&editor, "test -f \"$1/fix.patch\"\n").unwrap();
+    success(&run(
+        root.path(),
+        &[
+            "open",
+            "review",
+            "--editor",
+            &format!("/bin/sh {}", shell_words::quote(&editor.to_string_lossy())),
+        ],
+    ));
+    for conflicting in ["--apply", "--hash", "--diff", "--check"] {
+        assert_eq!(
+            run(root.path(), &["open", "review", conflicting])
+                .status
+                .code(),
+            Some(2)
+        );
+    }
+}
+
+#[test]
+fn history_cleanup_reports_partial_failure_and_preserves_current_and_authoring() {
+    let root = tempfile::tempdir().unwrap();
+    let area = super::support::authoring_workspace(root.path(), "ed", "ed", "author input\n");
+    let current = area.join("build");
+    fs::create_dir(&current).unwrap();
+    fs::write(current.join("keep"), "current").unwrap();
+    let history = area.join("build-history");
+    for name in ["good", "broken"] {
+        fs::create_dir_all(history.join(name)).unwrap();
+    }
+    fs::write(
+        history.join("good/receipt.json"),
+        r#"{"resources_retained":false}"#,
+    )
+    .unwrap();
+    fs::write(history.join("broken/receipt.json"), "broken receipt").unwrap();
+    let output = run(
+        root.path(),
+        &["clean", "ed", "--history", "--force", "--format=toml"],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let report = super::support::machine_report(&output);
+    assert_eq!(report["results"].as_array().unwrap().len(), 2);
+    assert!(!history.join("good").exists());
+    assert!(history.join("broken/receipt.json").exists());
+    assert_eq!(fs::read_to_string(current.join("keep")).unwrap(), "current");
+    assert_eq!(
+        fs::read_to_string(area.join("ed.toml")).unwrap(),
+        "author input\n"
+    );
+    fs::write(
+        history.join("broken/receipt.json"),
+        r#"{"resources_retained":false}"#,
+    )
+    .unwrap();
+    for _ in 0..2 {
+        success(&run(
+            root.path(),
+            &["clean", "ed", "--history", "--force", "--format=toml"],
+        ));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn configured_editor_precedence_uses_git_and_shell_arguments() {
+    let root = tempfile::tempdir().unwrap();
+    let area = super::support::recipe_workspace(
+        root.path(),
+        "ed",
+        "ed",
+        include_str!("../fixtures/ed.spec"),
+    );
+    let editor = root.path().join("editor with spaces.sh");
+    fs::write(&editor, "printf '%s' \"$1\" > \"$2/editor-used\"\n").unwrap();
+    let config = root.path().join(".ruyiconfig/config.toml");
+    let original = fs::read_to_string(&config).unwrap();
+    git(
+        &root.path().join("openruyi"),
+        &["config", "core.editor", "/bin/sh \"$RPK_TEST_EDITOR\" git"],
+    );
+    for (setting, expected) in [
+        ("git", "git"),
+        ("env", "env"),
+        ("workspace", "workspace"),
+        ("explicit", "explicit"),
+    ] {
+        let mut command =
+            super::support::isolated_command(env!("CARGO_BIN_EXE_ruyipack"), root.path());
+        command.args(["open", "ed"]).env("RPK_TEST_EDITOR", &editor);
+        if setting != "git" {
+            command.env("GIT_EDITOR", "/bin/sh \"$RPK_TEST_EDITOR\" env");
+        }
+        if matches!(setting, "workspace" | "explicit") {
+            fs::write(
+                &config,
+                format!("{original}\neditor = '/bin/sh \"$RPK_TEST_EDITOR\" workspace'\n"),
+            )
+            .unwrap();
+        }
+        if setting == "explicit" {
+            command.args(["--editor", "/bin/sh \"$RPK_TEST_EDITOR\" explicit"]);
+        }
+        success(&command.output().unwrap());
+        assert_eq!(
+            fs::read_to_string(area.join("recipe/SPECS/ed/editor-used")).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn inspect_work_state_is_independent_of_report_format() {
+    use super::support::{machine_report, recipe_workspace};
+    let root = tempfile::tempdir().unwrap();
+    recipe_workspace(
+        root.path(),
+        "seed",
+        "ed",
+        include_str!("../fixtures/ed.spec"),
+    );
+    success(&run(root.path(), &["new", "fresh"]));
+    for (work, present) in [("fresh", false), ("ed", true)] {
+        let human = run(root.path(), &["inspect", work]);
+        let machine = run(root.path(), &["inspect", work, "--format=toml"]);
+        success(&human);
+        success(&machine);
+        assert_eq!(human.status.code(), machine.status.code());
+        assert_eq!(
+            machine_report(&machine)["work"]["spec_present"].as_bool(),
+            Some(present)
+        );
+        assert!(
+            String::from_utf8_lossy(&human.stdout).contains(&format!("SPEC present: {present}"))
+        );
+    }
+    assert!(!root.path().join("work/ed/recipe").exists());
+    for args in [
+        vec!["inspect", "fresh", "--editable", "--all"],
+        vec!["inspect", "--spec", "missing.spec"],
+        vec!["inspect", "--spec", "missing.spec", "--format=toml"],
+    ] {
+        assert!(!run(root.path(), &args).status.success());
+    }
 }

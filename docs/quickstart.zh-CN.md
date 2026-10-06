@@ -8,13 +8,13 @@ SPDX-License-Identifier: MulanPSL-2.0
 
 # RuyiPack 快速入门
 
-这是需要维护者审阅的源码预览版。它帮助减少 SPEC 的填写和修改工作，
-不会自动推断全部依赖或构建软件；生成时默认尝试补全缺失的源码摘要。
+RuyiPack 帮助编写、修改和构建 openRuyi RPM 包。
+这是需要维护者审阅的源码预览版，不会自动发现全部依赖。
+静态编辑和检查不需要 Docker；构建使用 Docker Compose 中的 Mock。
 
 ## 安装
 
-Ubuntu 先安装证书、下载工具和 C 链接器，再按 [Rust 官方说明](https://rust-lang.org/tools/install/)
-安装 rustup：
+以下命令适用于 Ubuntu。先安装工具，再安装 Rust 和 RuyiPack：
 
 ```sh
 sudo apt-get update
@@ -28,123 +28,196 @@ cargo install --path . --locked
 ruyipack --version
 ```
 
-仓库固定所需工具链；首次编译需要联网取得它和锁定依赖。
-`$HOME/.cargo/bin` 必须在 PATH 中。普通使用者不需要安装开发门禁的 REUSE / cargo-deny。
+首次编译需要联网获取固定工具链和锁定依赖。
+确保 `$HOME/.cargo/bin` 在 `PATH` 中。普通用户不需要 REUSE 或 cargo-deny。
+其他系统参考 [Rust 安装说明](https://rust-lang.org/tools/install/)。
 
-## 从新包开始
+## 选择工作方式
 
-先在空工作目录初始化，再准备有已提交 `main` 分支的配方 Git 仓库。
-下面的 `RECIPE_REPOSITORY` 是你选择的配方仓库地址：
+| 输入 | 流程 |
+| --- | --- |
+| 已有 SPEC | `open` 或 `edit` → `check` → `build` |
+| 手写 TOML | `new` → `open --authoring` → `gen --diff` → `gen --apply` → `build` |
 
-```sh
-ruyipack init . --clone "$RECIPE_REPOSITORY"
-ruyipack new example --pkgname example --build-system cmake
-# 留在工作区根目录即可；各命令位置参数都是 WORK。
-# 编辑 example.toml：确认上游信息、源码、依赖、构建选项和文件列表。
-# 自动尝试下载没有摘要的 Source；已有摘要保持原值。
-ruyipack gen example --stdout
-ruyipack gen example
-# 审阅补足后的 TOML / 缓存 SPEC，再显式发布
-ruyipack gen example --spec=auto
-```
+WORK 是开发区名称。`open ed`、`build ed` 和 `shell ed` 使用同一个开发区。
+包名默认与 WORK 同名。用 `--pkgname` 建立不同名称的绑定。
+后续命令使用保存的绑定，不必重复指定包名。
 
-省略 `--clone` 的 `init` 完全离线，不需要 Git、Docker 或网络。
-初始化先完成，再将仓库 clone 到配置的 `recipes` 路径（默认 `openruyi`）；
-Git 或网络失败退出 1，但保留配置和 Git 实际留下的文件，并分别报告初始化成功与 clone 失败。
-重复裸 `init` 不会自动 clone；只有配置有效且目标不存在时，才可显式 `--clone` 重试。
-已有目标（包括空目录和中断目录）不会覆盖；损坏配置也不会自动修复或启动 clone。
+## 初始化工作区
 
-脚手架故意保留未知必填项，未填写时生成失败且不写 SPEC。
-`new example-test --pkgname example` 可创建同一个包的独立开发区；后续 `new example-test`
-读取保存的包绑定。固定的 `checkout/` 保存 Git 工作树，TOML 在其外侧。
-已有包的脚手架不会反向导入 SPEC；`edit WORK` 建立绑定原 SPEC 的 stage。
-`gen` 只认 WORK，可以处理完整配方或这种局部编辑输入，不调用 `new`。
-WORK 记录当前输入；用 `gen WORK --input authoring` 或 `--input edit` 明确切换，不删除另一份输入。
-`--check`、`--stdout`、`--diff` 的显式选择只对本次生效，不改变保存的选择。
-默认落盘只读的 `PKG.resolved.toml` 和候选 SPEC，不改 checkout；
-`--spec=.` 在补足 TOML 同级写 SPEC，`--spec=auto` 才写 checkout。
-下载失败会说明原因而保留缺项；`--offline` 禁止下载，已有摘要不被默认覆盖。
-补足不会猜版本、许可证或构建系统；局部 stage 的补足 TOML 不是整个 SPEC 的反向转换。
-
-## 只读复验源码
+在空目录运行：
 
 ```sh
-ruyipack source verify --manifest work/example/example.toml --format toml
-# 已有 SPEC：无需安装 RPM 或 curl
-ruyipack source verify example
+ruyipack init .
 ```
 
-它重新下载全部远程 Source，包括已有摘要的项，分别报告匹配、不匹配、缺失或失败，
-绝不补写或替换声明；本地材料不参与。全部适用项匹配才退出 0，否则退出 1。
-发现不匹配先调查来源，不要直接重算覆盖。无法静态确定的宏会报告具体原因，
-不会执行 Shell、Lua 或退回外部 RPM；必要时用 `-D 'archive_version 2.0'` 提供明确事实。
+配置保存在 `.ruyiconfig/config.toml`。默认配方仓库路径是 `openruyi`，包目录是 `SPECS`。
+如需同时克隆配方仓库，在初始化命令中添加 `--clone URL`。
+省略此选项时，初始化离线执行；Git 和 Docker 均不是必需工具。
 
-## 修改已有包
+首次初始化尝试读取 Git 全局姓名和邮箱，保存为 `author = "Name <email>"`。
+缺失时留空，并提示修改位置。修改默认作者只影响以后的新模板。
+已有或导入 TOML 的 `spec.contributors` 不会被覆盖。
 
-在工作区根目录或其子目录使用开发区名称：
+重复 `init` 不覆盖配置。克隆失败时，配置和 Git 留下的文件仍保留。
+先检查这些文件，再决定如何重试。详见[初始化规则](reference.md#workspace-initialization)。
+
+## 编写新包
+
+本地开发区不需要 Git 仓库：
 
 ```sh
-ruyipack inspect busybox --editable --field package.version
-ruyipack edit busybox --set package.version=1.37.1 --diff
-ruyipack edit busybox --apply
-ruyipack build busybox
-ruyipack shell busybox
+ruyipack new example --build-system cmake
+ruyipack open example --authoring
+ruyipack gen example --diff
+ruyipack gen example --apply
 ```
 
-首次同名绑定要求已提交 main 中存在 `SPECS/NAME/NAME.spec`；
-`--pkgname` 可明确指定不同包名。只读命令仅建立 `work/WORK/.config.toml`，
-读 main（TOML 记录 commit），不建 checkout。写入时才建立稀疏 checkout。
-已有开发区始终用保存绑定和当前分支，不重置或复制未提交的配方。
-`edit busybox-test --pkgname busybox` 初次绑定后，后续只用 `busybox-test`。
-构建结果在 `work/WORK/build`；`clean WORK` 不删作者 TOML、checkout 或分支。
-详见 [构建说明](build.md)。外部文件必须显式指定：
+在 TOML 中填写版本、许可证、源码、依赖和文件列表。
+未填必需项时，生成失败，不写 SPEC。工具不猜测这些事实。
+`gen` 默认尝试计算缺失摘要；下载失败时说明原因并保留缺项。
+已有摘要保持原值。用 `--offline` 禁止下载。
+
+`gen --diff` 保存候选并显示差异，不改配方。
+审阅后，`gen --apply` 检查并写入 `recipe/` 中的 SPEC。
+`build` 只构建该 SPEC，不自动生成或应用 TOML。
+
+### 导入已有输入
+
+```sh
+ruyipack new review --from-toml existing-authoring.toml
+ruyipack new review-spec --from-dir /path/to/SPECS/ed
+ruyipack open review-spec --authoring
+ruyipack gen review-spec --offline --diff
+```
+
+TOML 导入保留原文。`--from-dir` 导入整个包目录；`--from-spec` 只导入一个 SPEC，不复制相邻材料。
+目录必须有且只有一个顶层 SPEC；没有或多个时拒绝导入，可用 `--from-spec` 指定文件。
+保留原 SPEC 文件名与 Name，不一致只给出警告。
+SPEC 导入保留脚本和未映射内容，只将支持的字段放入 TOML。
+它不是任意 SPEC 的完整逆向转换。
+两种 SPEC 来源均默认使用 SPEC 文件名（去掉 `.spec`）绑定包，不使用源目录名。`--pkgname` 可指定目录绑定，但不改写 SPEC 的 Name。名称不一致或尚不能确定时，commit 给出警告；材料、过期和提交规范检查仍然执行。
+工具不会批量替换脚本、URL 或 Patch 中的名称。
+
+提交时准备配置指定的 Git 仓库，并切换到要提交的分支。运行 `ruyipack commit WORK --dry-run` 查看变化，再运行 `ruyipack commit WORK`。
+
+## 升级已有包
+
+首次使用下列流程时，配置仓库的已提交 main 必须包含 `SPECS/ed/ed.spec`：
+
+```sh
+ruyipack edit ed --set package.version=1.22.6 --hash --diff --apply
+ruyipack build ed
+```
+
+请先确认目标版本存在。`--hash` 按修改后的 URL 刷新所有远程 Source，包括签名文件。
+它计算摘要，不验证签名或来源真实性。下载或准入失败时不写 SPEC。
+`--apply` 已包含局部编辑检查，不必再加 `--check`。
+
+如需先审阅，第一条命令去掉 `--apply`。确认后运行：
+
+```sh
+ruyipack edit ed --apply
+```
+
+首次只读操作仅保存 WORK 绑定，读取已提交 main。
+编辑时将包文件复制到 `work/WORK/recipe/SPECS/PKG/`；已有文件不会被重置，不创建 Git 分支。
+查看相对于 Git 基线的全部改动：
+
+```sh
+ruyipack commit ed --dry-run
+```
+
+### 选择编辑方式
+
+- `open WORK`：直接编辑配方目录中的 SPEC 或 Patch。
+- `edit WORK`：在编辑器中修改 WORK 的唯一 TOML。
+- `edit WORK --menu`：选择字段，再在终端修改原值。
+- `edit WORK --field package.version`：在终端修改指定字段。
+- `edit WORK --set FIELD=VALUE`：无交互赋值。
+
+`edit` 默认不检查、不写 SPEC。加 `--check` 检查候选；加 `--apply` 检查并发布。
+`--diff` 保存候选 SPEC 和`.cache/` 中的 diff，并显示差异。
+候选保留未选中的原始字节。歧义字段必须先解决，不能靠猜测绕过检查。
+
+普通编辑允许保留已确认、未改变的遗留问题。
+修改后的非法值、新增阻断和不完整检查仍阻止发布。
+独立 `check` 判断整份输入；通过不代表构建成功。
+
+外部文件必须显式选择：
 
 ```sh
 ruyipack inspect --spec package.spec --editable --field package.version
-ruyipack edit --spec package.spec --set package.version=2.0 --check --format toml
 ruyipack edit --spec package.spec --set package.version=2.0 --diff
-# 审阅后显式写回；可加 --expect-sha256 固定此前查看的原文。
-ruyipack edit --spec package.spec --set package.version=2.0 --apply --format toml
 ```
 
-完整视图不支持复杂构造时，选择需要的字段；未选内容保留原始字节。
-条件歧义或 Source 隐式编号无法确定时，不要用猜测的编号绕过错误。
-`edit WORK` 默认直接打开持久 TOML，不弹选择菜单、不自动检查、不改 SPEC。
-`--menu` 先选字段再在终端修改原值；`--field package.version` 直接显示该字段原值供修改。
-两者与编辑器共用同一份 TOML；`--set` 可无交互赋值。选字段后仍希望打开编辑器时，加 `--editor COMMAND`；
-`--prepare DIR` 则只保存 TOML，不打开编辑器。
-`--diff` 缓存候选 SPEC 并把 diff 放到输入同级，同时显示它；`--check` 编辑后检查。
-`--apply` 默认检查局部准入，失败不发布。未选中的 SPEC 原文仍逐字节保留。
-`--hash` 刻意刷新全部远程 Source（包括签名）；`--hash-source 0` 只刷新一个，
-都依据候选中的版本和 URL，并把结果放回 stage。`source verify` 则只比较，绝不改声明。
-普通编辑不联网；缺摘要在 authoring 策略中仍是警告，不代表已验证。
+`edit WORK` 和 `gen WORK` 读取同一份 TOML；不用再选择输入来源。
+候选和补足 TOML 都不是隐式输入。完整规则见[命令参考](reference.md)。
 
+## 复验材料
 
-## check 通过后还要做什么？
+```sh
+ruyipack source verify ed
+ruyipack check ed --materials
+```
 
-- 用 `source verify` 复验已有摘要，并核对来源；摘要匹配不代表来源可信。
-- 核对补丁是否适用，以及声明许可证是否符合上游实际内容。
-- 在目标 openRuyi 环境验证 RPM 宏、依赖、构建、测试和产物文件归属。
-- 最后审阅差异并提交；静态 pass 不是无人值守发布许可。
+`source verify` 重新下载远程 Source，对比已声明摘要，不改声明。
+不匹配时先调查来源，不要直接重算覆盖。
+`check --materials` 离线检查已准备的 Source/Patch 文件。
+缺摘要在 authoring 策略中是警告，不代表材料已经验证。
 
-Version/Source URL 变化会产生复核提醒；TOML 的 `review_required` 是待办，
-不是已经执行的检查。也不要把空复核列表理解成原生构建已通过。
-仅应用自己可信工作区内的草稿。批次不是整体原子事务，失败后先查看已写文件。
+静态检查通过后，仍需确认来源、许可证、补丁适用性和目标环境中的构建结果。
+版本或 URL 变化产生的 `review_required` 是待办，不是检查结果。
+仅使用可信的本地草稿。批量发布可能部分成功；失败后先查看已写文件。
 
-更多字段、输出和边界见 [命令与 manifest 参考](reference.md)。
+## 调试补丁与重复构建
 
-## 编辑器补全
+在 `.ruyiconfig/config.toml` 配置编辑器：
 
-运行 `ruyipack schema manifest > ruyipack.schema.json`，在手写 manifest 首行添加
-`#:schema ./ruyipack.schema.json` 并空一行。Tombi 等 TOML 编辑器即可提供字段补全、
-说明和结构诊断；升级工具后重新导出。缺摘要仍允许，宏和跨字段约束仍需
-`gen WORK --offline --check`。这不是 `schema edit WORK --field FIELD` 的选中字段编辑投影。
+```toml
+editor = "code --wait"
+```
 
-普通 `edit` 可以保存未改变且有完整规则输入证据的遗留问题；修改后的非法值、
-新增阻断或不完整检查仍拒绝。`edit --check` 预检同一保存门禁，独立 `check`
-及 submit 策略仍严格。TOML v3 用 `success` 表示操作完成、`admissible` 表示
-候选允许保存，`valid` 只表示整份候选静态检查通过；准备草稿时不输出 `valid` / `admissible`。
+这是可信 shell 命令，不要复制未知来源的配置。
+未配置时沿用 Git 的编辑器选择；`--editor` 可临时覆盖。GUI 编辑器必须等待退出。
 
-机器报告使用 `--format toml`，整份 stdout 是一个 TOML 文档；可选的未观测字段不输出，
-编号 Source 观测用带 `number` 的记录数组。JSON Schema 仍遵循 JSON 标准；
-build 的 TOML outcome 链接完整 `receipt.json`；backend/engine/host 等持久 JSON 回执迁移尚未实现，Docker 的 JSON 边界不变。
+```sh
+ruyipack open ed
+ruyipack build ed --stage prep
+ruyipack shell ed
+ruyipack build ed
+```
+
+`open` 不自动检查或提交。`shell` 需要保留的可用 Mock chroot。
+现场修改不会自动回写配方；下一次构建使用新环境验证。
+成功的 prep 可作为 `shell --export-patch` 的基线，失败的补丁应用现场不能。
+详见[Patch 导出](build.md#prepare-debug-export-a-patch)。
+
+重复构建不必先 clean。旧结果会归档；用以下命令选择清理范围：
+
+```sh
+ruyipack clean ed --history --force
+ruyipack clean ed --force
+```
+
+它们保留配方、TOML、sources 和开发分支。
+删除整个开发区前，先运行 `delete ed --dry-run`。
+Git 开发区有未提交或未合并修改时，删除会被拒绝。
+
+## 编辑器与机器接口
+
+导出 authoring schema：
+
+```sh
+ruyipack schema manifest > ruyipack.schema.json
+```
+
+在 manifest 首行添加 `#:schema ./ruyipack.schema.json`，下一行留空。
+Tombi 等编辑器可提供补全和结构诊断。升级后重新导出 schema。
+宏与跨字段约束仍需 `gen WORK --offline --check`。
+`schema edit` 则描述某份 SPEC 的选中字段，不是 authoring schema。
+
+`--format toml` 输出机器报告；stdout 是一个 TOML 文档。
+`success` 表示操作完成，`valid` 表示静态检查通过，`admissible` 表示允许局部保存。
+未执行的检查不输出成功值。构建报告链接 JSON 回执，schema 仍使用 JSON。
+用 `--debug` 查看内部诊断；它不改变操作行为。

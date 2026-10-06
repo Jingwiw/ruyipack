@@ -19,6 +19,7 @@ use crate::file_output::{self, ConflictAction, EditOutcome, OutputError};
 /// Human diagnostics only: structured reports retain their original paths and levels.
 #[derive(Clone, Copy)]
 pub(crate) enum HumanLevel {
+    Debug,
     Info,
     Warn,
     Error,
@@ -28,6 +29,16 @@ pub(crate) enum HumanLevel {
 pub(crate) struct HumanOutput<W> {
     writer: W,
     color: bool,
+}
+
+static DEBUG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+pub(crate) fn set_debug(enabled: bool) {
+    let _ = DEBUG.set(enabled);
+}
+
+pub(crate) fn debug_enabled() -> bool {
+    DEBUG.get().copied().unwrap_or(false)
 }
 
 pub(crate) fn stderr() -> HumanOutput<io::StderrLock<'static>> {
@@ -52,9 +63,14 @@ impl<W: Write> HumanOutput<W> {
         subject: Option<&Path>,
         message: fmt::Arguments<'_>,
     ) -> io::Result<()> {
-        use dialoguer::console::Style;
+        use console::Style;
+
+        if matches!(level, HumanLevel::Debug) && !debug_enabled() {
+            return Ok(());
+        }
 
         let (prefix, style) = match level {
+            HumanLevel::Debug => ("[DEBUG]", Style::new().dim()),
             HumanLevel::Info => ("[INFO]", Style::new().color256(8).dim()),
             HumanLevel::Warn => ("[WARN]", Style::new().yellow()),
             HumanLevel::Error => ("[ERROR]", Style::new().red()),
@@ -239,15 +255,7 @@ pub(crate) fn write_failure(
 }
 
 #[derive(Args)]
-pub(crate) struct OutputActionOptions {
-    /// Prints the complete candidate without reading or writing the target.
-    #[arg(long, conflicts_with_all = ["diff", "force", "skip_existing"])]
-    pub(crate) stdout: bool,
-    /// Prints a unified diff without writing files, including for a new target.
-    ///
-    /// Successful comparisons exit with status 0, even when the files differ.
-    #[arg(long, conflicts_with_all = ["force", "skip_existing"])]
-    pub(crate) diff: bool,
+pub(crate) struct ConflictOptions {
     /// Replaces an existing target with different content.
     #[arg(short, long, conflicts_with = "skip_existing")]
     force: bool,
@@ -256,89 +264,68 @@ pub(crate) struct OutputActionOptions {
     skip_existing: bool,
 }
 
-impl OutputActionOptions {
-    pub(crate) fn emit(&self, path: &Path, contents: &str) -> Result<(), OutputError> {
-        if self.stdout {
-            return io::stdout()
-                .lock()
-                .write_all(contents.as_bytes())
-                .map_err(OutputError::Stdout);
-        }
-        if self.diff {
-            let existing = match std::fs::read(path) {
-                Ok(existing) => Some(existing),
-                Err(source) if source.kind() == io::ErrorKind::NotFound => None,
-                Err(source) => {
-                    return Err(OutputError::Read {
-                        path: path.to_owned(),
-                        source,
-                    });
-                }
-            };
-            return file_output::write_diff(
-                &mut io::stdout().lock(),
-                path,
-                existing.as_deref(),
-                contents,
-            );
-        }
+impl ConflictOptions {
+    pub(crate) fn publish(&self, path: &Path, contents: &str) -> Result<EditOutcome, OutputError> {
         let outcome = file_output::publish(&mut io::stdout().lock(), path, contents, |path| {
-            self.choose(path)
+            self.choose(path, ReportFormat::Human)
         })?;
         if matches!(outcome, EditOutcome::Skipped(_))
             || matches!(&outcome, EditOutcome::Written(copy) if copy != path)
         {
             write_outcome(&mut stderr(), &outcome).map_err(OutputError::Stderr)?;
         }
-        Ok(())
+        Ok(outcome)
     }
 
     /// Generation has an input file too: reuse publication's conflict-time source checks.
-    pub(crate) fn emit_from(
+    pub(crate) fn publish_from(
         &self,
         path: &Path,
         contents: &str,
         source_path: &Path,
         original: &str,
+        format: ReportFormat,
     ) -> Result<Vec<file_output::EditOutcome>, OutputError> {
-        if self.stdout || self.diff {
-            return self.emit(path, contents).map(|()| Vec::new());
-        }
         let file = file_output::EditFile {
             source_path,
             original,
             contents,
         };
         file_output::run_edits(&mut io::stdout().lock(), &[file], Some(path), |path| {
-            self.choose(path)
+            self.choose(path, format)
         })
         .and_then(|outcomes| {
-            for outcome in &outcomes {
-                if matches!(outcome, file_output::EditOutcome::Skipped(_)) {
-                    write_outcome(&mut stderr(), outcome).map_err(OutputError::Stderr)?;
+            if matches!(format, ReportFormat::Human) {
+                for outcome in &outcomes {
+                    if matches!(outcome, file_output::EditOutcome::Skipped(_)) {
+                        write_outcome(&mut stderr(), outcome).map_err(OutputError::Stderr)?;
+                    }
                 }
             }
             Ok(outcomes)
         })
     }
 
-    fn choose(&self, path: &Path) -> Result<ConflictAction, OutputError> {
+    fn choose(&self, path: &Path, format: ReportFormat) -> Result<ConflictAction, OutputError> {
         if self.force {
             Ok(ConflictAction::Overwrite)
         } else if self.skip_existing {
             Ok(ConflictAction::Skip)
         } else {
-            select_action(path)
+            select_action(path, format)
         }
     }
 }
 
 /// Keeps prompts off redirected input and machine-readable stdout.
-fn select_action(path: &Path) -> Result<ConflictAction, OutputError> {
+fn select_action(path: &Path, format: ReportFormat) -> Result<ConflictAction, OutputError> {
     let conflict = || SelectionError::Conflict {
         path: path.to_path_buf(),
     };
-    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+    if matches!(format, ReportFormat::Toml)
+        || !io::stdin().is_terminal()
+        || !io::stderr().is_terminal()
+    {
         return Err(conflict().into());
     }
     stderr().message(
@@ -351,8 +338,14 @@ fn select_action(path: &Path) -> Result<ConflictAction, OutputError> {
 }
 
 /// Edit conflicts can only involve a single explicit --output destination.
-pub(crate) fn select_edit_action(path: &Path) -> Result<ConflictAction, OutputError> {
-    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+pub(crate) fn select_edit_action(
+    path: &Path,
+    format: ReportFormat,
+) -> Result<ConflictAction, OutputError> {
+    if matches!(format, ReportFormat::Toml)
+        || !io::stdin().is_terminal()
+        || !io::stderr().is_terminal()
+    {
         return Err(SelectionError::EditPrompt.into());
     }
     stderr()
@@ -367,30 +360,81 @@ pub(crate) fn select_edit_action(path: &Path) -> Result<ConflictAction, OutputEr
 
 /// Choose an editing scope, not an implicit full-SPEC conversion. Scripts must
 /// supply their scope explicitly; they never receive terminal menu output.
-pub(crate) fn select_edit_field() -> Result<Option<&'static str>, String> {
+pub(crate) fn select_edit_field(
+    snapshot: &crate::spec::document::Snapshot<'_>,
+) -> Result<Option<String>, String> {
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return Ok(None);
     }
-    let choices = [
-        ("package.version", "Version"),
-        (
-            "sources.0",
-            "Source0 URL and SHA-256 (other numbers: --field sources.N)",
-        ),
-        ("build-requires.rpm", "Build dependencies"),
-        ("package.summary", "Summary"),
-        ("package.license", "License"),
-        ("package.files", "File lists"),
-    ];
-    dialoguer::Select::new()
-        .with_prompt("What do you want to edit? (other fields: --field FIELD)")
-        .items(choices.iter().map(|(_, label)| label))
-        .default(0)
-        .report(false)
-        .interact_opt()
-        .map_err(|e| e.to_string())?
-        .map(|index| Some(choices[index].0))
-        .ok_or_else(|| "edit cancelled; no files changed".into())
+    let mut table = snapshot.document();
+    let mut path = String::new();
+    loop {
+        let mut choices = table.keys().map(String::as_str).collect::<Vec<_>>();
+        if path.is_empty()
+            && crate::spec::document::table::lookup(snapshot.document(), "build.stages.conf")
+                .is_some()
+        {
+            choices.push("conf");
+        }
+        let selected = crate::prompt::choose(
+            if path.is_empty() {
+                "What do you want to edit?"
+            } else {
+                &path
+            },
+            &choices,
+            None,
+        )
+        .map_err(|error| error.to_string())?;
+        if path.is_empty() && selected == "conf" {
+            let mode = crate::prompt::choose("conf", &["-p", "-a", "replace"], None)
+                .map_err(|error| error.to_string())?;
+            let mode = match mode.as_str() {
+                "-p" => "prepend",
+                "-a" => "append",
+                _ => "replace",
+            };
+            return Ok(Some(format!("build.stages.conf.{mode}")));
+        }
+        if !path.is_empty() {
+            path.push('.');
+        }
+        path.push_str(&selected);
+        if path == "build-requires" {
+            let scopes = snapshot.dependency_scopes();
+            let scope = if scopes.len() == 1 {
+                scopes[0].0
+            } else {
+                let labels = scopes
+                    .iter()
+                    .map(|(key, label)| format!("{key}: {label}"))
+                    .collect::<Vec<_>>();
+                let choices = labels.iter().map(String::as_str).collect::<Vec<_>>();
+                let label = crate::prompt::choose(
+                    "Declaration scope (conditions are not evaluated)",
+                    &choices,
+                    None,
+                )
+                .map_err(|error| error.to_string())?;
+                scopes[labels
+                    .iter()
+                    .position(|text| *text == label)
+                    .ok_or("unknown declaration scope")?]
+                .0
+            };
+            let namespace = crate::prompt::choose(
+                "BuildRequires namespace",
+                crate::dependency::NAMESPACES,
+                None,
+            )
+            .map_err(|error| error.to_string())?;
+            return Ok(Some(format!("{scope}.{namespace}")));
+        }
+        match &table[&selected] {
+            toml::Value::Table(next) => table = next,
+            _ => return Ok(Some(path)),
+        }
+    }
 }
 
 fn choose_conflict_action(path: &Path) -> Result<ConflictAction, OutputError> {
@@ -400,15 +444,13 @@ fn choose_conflict_action(path: &Path) -> Result<ConflictAction, OutputError> {
         (ConflictAction::Copy, "Write a copy"),
         (ConflictAction::Overwrite, "Overwrite the current file"),
     ];
-    let selected = dialoguer::Select::new()
-        .with_prompt("Choose an action")
-        .items(choices.iter().map(|(_, label)| label))
-        .default(0)
-        .report(false)
-        .interact_opt()
-        .map_err(SelectionError::Prompt)?;
-    selected
-        .map(|index| choices[index].0)
+    let labels = choices.iter().map(|(_, label)| *label).collect::<Vec<_>>();
+    let selected =
+        crate::prompt::choose("Choose an action", &labels, None).map_err(SelectionError::Prompt)?;
+    choices
+        .iter()
+        .find(|(_, label)| *label == selected)
+        .map(|(action, _)| *action)
         .ok_or_else(|| SelectionError::Cancelled(path.to_path_buf()).into())
 }
 
@@ -419,17 +461,52 @@ enum SelectionError {
     #[error("no action selected; kept {}", .0.display())]
     Cancelled(PathBuf),
     #[error(
-        "output already exists with different content; confirmation requires a terminal\nhelp: use --force to replace it, --output FILE for another path, or --diff to preview the source edit"
+        "output already exists with different content; select an explicit conflict action or use human mode in a terminal\nhelp: use --force to replace it, --output FILE for another path, or --diff to preview the source edit"
     )]
     EditPrompt,
     #[error("failed to read the conflict selection: {0}")]
-    Prompt(#[source] dialoguer::Error),
+    Prompt(#[source] inquire::InquireError),
 }
 
 impl From<SelectionError> for OutputError {
     fn from(error: SelectionError) -> Self {
         Self::Selection(Box::new(error))
     }
+}
+
+/// Machine reports never solicit input, even when invoked from a terminal.
+pub(crate) fn require_confirmation(
+    format: ReportFormat,
+    force: bool,
+    operation: &str,
+) -> io::Result<()> {
+    if !force
+        && (matches!(format, ReportFormat::Toml)
+            || !io::stdin().is_terminal()
+            || !io::stderr().is_terminal())
+    {
+        return Err(io::Error::other(format!(
+            "{operation} requires confirmation; use --force for noninteractive execution"
+        )));
+    }
+    Ok(())
+}
+
+/// Call only after checking interaction policy and displaying the operation's scope.
+pub(crate) fn confirm_removal(force: bool, operation: &str, prompt: &str) -> io::Result<()> {
+    if !force {
+        write!(io::stderr().lock(), "{prompt} [y/N] ")?;
+        io::stderr().flush()?;
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                format!("{operation} cancelled; nothing removed by this operation"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -8,7 +8,11 @@
 
 mod build;
 mod checks;
+mod commit;
+mod pr;
+
 mod cli;
+mod delete;
 mod diagnostic_locations;
 mod edit;
 mod generation;

@@ -60,10 +60,13 @@ impl<'src> Snapshot<'src> {
             digest_markers: BTreeMap::new(),
             lists: BTreeMap::new(),
             copyright: None,
+            dependencies: Vec::new(),
+            scripts: Vec::new(),
         };
         snapshot.list("spec.contributors", "# SPDX-FileContributor: ");
         snapshot.list("spec.comments", "");
-        snapshot.list("build-requires.rpm", "BuildRequires:  ");
+        snapshot.capture_dependencies(spec)?;
+        snapshot.capture_scripts(spec)?;
         let mut coverage = Vec::new();
         let mut comments = Vec::new();
         let mut consumed_assets = Vec::new();
@@ -89,6 +92,10 @@ impl<'src> Snapshot<'src> {
                     comments.push(range);
                 }
                 SpecItem::Preamble(item) => {
+                    if item.tag == Tag::BuildRequires {
+                        coverage.push(checked_range(source, item.data)?);
+                        continue;
+                    }
                     let number = if let Tag::Source(explicit) = item.tag
                         && needs_sources
                     {
@@ -116,6 +123,10 @@ impl<'src> Snapshot<'src> {
                     )?);
                 }
                 SpecItem::Section(section) => {
+                    if super::scripts::is_conf(section) {
+                        coverage.push(checked_range(source, super::scripts::span(section))?);
+                        continue;
+                    }
                     let selected_section =
                         section_field(section).is_some_and(|field| snapshot.selects(field));
                     let selected_comments =
@@ -150,8 +161,27 @@ impl<'src> Snapshot<'src> {
         }
         for field in selection {
             if lookup(&snapshot.document, field).is_none() {
-                return Err(format!("{field}: unknown field or group"));
+                return Err(if field.starts_with("patches") {
+                    format!(
+                        "{field}: Patch insertion is not an editable projection; add PatchN and the file in the recipe directory, then run check WORK --materials and build WORK --stage prep"
+                    )
+                } else {
+                    format!("{field}: unknown field or group")
+                });
             }
+        }
+        if !selection.is_empty() {
+            snapshot.selection = selection
+                .iter()
+                .filter(|field| !field.starts_with("build-requires"))
+                .cloned()
+                .chain(
+                    snapshot
+                        .dependencies
+                        .iter()
+                        .map(|group| group.field.clone()),
+                )
+                .collect();
         }
         Ok(snapshot)
     }
@@ -177,48 +207,38 @@ impl<'src> Snapshot<'src> {
             - value.trim_start_matches([' ', '\t']).len();
         let value_end = range.start + raw.trim_end_matches([' ', '\t']).len();
         let value_range = value_start..value_end;
-        let (field, expected) = match &item.tag {
-            Tag::BuildRequires => {
-                if !name.trim().eq_ignore_ascii_case("BuildRequires") {
-                    return Err("build-requires.rpm: AST/source header mismatch".into());
-                }
-                self.list_item("build-requires.rpm", value_range, range.clone())?;
-                return Ok(range);
+        let (field, expected) = if let Tag::Source(_) = &item.tag {
+            let number = number.ok_or("sources: unresolved Source number")?;
+            let identity = format!("sources.{number}");
+            if lookup(&self.document, &format!("{identity}.url")).is_some() {
+                return Err(format!("{identity}: duplicate Source identity"));
             }
-            Tag::Source(_) => {
-                let number = number.ok_or("sources: unresolved Source number")?;
-                let identity = format!("sources.{number}");
-                if lookup(&self.document, &format!("{identity}.url")).is_some() {
-                    return Err(format!("{identity}: duplicate Source identity"));
-                }
-                let expected = match &item.tag {
-                    Tag::Source(Some(number)) => format!("Source{number}"),
-                    _ => "Source".to_owned(),
-                };
-                let (asset, hash) = source_marker(
-                    source,
-                    previous,
-                    &range,
-                    number,
-                    resolved_sources,
-                    &identity,
-                    name,
-                )?;
-                if !asset.is_empty() {
-                    consumed_assets.push(asset.clone());
-                }
-                let field = format!("{identity}.sha256");
-                if self.selects(&field) {
-                    insert(&mut self.document, &field, Value::String(hash))?;
-                    self.digest_markers.insert(field, asset);
-                }
-                (format!("{identity}.url"), expected)
+            let expected = match &item.tag {
+                Tag::Source(Some(number)) => format!("Source{number}"),
+                _ => "Source".to_owned(),
+            };
+            let (asset, hash) = source_marker(
+                source,
+                previous,
+                &range,
+                number,
+                resolved_sources,
+                &identity,
+                name,
+            )?;
+            if !asset.is_empty() {
+                consumed_assets.push(asset.clone());
             }
-            _ => {
-                let (field, expected) = scalar_preamble(&item.tag)
-                    .ok_or_else(|| format!("preamble: unsupported tag {:?}", item.tag))?;
-                (field.to_owned(), expected.to_owned())
+            let field = format!("{identity}.sha256");
+            if self.selects(&field) {
+                insert(&mut self.document, &field, Value::String(hash))?;
+                self.digest_markers.insert(field, asset);
             }
+            (format!("{identity}.url"), expected)
+        } else {
+            let (field, expected) = scalar_preamble(&item.tag)
+                .ok_or_else(|| format!("preamble: unsupported tag {:?}", item.tag))?;
+            (field.to_owned(), expected.to_owned())
         };
         if !name.trim().eq_ignore_ascii_case(&expected) {
             return Err(format!("{field}: AST/source header mismatch"));
@@ -291,8 +311,8 @@ impl<'src> Snapshot<'src> {
         // Accept a jointly mappable group at once. Split only failed groups to
         // isolate unsupported fields; do not redo the whole walk for each Source.
         fn supported(spec: &ParsedSpec<'_>, fields: &[String], output: &mut Vec<String>) {
-            if Snapshot::capture_selected(spec, fields).is_ok() {
-                output.extend_from_slice(fields);
+            if let Ok(snapshot) = Snapshot::capture_selected(spec, fields) {
+                output.extend_from_slice(snapshot.selection());
             } else if fields.len() > 1 {
                 let (left, right) = fields.split_at(fields.len() / 2);
                 supported(spec, left, output);
@@ -310,7 +330,10 @@ impl<'src> Snapshot<'src> {
             "package.description",
             "package.files",
             "build.system",
-            "build-requires.rpm",
+            "build.stages.conf.prepend",
+            "build.stages.conf.append",
+            "build.stages.conf.replace",
+            "build-requires",
             "spec.release",
             "spec.changelog",
             "spec.comments",
@@ -344,8 +367,9 @@ impl<'src> Snapshot<'src> {
             .source
             .get(range.clone())
             .ok_or_else(|| format!("{field}: invalid value span"))?;
-        validate_text(value, field, multiline)?;
-        insert(&mut self.document, field, Value::String(value.to_owned()))?;
+        let value = super::logical_text(value);
+        validate_text(&value, field, multiline)?;
+        insert(&mut self.document, field, Value::String(value.into_owned()))?;
         self.scalars.push(Scalar {
             field: field.to_owned(),
             range,
@@ -380,7 +404,8 @@ impl<'src> Snapshot<'src> {
             .source
             .get(range.clone())
             .ok_or_else(|| format!("{field}: invalid list span"))?;
-        validate_text(value, field, field == "spec.comments")?;
+        let value = super::logical_text(value);
+        validate_text(&value, field, field == "spec.comments")?;
         let list = self
             .lists
             .get_mut(field)
@@ -392,7 +417,7 @@ impl<'src> Snapshot<'src> {
         lookup_mut(&mut self.document, field)
             .and_then(Value::as_array_mut)
             .ok_or_else(|| format!("{field}: expected array"))?
-            .push(Value::String(value.to_owned()));
+            .push(Value::String(value.into_owned()));
         Ok(())
     }
 
@@ -577,7 +602,7 @@ impl<'src> Snapshot<'src> {
             self.copyright = Some(copyright);
         }
         for range in ordinary {
-            let end = range.end - usize::from(self.source[range.clone()].ends_with('\n'));
+            let end = range.start + strip_line_ending(&self.source[range.clone()]).len();
             self.list_item("spec.comments", range.start..end, range)?;
         }
         Ok(())
@@ -605,7 +630,7 @@ fn source_marker(
             .filter(|asset| source[asset.clone()].starts_with(profile.remote_asset_bare.as_str()));
         if let Some(asset) = marked {
             let hash = profile
-                .remote_asset_digest(source[asset.clone()].trim_end_matches('\n'))
+                .remote_asset_digest(line(source, &asset)?)
                 .map_err(|reason| format!("{identity}.sha256: {reason}"))?
                 .unwrap_or("")
                 .to_owned();
@@ -663,6 +688,7 @@ fn section_field(section: &Section<Span>) -> Option<&'static str> {
         Section::Description { subpkg: None, .. } => Some("package.description"),
         Section::Files { subpkg: None, .. } => Some("package.files"),
         Section::Changelog { .. } => Some("spec.changelog"),
+        section if super::scripts::is_conf(section) => Some("build.stages.conf"),
         _ => None,
     }
 }
@@ -688,6 +714,7 @@ fn reject_selected_conditional(
 ) -> Result<(), String> {
     for item in items {
         let field = match item {
+            SpecItem::Preamble(item) if item.tag == Tag::BuildRequires => None,
             SpecItem::Preamble(item) => preamble_field(&item.tag),
             SpecItem::Section(section) => section_field(section).map(str::to_owned),
             SpecItem::Comment(comment) => {
@@ -729,7 +756,7 @@ fn line<'a>(source: &'a str, range: &Range<usize>) -> Result<&'a str, String> {
     let raw = source
         .get(range.clone())
         .ok_or("source: invalid line span")?;
-    let raw = raw.strip_suffix('\n').unwrap_or(raw);
+    let raw = strip_line_ending(raw);
     if raw.contains('\n') {
         return Err("source: multiline preamble, comment or file entry is unsupported".into());
     }
@@ -756,4 +783,11 @@ fn validate_coverage(
         return Err("source: unmapped trailing content".into());
     }
     Ok(())
+}
+
+fn strip_line_ending(value: &str) -> &str {
+    value
+        .strip_suffix("\r\n")
+        .or_else(|| value.strip_suffix('\n'))
+        .unwrap_or(value)
 }

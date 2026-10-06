@@ -246,6 +246,10 @@ fn target_metadata(path: &Path) -> Result<Option<fs::Metadata>, OutputError> {
             "target {} is a symbolic link",
             path.display()
         ))),
+        Ok(metadata) if !metadata.is_file() => Err(OutputError::Read {
+            path: path.to_path_buf(),
+            source: io::Error::new(io::ErrorKind::InvalidInput, "target must be a regular file"),
+        }),
         Ok(metadata) => Ok(Some(metadata)),
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(OutputError::Read {
@@ -279,6 +283,11 @@ fn read_target(path: &Path) -> Result<Vec<u8>, OutputError> {
         path: path.to_path_buf(),
         source,
     })
+}
+
+/// Compare a candidate with the publication target, without changing either.
+pub(crate) fn target_diff(path: &Path, contents: &str) -> Result<String, OutputError> {
+    diff_text(path, read_optional_target(path)?.as_deref(), contents)
 }
 
 pub(crate) fn write_diff(

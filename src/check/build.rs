@@ -8,14 +8,14 @@
 
 use super::RuleResult;
 use crate::{
-    check_report::{Finding, IncompleteReason, SelectedRule, Severity},
+    check_report::{BuildRequirementsEvidence, Finding, SelectedRule, Severity},
     profile::buildsystems,
     source_location::SourceLocation,
 };
 
 pub(super) const RULE: SelectedRule = SelectedRule {
     code: "RPK004",
-    severity: Severity::Deny,
+    severity: Severity::Warn,
 };
 
 #[derive(Default)]
@@ -33,33 +33,44 @@ impl BuildRequirements {
         let Some(contract) = buildsystems::contract(system) else {
             return RuleResult::default();
         };
-        let findings: Vec<_> = contract.build_requires.iter().filter(|required| !self.direct.contains(required))
-            .map(|required| Finding {
+        let mut declared = self.direct.clone();
+        declared.sort();
+        declared.dedup();
+        let suggested = contract
+            .build_requires
+            .iter()
+            .filter(|required| !declared.contains(required))
+            .cloned()
+            .collect::<Vec<_>>();
+        if suggested.is_empty() {
+            return RuleResult::default();
+        }
+        let message = format!(
+            "BuildRequires: consider explicitly declaring {} (BuildSystem={system}{})",
+            suggested.join(", "),
+            if self.uncertain {
+                "; not statically confirmed"
+            } else {
+                ""
+            }
+        );
+        let mut inputs = vec![system.clone()];
+        inputs.extend(declared.iter().cloned());
+        RuleResult {
+            findings: vec![Finding {
                 producer: "ruyipack",
                 code: RULE.code,
-                severity: if self.uncertain { Severity::Warn } else { RULE.severity },
-                message: if self.uncertain {
-                    format!("build-requires.rpm: cannot confirm {required:?} required by the openRuyi {system} declaration contract; conditional or unevaluated requirements need RPM validation")
-                } else {
-                    format!("build-requires.rpm: declare {required:?} required by the openRuyi {system} declaration contract (not measured tool usage)")
-                },
+                severity: RULE.severity,
+                message,
                 span: span.clone(),
-                // A confirmed violation depends on the unique literal system and
-                // every direct requirement. Uncertain contexts have no proof.
-                rule_inputs: (!self.uncertain).then(|| {
-                    let mut inputs = vec![system.clone(), required.clone()];
-                    inputs.extend(self.direct.iter().cloned());
-                    inputs
+                rule_inputs: (!self.uncertain).then_some(inputs),
+                build_requirements: Some(BuildRequirementsEvidence {
+                    build_system: system.clone(),
+                    declared,
+                    suggested,
+                    uncertain: self.uncertain,
                 }),
-            }).collect();
-        let incomplete_reasons = if self.uncertain && !findings.is_empty() {
-            vec![IncompleteReason::UnresolvedBuildRequirements]
-        } else {
-            Vec::new()
-        };
-        RuleResult {
-            findings,
-            incomplete_reasons,
+            }],
             ..RuleResult::default()
         }
     }

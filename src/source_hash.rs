@@ -40,8 +40,12 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         let parsed = crate::spec::ParsedSpec::parse(&input.source);
         let resolved = crate::spec::sources::resolve(&parsed, &options.defines)
             .map_err(|error| HashError::Source(source::Error::resolution(error)))?;
-        let result = source::download_selected(&resolved, &[options.source_number])
-            .map_err(HashError::Source)?;
+        let result = source::download_selected(
+            &resolved,
+            &[options.source_number],
+            input.sources().as_deref(),
+        )
+        .map_err(HashError::Source)?;
         if !input
             .is_unchanged()
             .map_err(|e| HashError::Input(e.to_string()))?

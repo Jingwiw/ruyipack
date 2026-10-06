@@ -15,3 +15,8 @@ SPDX-License-Identifier = "MulanPSL-2.0"
 path = "environments/openruyi/target.json"
 SPDX-FileCopyrightText = ["(C) 2026 Institute of Software, Chinese Academy of Sciences (ISCAS)", "(C) 2026 openRuyi Project Contributors"]
 SPDX-License-Identifier = "MulanPSL-2.0"
+
+[[annotations]]
+path = "templates/pr.md"
+SPDX-FileCopyrightText = "(C) 2026 openRuyi Project Contributors"
+SPDX-License-Identifier = "MulanPSL-2.0"

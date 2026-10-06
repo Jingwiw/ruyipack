@@ -66,7 +66,7 @@ fn inventory_is_offline_ordered_and_bound_to_actual_staged_bytes() {
         "Source3 {}: 8 bytes sha256={hash}",
         materials.canonicalize().unwrap().join("archive").display()
     )));
-    assert!(text.contains("PASS: local material snapshot only"));
+    assert!(text.contains("Materials: PASS."));
     fs::write(materials.join("archive"), b"replaced").unwrap();
     let output = run("toml");
     assert_eq!(output.status.code(), Some(1));
@@ -82,7 +82,7 @@ fn inventory_is_offline_ordered_and_bound_to_actual_staged_bytes() {
     let human = run("human");
     assert_eq!(human.status.code(), Some(1));
     assert!(output_text(&human.stdout).contains("digest-mismatch"));
-    assert!(output_text(&human.stdout).contains("FAIL: local material snapshot only"));
+    assert!(output_text(&human.stdout).contains("Materials: FAIL."));
     assert_eq!(fs::read_to_string(&input).unwrap(), spec);
     assert_eq!(fs::read(materials.join("archive")).unwrap(), b"replaced");
 }

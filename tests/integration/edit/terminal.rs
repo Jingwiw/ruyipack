@@ -27,7 +27,7 @@ fn selected_inline_edit_rejects_nonterminal_without_creating_stage() {
             String::from_utf8(output.stderr).unwrap()
         };
         assert!(message.contains("--set FIELD=VALUE"), "{message}");
-        assert!(!directory.path().join(".ruyipack-stage").exists());
+        assert!(!directory.path().join(".ruyipack-draft").exists());
         assert_eq!(
             fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
             SPEC
@@ -42,7 +42,7 @@ fn menu_and_selected_field_edit_existing_values_in_a_real_terminal() {
     // would otherwise be consumed by the terminal before the prompt reads them.
     const TERMINAL: &str = r#"
 import errno, fcntl, os, pty, select, signal, struct, sys, termios, time
-binary, mode = sys.argv[1:]
+binary, mode, replacement = sys.argv[1:]
 args = [binary, 'edit', '--spec=ed.spec', mode, '--diff']
 pid, fd = pty.fork()
 if pid == 0:
@@ -51,6 +51,7 @@ if pid == 0:
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 120, 0, 0))
 output = bytearray()
 menu_selected, value_entered = mode != '--menu', False
+branch_selected = mode != '--menu'
 deadline = time.monotonic() + 15
 try:
     while time.monotonic() < deadline:
@@ -63,10 +64,16 @@ try:
             if not chunk: break
             output.extend(chunk)
         if not menu_selected and b'What do you want to edit?' in output:
-            os.write(fd, b'\r')
+            os.write(fd, b'pack\t\r')
             menu_selected = True
+        if not branch_selected and b'? package ' in output:
+            os.write(fd, b'version\r')
+            branch_selected = True
         if not value_entered and b'package.version: 1.22.5' in output and not termios.tcgetattr(fd)[3] & termios.ICANON:
-            os.write(fd, b'\x7f' * 6 + b'1.22.6\r')
+            os.write(fd, b'\x7f' * 6 + replacement.encode() + b'\r')
+            value_entered = True
+        if not value_entered and mode == '--field=build-requires.rpm' and b'build-requires.rpm: [' in output and not termios.tcgetattr(fd)[3] & termios.ICANON:
+            os.write(fd, b'\r')
             value_entered = True
     else:
         os.killpg(pid, signal.SIGKILL)
@@ -77,15 +84,35 @@ finally:
 sys.stdout.buffer.write(output)
 sys.exit(os.waitstatus_to_exitcode(status))
 "#;
-    for mode in ["--menu", "--field=package.version"] {
+    for (mode, replacement) in [
+        ("--menu", "1.22.6"),
+        ("--field=package.version", "1.22.6"),
+        ("--field=package.version", "1.22.5"),
+        ("--field=build-requires.rpm", ""),
+    ] {
         let directory = fixture(SPEC);
         let output = std::process::Command::new("python3")
             .current_dir(directory.path())
-            .args(["-c", TERMINAL, env!("CARGO_BIN_EXE_ruyipack"), mode])
+            .args([
+                "-c",
+                TERMINAL,
+                env!("CARGO_BIN_EXE_ruyipack"),
+                mode,
+                replacement,
+            ])
             .output()
             .unwrap();
         assert!(output.status.success(), "{output:?}");
         let transcript = String::from_utf8_lossy(&output.stdout);
+        if replacement != "1.22.6" {
+            assert!(transcript.contains("Nothing changed"), "{transcript}");
+            assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+            assert_eq!(
+                fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+                SPEC
+            );
+            continue;
+        }
         assert!(
             transcript.contains("package.version: 1.22.5"),
             "{transcript}"
@@ -94,7 +121,7 @@ sys.exit(os.waitstatus_to_exitcode(status))
             transcript.contains("package.version: 1.22.6"),
             "{transcript}"
         );
-        let stage = directory.path().join(".ruyipack-stage/ed");
+        let stage = directory.path().join(".ruyipack-draft/ed");
         let values: toml::Value =
             toml::from_str(&fs::read_to_string(stage.join("ed.toml")).unwrap()).unwrap();
         assert_eq!(values["package"]["version"].as_str(), Some("1.22.6"));

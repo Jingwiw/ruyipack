@@ -19,11 +19,14 @@ use std::{
     path::Path,
 };
 
+const UPGRADE_REVIEW: &[&str] = &["source-authenticity", "patch-applicability", "native-build"];
+
 #[derive(Serialize)]
 pub(super) struct Envelope<'a> {
     format_version: u32,
     tool: crate::tool::Identity,
     scope: &'static str,
+    upgrade: Option<&'a crate::check::upgrade::Report>,
     operation: &'static str,
     success: bool,
     valid: Option<bool>,
@@ -33,15 +36,17 @@ pub(super) struct Envelope<'a> {
     error: Option<&'a super::EditError>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     written: Vec<Cow<'a, str>>,
+    deleted_materials: Vec<Cow<'a, str>>,
 }
 
 #[derive(Serialize)]
 struct File<'a> {
     source: Cow<'a, str>,
+    created_work: bool,
     draft: Option<Cow<'a, str>>,
-    stage: Cow<'a, str>,
     original_sha256: String,
     selected_fields: &'a [String],
+    source_hashes: Option<&'a crate::source::SourceHashes>,
     #[serde(flatten)]
     state: State<'a>,
 }
@@ -49,7 +54,10 @@ struct File<'a> {
 #[derive(Serialize)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 enum State<'a> {
-    PendingEdit { error: Option<&'a super::EditError> },
+    PendingEdit {
+        changed: Option<bool>,
+        error: Option<&'a super::EditError>,
+    },
     Candidate(Box<CandidateState<'a>>),
 }
 
@@ -57,9 +65,9 @@ enum State<'a> {
 struct CandidateState<'a> {
     changed: bool,
     profile: crate::profile::Identity,
+    changed_fields: &'a [String],
     review_triggers: &'a [String],
     review_required: &'static [&'static str],
-    source_hashes: Option<&'a crate::source::SourceHashes>,
     #[serde(flatten)]
     checked: Option<Checked<'a>>,
     #[serde(flatten)]
@@ -96,17 +104,13 @@ impl<'a> File<'a> {
             Some(Ok(candidate)) => State::Candidate(Box::new(CandidateState {
                 changed: candidate.spec.source() != item.snapshot.source(),
                 profile: crate::profile::identity(),
+                changed_fields: &candidate.changed_fields,
                 review_triggers: &candidate.review_triggers,
                 review_required: if candidate.review_triggers.is_empty() {
                     &[]
                 } else {
-                    &[
-                        "source-content-and-digests",
-                        "patch-applicability",
-                        "native-build",
-                    ]
+                    UPGRADE_REVIEW
                 },
-                source_hashes: item.source_hashes.as_ref(),
                 checked: item.baseline.as_ref().zip(candidate.report.as_ref()).map(
                     |(baseline, report)| Checked {
                         valid: report.is_success(),
@@ -124,15 +128,17 @@ impl<'a> File<'a> {
                 }),
             })),
             check => State::PendingEdit {
+                changed: item.input_changed,
                 error: check.and_then(|check| check.as_ref().err()),
             },
         };
         Self {
             source: item.path.to_string_lossy(),
+            created_work: item.created_work,
             draft: item.draft.as_ref().map(|path| path.to_string_lossy()),
-            stage: item.stage_dir.to_string_lossy(),
             original_sha256: crate::utf8_file::sha256(item.snapshot.source()),
             selected_fields: item.snapshot.selection(),
+            source_hashes: item.source_hashes.as_ref(),
             state,
         }
     }
@@ -140,7 +146,7 @@ impl<'a> File<'a> {
 
 pub(super) fn envelope<'a>(
     result: &'a Result<super::EditResult, super::EditError>,
-    options: &super::Options,
+    options: &'a super::Options,
 ) -> Envelope<'a> {
     let files = result.as_ref().ok().map_or_else(Vec::new, |result| {
         result.inputs.iter().map(File::from_edit).collect()
@@ -178,19 +184,45 @@ pub(super) fn envelope<'a>(
                 .collect()
         });
     Envelope {
-        format_version: 4,
+        format_version: 5,
+        deleted_materials: result
+            .as_ref()
+            .ok()
+            .filter(|r| r.publication.is_ok() && options.apply)
+            .map_or_else(Vec::new, |r| {
+                r.inputs
+                    .iter()
+                    .flat_map(|item| {
+                        item.result()
+                            .ok()
+                            .into_iter()
+                            .flat_map(|c| &c.removed_materials)
+                    })
+                    .filter(|(path, _)| !path.exists())
+                    .map(|(path, _)| path.to_string_lossy())
+                    .collect()
+            }),
+        upgrade: options.upgrade.as_deref(),
         tool: crate::tool::identity(),
-        scope: "edit-stage",
-        operation: if options.apply {
+        scope: if options.repair_missing {
+            "check"
+        } else {
+            "edit"
+        },
+        operation: if options.repair_missing {
+            "auto-fix"
+        } else if options.apply {
             "apply"
         } else if options.check {
             "check"
         } else if options.diff {
             "diff"
         } else {
-            "stage"
+            "edit"
         },
-        success: result.as_ref().is_ok_and(super::EditResult::is_success),
+        success: result
+            .as_ref()
+            .is_ok_and(|result| result.success_for(options)),
         valid: result
             .as_ref()
             .ok()
@@ -233,31 +265,33 @@ pub(super) fn write_changes(
         .filter(|(finding, retained)| finding.severity == Severity::Deny && *retained)
         .count();
     writer.message(
-        if count(candidate) > inherited {
-            HumanLevel::Error
-        } else {
-            HumanLevel::Info
-        },
+        HumanLevel::Debug,
         Some(path),
         format_args!(
-            "candidate static blockers: new {}, inherited {}, resolved {}",
+            "static rule violations: new {}, inherited {}, resolved {}",
             count(candidate) - inherited,
             inherited,
             count(baseline) - inherited
         ),
     )?;
+    let admissible = candidate.allows_edit(baseline);
     let mut legacy = BTreeMap::new();
     for (finding, retained) in &changes {
-        if *retained {
+        if finding.build_requirements.is_some() {
+            finding.write_human(writer)?;
+        } else if *retained {
             legacy
                 .entry((finding.code, finding.span.start))
-                .or_insert((0usize, finding.severity.human_level()))
-                .0 += 1;
-            // Unknown rule inputs cannot authorize retaining a blocker. Keep
-            // its concrete cause visible even when the issue is inherited.
-            if finding.severity == Severity::Deny && finding.rule_inputs.is_none() {
-                finding.write_human(writer)?;
-            }
+                .or_insert((
+                    Vec::new(),
+                    if admissible {
+                        HumanLevel::Warn
+                    } else {
+                        finding.severity.human_level()
+                    },
+                ))
+                .0
+                .push(finding.message.as_str());
         } else {
             finding.write_human(writer)?;
         }
@@ -283,7 +317,7 @@ pub(super) fn write_changes(
             .count();
     if warning_count(baseline) + warning_count(candidate) != 0 {
         writer.message(
-            HumanLevel::Warn,
+            HumanLevel::Debug,
             None,
             format_args!(
                 "warnings: new {}, inherited {}, resolved {}",
@@ -293,18 +327,16 @@ pub(super) fn write_changes(
             ),
         )?;
     }
-    for ((code, start), (count, level)) in legacy {
+    for ((code, start), (messages, level)) in legacy {
         writer.diagnostic(
             level,
             Some(start),
             Some(code),
             format_args!(
-                "inherited {count} issue(s){}",
-                match code {
-                    "RPK004" => " in the declared BuildSystem contract",
-                    "RPK005" => " in Source digests",
-                    _ => "",
-                }
+                "inherited {}: {}; edit={}",
+                messages.len(),
+                messages.join("; "),
+                if admissible { "allowed" } else { "blocked" }
             ),
         )?;
     }
@@ -325,16 +357,7 @@ fn write_guidance(
             HumanLevel::Info,
             None,
             format_args!(
-                "Source digests: use edit --hash-source N to fill a digest; source verify compares downloaded bytes without changing declarations."
-            ),
-        )?;
-    }
-    if !candidate.is_success() {
-        writer.message(
-            HumanLevel::Info,
-            None,
-            format_args!(
-                "Full candidate evidence: use edit --check --format toml with the same inputs; check reports the current SPEC."
+                "Source digests: refresh with edit --hash-source N; compare with source verify."
             ),
         )?;
     }
@@ -375,18 +398,50 @@ pub(super) fn write_candidates(inputs: &[super::Edit], checked: bool) -> io::Res
     for item in inputs {
         let check = item.candidate.as_ref().expect("candidate attempted");
         if let Ok(candidate) = check {
+            if inputs.len() > 1 || candidate.spec.source() != item.snapshot.source() {
+                output_cli::stderr().message(
+                    HumanLevel::Info,
+                    Some(&item.subject),
+                    format_args!("candidate"),
+                )?;
+            }
             if let (Some(baseline), Some(report)) = (&item.baseline, &candidate.report) {
                 write_changes(&item.subject, baseline, report, &mut output_cli::stderr())?;
+            }
+            if !candidate.changed_fields.is_empty() {
+                output_cli::stderr().message(
+                    HumanLevel::Info,
+                    Some(&item.subject),
+                    format_args!("candidate changed {}", candidate.changed_fields.join(", ")),
+                )?;
+            }
+            if let Some(hashes) = &item.source_hashes {
+                output_cli::stderr().message(
+                    HumanLevel::Debug,
+                    Some(&item.subject),
+                    format_args!(
+                        "digest computation: sources={:?}",
+                        hashes.sources.keys().collect::<Vec<_>>()
+                    ),
+                )?;
             }
             if !candidate.review_triggers.is_empty() {
                 output_cli::stderr().message(
                     HumanLevel::Warn,
                     Some(&item.subject),
                     format_args!(
-                        "review required after changing {}: source authenticity, unrefreshed digests, patch applicability and native build are not verified",
+                        "unverified {}; triggers={}",
+                        UPGRADE_REVIEW.join(", "),
                         candidate.review_triggers.join(", ")
                     ),
                 )?;
+                if item.source_hashes.is_none() {
+                    output_cli::stderr().message(
+                        HumanLevel::Warn,
+                        Some(&item.subject),
+                        format_args!("source-digests: not-refreshed"),
+                    )?;
+                }
             }
         }
         if checked {
@@ -401,9 +456,9 @@ pub(super) fn write_candidates(inputs: &[super::Edit], checked: bool) -> io::Res
                 format_args!(
                     "{}",
                     if admissible {
-                        "admissible"
+                        "check: passed"
                     } else {
-                        "not admissible"
+                        "check: failed"
                     }
                 ),
             )?;
@@ -414,7 +469,62 @@ pub(super) fn write_candidates(inputs: &[super::Edit], checked: bool) -> io::Res
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failed_application_keeps_observed_upgrade() {
+        let options = super::super::Options {
+            upgrade: Some(Box::new(crate::check::upgrade::Report {
+                project: Some("example".into()),
+                current: Some("1".into()),
+                candidate: Some("2".into()),
+                status: "upgrade-available",
+                error: None,
+                input_sha256: "baseline".into(),
+            })),
+            ..Default::default()
+        };
+        let result = Err(super::super::EditError::from("download failed"));
+        let text = toml::to_string(&super::envelope(&result, &options)).unwrap();
+        let report: toml::Table = toml::from_str(&text).unwrap();
+        assert_eq!(report["upgrade"]["candidate"].as_str(), Some("2"));
+        assert_eq!(report["success"].as_bool(), Some(false));
+        assert!(report.contains_key("error"));
+    }
     use super::*;
+
+    #[test]
+    fn local_admission_and_resolved_warnings_determine_human_levels() {
+        let source = include_str!("../../tests/fixtures/ed.spec");
+        let legacy = source.replace("https://www.gnu.org/software/ed/", "ftp://example.org/");
+        let baseline_spec = crate::spec::ParsedSpec::parse(&legacy);
+        let clean_spec = crate::spec::ParsedSpec::parse(source);
+        let baseline = crate::check::analyze(&baseline_spec, crate::check::Policy::Authoring, &[]);
+        let clean = crate::check::analyze(&clean_spec, crate::check::Policy::Authoring, &[]);
+        for (before, after, allowed) in [(&baseline, &baseline, true), (&clean, &baseline, false)] {
+            assert_eq!(after.allows_edit(before), allowed);
+            let mut bytes = Vec::new();
+            let mut writer = output_cli::HumanOutput::new(&mut bytes, false);
+            write_changes(Path::new("pkg"), before, after, &mut writer).unwrap();
+            let output = String::from_utf8(bytes).unwrap();
+            assert_eq!(output.contains("[ERROR]"), !allowed, "{output}");
+            assert_eq!(output.contains("edit=allowed"), allowed, "{output}");
+        }
+        let missing = source.replace(
+            "#!RemoteAsset:  sha256:56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc",
+            "#!RemoteAsset",
+        );
+        let parsed = crate::spec::ParsedSpec::parse(&missing);
+        let before = crate::check::analyze(&parsed, crate::check::Policy::Authoring, &[]);
+        let mut bytes = Vec::new();
+        write_changes(
+            Path::new("pkg"),
+            &before,
+            &clean,
+            &mut output_cli::HumanOutput::new(&mut bytes, false),
+        )
+        .unwrap();
+        let output = String::from_utf8(bytes).unwrap();
+        assert!(!output.contains("[WARN]"), "{output}");
+    }
 
     #[test]
     fn inherited_source_issues_keep_their_distinct_candidate_lines() {
@@ -441,11 +551,6 @@ mod tests {
         )
         .unwrap();
         let output = String::from_utf8(output).unwrap();
-        assert!(
-            output.contains("[INFO] pkg: candidate static blockers:"),
-            "{output}"
-        );
-        assert_eq!(output.matches("pkg:").count(), 1, "{output}");
         let sources: Vec<_> = candidate
             .findings()
             .iter()
@@ -455,7 +560,7 @@ mod tests {
         for source in sources {
             assert!(
                 output.contains(&format!(
-                    "[WARN] spec[{}:{}] [RPK005]: inherited 1 issue(s)",
+                    "[WARN] spec[{}:{}] [RPK005]: inherited 1:",
                     source.span.start.0, source.span.start.1
                 )),
                 "{output}"

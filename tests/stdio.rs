@@ -22,7 +22,7 @@ fn workspace() -> tempfile::TempDir {
     assert!(initialized.status.success(), "{initialized:?}");
     let work = directory.path().join("work/review");
     fs::create_dir_all(&work).unwrap();
-    fs::write(work.join(".config.toml"), "pkg = \"ed\"\n").unwrap();
+    fs::write(work.join(".config.toml"), "pkg = 'ed'\nkind = 'local'\n").unwrap();
     fs::write(work.join("ed.toml"), MANIFEST).expect("write WORK manifest");
     directory
 }
@@ -31,7 +31,7 @@ fn gen_command(directory: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ruyipack"));
     command
         .current_dir(directory)
-        .args(["gen", "review", "--spec=ed.spec"]);
+        .args(["gen", "review", "--output=ed.spec"]);
     command
 }
 
@@ -72,36 +72,13 @@ fn terminal_prefix_color_respects_no_color_and_dumb_term() {
         (true, "xterm", false),
         (false, "dumb", false),
     ] {
-        let mut command = Command::new("script");
-        command
-            .current_dir(directory.path())
-            .env("TERM", term)
-            .env("CLICOLOR_FORCE", "1");
+        let mut command = terminal_command(directory.path(), &["inspect", "--spec=warning.spec"]);
+        command.env("TERM", term).env("CLICOLOR_FORCE", "1");
         if no_color {
             command.env("NO_COLOR", "1");
         } else {
             command.env_remove("NO_COLOR");
         }
-        #[cfg(target_os = "macos")]
-        command.args([
-            "-q",
-            "/dev/null",
-            env!("CARGO_BIN_EXE_ruyipack"),
-            "inspect",
-            "--spec=warning.spec",
-        ]);
-        #[cfg(target_os = "linux")]
-        command.args([
-            "-q",
-            "-e",
-            "-c",
-            &shell_words::join([
-                env!("CARGO_BIN_EXE_ruyipack"),
-                "inspect",
-                "--spec=warning.spec",
-            ]),
-            "/dev/null",
-        ]);
         let output = command.output().unwrap();
         assert!(output.status.success(), "{output:?}");
         let text = String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n");
@@ -123,6 +100,101 @@ fn terminal_prefix_color_respects_no_color_and_dumb_term() {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn terminal_command(directory: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new("script");
+    command.current_dir(directory);
+    #[cfg(target_os = "macos")]
+    command
+        .args(["-q", "/dev/null", env!("CARGO_BIN_EXE_ruyipack")])
+        .args(args);
+    #[cfg(target_os = "linux")]
+    command.args([
+        "-q",
+        "-e",
+        "-c",
+        &shell_words::join(
+            std::iter::once(env!("CARGO_BIN_EXE_ruyipack")).chain(args.iter().copied()),
+        ),
+        "/dev/null",
+    ]);
+    command
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn machine_operations_never_prompt_even_in_a_terminal() {
+    use std::{os::unix::process::CommandExt, sync::mpsc, time::Duration};
+
+    let directory = workspace();
+    fs::write(
+        directory.path().join("input.spec"),
+        include_str!("fixtures/ed.spec"),
+    )
+    .unwrap();
+    let build = directory.path().join("retained");
+    fs::create_dir(&build).unwrap();
+    fs::write(
+        build.join("receipt.json"),
+        r#"{"format_version":1,"backend":"compose","resources_retained":false}"#,
+    )
+    .unwrap();
+    for args in [
+        vec!["clean", "--build-dir=retained", "--format=toml"],
+        vec![
+            "gen",
+            "review",
+            "--offline",
+            "--output=result.spec",
+            "--format=toml",
+        ],
+        vec![
+            "edit",
+            "--spec=input.spec",
+            "--set=package.version=2",
+            "--apply",
+            "--output=result.spec",
+            "--format=toml",
+        ],
+    ] {
+        fs::write(directory.path().join("result.spec"), "retain me").unwrap();
+        let mut command = terminal_command(directory.path(), &args);
+        command
+            .process_group(0)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        let input = child.stdin.take().unwrap();
+        let pid = rustix::process::Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
+        let (send, receive) = mpsc::channel();
+        let waiter = std::thread::spawn(move || send.send(child.wait_with_output()).unwrap());
+        let result = receive.recv_timeout(Duration::from_secs(10));
+        if result.is_err() {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
+        let output = result
+            .unwrap_or_else(|error| {
+                let _ = receive.recv();
+                panic!("machine report waited for terminal input: {error}");
+            })
+            .unwrap();
+        drop(input);
+        waiter.join().unwrap();
+        let text = String::from_utf8(output.stdout)
+            .unwrap()
+            .replace("\r\n", "\n");
+        let report: toml::Value = toml::from_str(&text).expect("one TOML report, no menu or diff");
+        assert_eq!(report["success"].as_bool(), Some(false), "{report}");
+        assert!(report.get("error").is_some(), "{report}");
+        assert!(build.join("receipt.json").is_file());
+        assert_eq!(
+            fs::read_to_string(directory.path().join("result.spec")).unwrap(),
+            "retain me"
+        );
+    }
+}
+
 fn closed_pipe() -> std::process::Stdio {
     let (reader, writer) = std::io::pipe().unwrap();
     drop(reader);
@@ -140,6 +212,7 @@ fn disconnected_stdout_returns_an_error_without_panicking() {
 
     for args in [
         ["check", "--spec=ed.spec", "--format", "toml"].as_slice(),
+        &["completions", "zsh"],
         &["inspect", "--spec=ed.spec"],
         &["inspect", "--spec=ed.spec", "--format", "toml"],
         &["gen", "review", "--stdout"],
@@ -175,33 +248,12 @@ fn disconnected_stdout_returns_an_error_without_panicking() {
             .unwrap();
         assert_eq!(result.status.code(), Some(1), "{args:?}: {result:?}");
         let stderr = String::from_utf8_lossy(&result.stderr);
-        let mut lines = stderr.lines();
-        if args.contains(&"--set") {
-            assert!(
-                lines
-                    .next()
-                    .unwrap()
-                    .starts_with("[INFO] ed.spec: stage saved:"),
-                "{stderr}"
-            );
-            if args.contains(&"--stdout") {
-                assert!(
-                    lines
-                        .next()
-                        .unwrap()
-                        .contains("review required after changing package.version:"),
-                    "{stderr}"
-                );
-            }
-        }
         assert!(
-            lines
-                .next()
-                .unwrap()
-                .starts_with("[ERROR] failed to write output to stdout:"),
+            stderr
+                .lines()
+                .any(|line| line.starts_with("[ERROR] failed to write output to stdout:")),
             "{args:?}: {result:?}"
         );
-        assert!(lines.next().is_none(), "{stderr}");
     }
 }
 

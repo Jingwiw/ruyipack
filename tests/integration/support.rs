@@ -123,7 +123,7 @@ pub fn authoring_workspace(
     fs::create_dir_all(&directory).unwrap();
     fs::write(
         directory.join(".config.toml"),
-        format!("pkg = {package:?}\ninput = \"authoring\"\n"),
+        format!("pkg = {package:?}\nkind = 'local'\n"),
     )
     .unwrap();
     fs::write(directory.join(format!("{package}.toml")), source).unwrap();
@@ -137,7 +137,13 @@ pub fn recipe_workspace(
     package: &str,
     source: &str,
 ) -> std::path::PathBuf {
-    let development = authoring_workspace(root, work, package, "invalid authoring TOML!\n");
+    let development = authoring_workspace(root, work, package, "");
+    fs::remove_file(development.join(format!("{package}.toml"))).unwrap();
+    fs::write(
+        development.join(".config.toml"),
+        format!("pkg = {package:?}\n"),
+    )
+    .unwrap();
     let recipes = root.join("openruyi");
     fs::create_dir_all(recipes.join("SPECS").join(package)).unwrap();
     fs::write(

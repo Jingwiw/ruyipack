@@ -7,15 +7,20 @@
 //! Build orchestration: immutable input copies, independent engine and host, one receipt.
 
 mod compose;
+pub(crate) mod evidence;
+pub(crate) mod history;
 mod mock;
 mod process;
 pub(crate) mod shell;
 
-pub(crate) use compose::clean::run as clean_result;
+pub(crate) use compose::clean::{
+    CleanReport, execute as clean_result, new_report as clean_report,
+    preflight as preflight_cleanup,
+};
 
 use std::{
     borrow::Cow,
-    io::{self, Write},
+    io,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -27,32 +32,49 @@ use serde::Serialize;
 use crate::output_cli::ReportFormat;
 
 #[derive(Args)]
+#[command(group(clap::ArgGroup::new("build-input").required(true).args(["work", "spec"])))]
 pub(crate) struct Options {
-    /// Workspace development area; the package defaults to WORK on first use.
-    #[arg(
-        value_name = "WORK",
-        required_unless_present = "spec",
-        conflicts_with = "spec"
-    )]
-    work: Option<String>,
-    /// Advanced: build a prepared SPEC without resolving a managed development area.
-    #[arg(long, value_name = "PATH", conflicts_with_all = ["work", "pkgname"])]
-    spec: Option<PathBuf>,
-    /// Package binding for a new named area; existing areas cannot be rebound.
-    #[arg(long, value_name = "PKG", requires = "work")]
-    pkgname: Option<String>,
+    #[command(flatten)]
+    input: crate::workspace::SpecOptions,
     /// Override Docker's current connection configuration for this invocation.
     #[arg(long, value_name = "CONTEXT")]
     context: Option<String>,
     /// Advanced: override the workspace or embedded environment with a Compose YAML file.
-    #[arg(long, value_name = "FILE", help_heading = "Advanced options")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        help_heading = "Advanced options",
+        hide_short_help = true
+    )]
     config: Option<PathBuf>,
     /// Explicit SPEC mode only: prepared sources; symlinks and special files are rejected.
-    #[arg(long, value_name = "DIR", requires = "spec", conflicts_with = "work")]
+    #[arg(
+        long,
+        value_name = "DIR",
+        value_hint = clap::ValueHint::DirPath,
+        requires = "spec",
+        conflicts_with = "work",
+        hide_short_help = true,
+        help_heading = "Advanced options"
+    )]
     source_dir: Option<PathBuf>,
     /// Explicit SPEC mode only: result parent (default build); results live in `DIR/SPEC_STEM`.
-    #[arg(long, value_name = "DIR", requires = "spec", conflicts_with = "work")]
-    dir: Option<PathBuf>,
+    #[arg(
+        long,
+        value_name = "DIR",
+        value_hint = clap::ValueHint::DirPath,
+        requires = "spec",
+        conflicts_with = "work",
+        hide_short_help = true,
+        help_heading = "Advanced options"
+    )]
+    output_dir: Option<PathBuf>,
+    /// Stop after source unpacking/Patch application, or build the complete package.
+    #[arg(long, value_enum, default_value_t = Stage::Build)]
+    stage: Stage,
+    /// Do not download source materials. Mock dependency/network access is configured separately.
+    #[arg(long)]
+    offline: bool,
     /// Whole backend execution deadline; bounded recovery runs separately afterward.
     #[arg(long, default_value_t = 1800, value_parser = clap::value_parser!(u64).range(1..))]
     timeout: u64,
@@ -62,6 +84,16 @@ pub(crate) struct Options {
     /// Selects stdout presentation; the complete retained receipt is always written.
     #[arg(long, value_enum, default_value_t = ReportFormat::Human)]
     format: ReportFormat,
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum, Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum Stage {
+    Prep,
+    #[default]
+    Build,
 }
 
 /// The engine owns command arguments; the backend transports them unchanged.
@@ -75,6 +107,7 @@ trait Engine {
     ) -> io::Result<Vec<String>>;
     fn verify_result(&self, output: &Path) -> io::Result<()>;
     fn shell(&self) -> Vec<String>;
+    fn export_patch(&self) -> Vec<String>;
 }
 
 trait Backend {
@@ -85,10 +118,12 @@ trait Backend {
         output: &Path,
         invocation: &[String],
         resources: &serde_json::Value,
+        export: Option<&Path>,
         timeout: Duration,
     ) -> io::Result<bool>;
     fn execute(
         &self,
+        previous: Option<&serde_json::Value>,
         invocation: &[String],
         staged_input: &Path,
         output: &Path,
@@ -140,10 +175,11 @@ impl Execution {
     }
 }
 
-#[derive(Serialize)]
+#[derive(serde::Deserialize, Serialize)]
 struct InputFile {
     // Display text only; file operations retain native paths.
     path: String,
+    executable: bool,
     #[serde(flatten)]
     content: crate::file_digest::Content,
 }
@@ -162,7 +198,10 @@ struct Receipt<'a> {
     spec: Cow<'a, str>,
     source_dir: Cow<'a, str>,
     timeout_seconds: u64,
+    stage: Stage,
     remove_requested: bool,
+    resources_retained: bool,
+    session_tracking: bool,
     inputs: Vec<InputFile>,
     execution: Execution,
     engine_validation_error: Option<String>,
@@ -193,28 +232,6 @@ fn directory(path: &Path) -> io::Result<PathBuf> {
     fs::canonicalize(path)
 }
 
-fn copy_sources(source: &Path, destination: &Path) -> io::Result<()> {
-    fs::create_dir(destination)?;
-    let mut entries = fs::read_dir(source)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(fs_err::DirEntry::file_name);
-    for entry in entries {
-        let from = entry.path();
-        let to = destination.join(entry.file_name());
-        let kind = entry.file_type()?;
-        if kind.is_dir() {
-            copy_sources(&from, &to)?;
-        } else if kind.is_file() {
-            fs::copy(&from, &to)?;
-        } else {
-            return Err(invalid(format!(
-                "{}: source inputs must not contain symlinks or special files",
-                from.display()
-            )));
-        }
-    }
-    Ok(())
-}
-
 fn inventory(root: &Path, directory: &Path, files: &mut Vec<InputFile>) -> io::Result<()> {
     normalize_mode(directory, &fs::symlink_metadata(directory)?)?;
     let mut entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
@@ -227,6 +244,7 @@ fn inventory(root: &Path, directory: &Path, files: &mut Vec<InputFile>) -> io::R
             normalize_mode(&path, &fs::symlink_metadata(&path)?)?;
             let content = crate::file_digest::read(&path).map_err(io::Error::other)?;
             files.push(InputFile {
+                executable: crate::file_digest::executable(&fs::symlink_metadata(&path)?),
                 path: path
                     .strip_prefix(root)
                     .expect("staged child")
@@ -280,16 +298,62 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
             "build directory must not be inside the custom config directory",
         ));
     }
+    let parsed = crate::spec::ParsedSpec::parse(input.source.as_str());
+    let cache = input.development.as_ref().map_or_else(
+        || source_dir.clone(),
+        crate::workspace::Development::sources,
+    );
+    if crate::output_cli::debug_enabled() {
+        eprintln!(
+            "build: selected SPEC sha256={}",
+            crate::utf8_file::sha256(&input.source)
+        );
+        let summary = crate::spec::inspection::Inspection::new(crate::spec::ParsedSpec::parse(
+            input.source.as_str(),
+        ));
+        summary.write_identity(&mut io::stderr().lock())?;
+        eprintln!(
+            "build: SPEC {}; materials {} + {}; environment {}",
+            spec.display(),
+            source_dir.display(),
+            cache.display(),
+            custom_config
+                .as_ref()
+                .or(input.workspace_config.as_ref())
+                .map_or_else(|| "embedded openRuyi".into(), |p| p.display().to_string())
+        );
+    } else {
+        crate::output_cli::stderr().message(
+            crate::output_cli::HumanLevel::Info,
+            Some(spec),
+            format_args!("build: preparing materials"),
+        )?;
+    }
+    let materials =
+        crate::check::materials::prepare(source_dir, &cache, &parsed, &[], options.offline)
+            .map_err(io::Error::other)?;
+    if !crate::utf8_file::is_unchanged(spec, &input.source).map_err(io::Error::other)? {
+        return Err(invalid(
+            "SPEC changed during material preparation; previous build retained",
+        ));
+    }
+    eprintln!(
+        "build: results and logs {}",
+        crate::output_cli::human_path(output).display()
+    );
+    eprintln!(
+        "build: {} material declarations verified{}",
+        materials.paths().count(),
+        if options.offline {
+            " (offline materials; Mock networking unchanged)"
+        } else {
+            ""
+        }
+    );
     crate::host_process::install_handler()?;
     fs::create_dir_all(root)?;
-    fs::create_dir(output).map_err(|error| {
-        if error.kind() == io::ErrorKind::AlreadyExists {
-            invalid(format!(
-                "{} already exists; use shell, or explicitly clean this retained result before another build",
-                output.display()
-            ))
-        } else { error }
-    })?;
+    let previous = history::archive(output, package)?;
+    fs::create_dir(output)?;
     let config = custom_config
         .clone()
         .unwrap_or_else(|| output.join(".config/compose.yaml"));
@@ -298,10 +362,11 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
         config: &config,
         remove: options.remove,
     };
-    let engine = mock::Mock;
+    let engine = mock::Mock(options.stage);
     let staged_input = output.join("input");
     let mut inputs = Vec::new();
     let mut configuration_files = Vec::new();
+    let mut _environment_lock = None;
     let execution = match input
         .stage(
             &backend,
@@ -309,6 +374,7 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
             &config,
             Duration::from_secs(options.timeout),
             &mut configuration_files,
+            &materials,
         )
         .and_then(|invocation| {
             if invocation.is_empty() {
@@ -317,12 +383,27 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
             inventory(&staged_input, &staged_input, &mut inputs)?;
             Ok(invocation)
         }) {
-        Ok(invocation) => backend.execute(
-            &invocation,
-            &staged_input,
-            output,
-            Duration::from_secs(options.timeout),
-        ),
+        Ok(invocation) => {
+            let reuse = previous
+                .as_ref()
+                .filter(|old| old.reusable(&configuration_files));
+            if let Some(old) = reuse {
+                _environment_lock = Some(old.transfer(output)?);
+            }
+            let mut execution = backend.execute(
+                reuse.map(|old| &old.receipt["execution"]["details"]),
+                &invocation,
+                &staged_input,
+                output,
+                Duration::from_secs(options.timeout),
+            );
+            if execution.details.is_null()
+                && let Some(old) = reuse
+            {
+                execution.details = old.receipt["execution"]["details"].clone();
+            }
+            execution
+        }
         Err(error) => Execution::failed(format!("input staging failed: {error}")),
     };
     let engine_validation_error =
@@ -347,7 +428,11 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
         spec: spec.to_string_lossy(),
         source_dir: source_dir.to_string_lossy(),
         timeout_seconds: options.timeout,
+        stage: options.stage,
         remove_requested: options.remove,
+        session_tracking: true,
+        resources_retained: !execution.details.is_null()
+            && (!options.remove || execution.cleanup_failure.is_some()),
         inputs,
         execution,
         engine_validation_error,
@@ -355,16 +440,17 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
     };
     let bytes = serde_json::to_vec_pretty(&receipt).map_err(io::Error::other)?;
     let receipt_path = output.join("receipt.json");
-    fs::write(&receipt_path, bytes)?;
-    receipt.write_report(options.format, &receipt_path)?;
+    crate::file_output::write_artifact(&receipt_path, &bytes)?;
+    receipt.write_report(options, &receipt_path)?;
     Ok(success)
 }
 
 // Resolves paths once and owns the cooperative WORK lock for the complete operation.
 struct BuildInput {
     package: String,
-    _development: Option<crate::workspace::Development>,
+    development: Option<crate::workspace::Development>,
     spec: PathBuf,
+    source: String,
     source_dir: PathBuf,
     output: PathBuf,
     custom_config: Option<PathBuf>,
@@ -391,12 +477,21 @@ impl BuildInput {
         // Keep the binding's cooperative lock through staging, execution and receipt publication.
         let mut development = None;
         let mut workspace_config = None;
-        let (requested_spec, requested_sources, managed_output) = if let Some(work) = &options.work
+        let (requested_spec, requested_sources, managed_output) = if let Some(work) =
+            &options.input.work
         {
             let workspace = crate::workspace::discover()?;
-            let mut area = workspace.development(work, options.pkgname.as_deref(), false)?;
-            // Require the bound package SPEC before allocating the Git checkout.
-            area.spec()?;
+            let mut area = workspace.development(work, options.input.pkgname.as_deref(), false)?;
+            // Require the bound package SPEC before allocating the recipe copy.
+            area.spec().map_err(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    invalid(format!(
+                        "{work}: recipe SPEC is missing; publish with: ruyipack gen {work} --apply"
+                    ))
+                } else {
+                    error
+                }
+            })?;
             if options.config.is_none() {
                 let config = workspace.build_config();
                 regular_file(&config)?;
@@ -409,21 +504,22 @@ impl BuildInput {
             development = Some(area);
             (spec, sources, Some(output))
         } else {
+            let spec = options
+                .input
+                .spec
+                .as_ref()
+                .expect("clap requires WORK or --spec");
             let sources = options
                 .source_dir
                 .as_ref()
                 .ok_or_else(|| invalid("building an explicit SPEC requires --source-dir"))?;
-            (
-                options
-                    .spec
-                    .as_ref()
-                    .expect("clap requires WORK or --spec")
-                    .clone(),
-                sources.clone(),
-                None,
-            )
+            (spec.clone(), sources.clone(), None)
         };
-        regular_file(&requested_spec)?;
+        regular_file(&requested_spec).map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound && let Some(work) = &options.input.work {
+                invalid(format!("{work}: recipe SPEC is missing; publish the recipe with: ruyipack gen {work} --apply"))
+            } else { error }
+        })?;
         let spec = fs::canonicalize(&requested_spec)?;
         spec.file_name()
             .and_then(|name| name.to_str())
@@ -444,8 +540,12 @@ impl BuildInput {
         let output = if let Some(output) = managed_output {
             output
         } else {
-            let requested = std::env::current_dir()?
-                .join(options.dir.as_deref().unwrap_or_else(|| Path::new("build")));
+            let requested = std::env::current_dir()?.join(
+                options
+                    .output_dir
+                    .as_deref()
+                    .unwrap_or_else(|| Path::new("build")),
+            );
             let root = if requested.try_exists()? {
                 directory(&requested)?
             } else {
@@ -464,7 +564,8 @@ impl BuildInput {
         };
         Ok(Self {
             package,
-            _development: development,
+            development,
+            source: crate::utf8_file::read(&spec).map_err(io::Error::other)?,
             spec,
             source_dir,
             output,
@@ -480,6 +581,7 @@ impl BuildInput {
         config: &Path,
         timeout: Duration,
         configuration_files: &mut Vec<InputFile>,
+        materials: &crate::check::materials::Report,
     ) -> io::Result<Vec<String>> {
         let output = &self.output;
         let input = output.join("input");
@@ -490,7 +592,7 @@ impl BuildInput {
             .ok_or_else(|| invalid("SPEC filename must be UTF-8"))?;
         if let Some(workspace_config) = &self.workspace_config {
             // Snapshot user-owned workspace assets; normalize only these copied files.
-            copy_sources(
+            crate::file_tree::copy(
                 workspace_config.parent().expect("absolute config"),
                 &output.join(".config"),
             )?;
@@ -501,66 +603,156 @@ impl BuildInput {
         } else {
             let content = crate::file_digest::read(config).map_err(io::Error::other)?;
             configuration_files.push(InputFile {
+                executable: crate::file_digest::executable(&fs::symlink_metadata(config)?),
                 path: config.to_string_lossy().into_owned(),
                 content,
             });
         }
+        let parsed = crate::spec::ParsedSpec::parse(self.source.as_str());
+        if !crate::utf8_file::is_unchanged(&self.spec, &self.source).map_err(io::Error::other)? {
+            return Err(invalid("SPEC changed before staging"));
+        }
         backend.validate()?;
         fs::create_dir(&input)?;
         fs::create_dir(input.join("SPECS"))?;
-        fs::copy(&self.spec, input.join("SPECS").join(spec_name))?;
-        copy_sources(&self.source_dir, &input.join("SOURCES"))?;
+        fs::write(input.join("SPECS").join(spec_name), &self.source)?;
+        crate::file_tree::copy(&self.source_dir, &input.join("SOURCES"))?;
+        for (path, name) in materials.paths() {
+            if path != self.source_dir.join(name) {
+                fs::copy(path, input.join("SOURCES").join(name))?;
+            }
+        }
+        let staged =
+            crate::check::materials::analyze(Some(&input.join("SOURCES")), None, &parsed, &[]);
+        if !staged.valid {
+            return Err(invalid(
+                "staged materials failed verification; run check --materials for details",
+            ));
+        }
         engine.stage(&input, spec_name, timeout)
     }
 }
 
 impl Receipt<'_> {
-    fn write_report(&self, format: ReportFormat, receipt_path: &Path) -> io::Result<()> {
-        match format {
-            ReportFormat::Toml => {
-                crate::report::write(
-                    &mut io::stdout().lock(),
-                    &BuildReport {
-                        format_version: 1,
-                        tool: crate::tool::identity(),
-                        operation: "build",
-                        success: self.success,
-                        receipt: receipt_path.to_string_lossy(),
-                        failure: self.execution.failure.as_deref(),
-                        artifact_error: self.execution.artifact_error.as_deref(),
-                        engine_validation_error: self.engine_validation_error.as_deref(),
-                        cleanup_failure: self.execution.cleanup_failure.as_deref(),
-                        cleanup_skipped: self.execution.cleanup_skipped,
-                    },
-                )?;
+    fn write_report(&self, options: &Options, receipt_path: &Path) -> io::Result<()> {
+        let directory = receipt_path.parent().expect("receipt directory");
+        let mut next_steps = std::collections::BTreeMap::new();
+        let invocation: Vec<String> = std::env::args().collect();
+        let program = invocation[0].clone();
+        next_steps.insert("retry", invocation);
+        let mut clean = vec![program.clone(), "clean".into()];
+        if let Some(work) = &options.input.work {
+            clean.push(work.clone());
+        } else {
+            clean.extend([
+                "--build-dir".into(),
+                directory.to_string_lossy().into_owned(),
+            ]);
+        }
+        next_steps.insert("clean", clean);
+        if self.resources_retained && self.execution.details["container_id"].is_string() {
+            let mut shell = vec![program, "shell".into()];
+            if let Some(work) = &options.input.work {
+                shell.push(work.clone());
+            } else {
+                shell.extend([
+                    self.package.into(),
+                    "--output-dir".into(),
+                    directory
+                        .parent()
+                        .expect("result parent")
+                        .to_string_lossy()
+                        .into_owned(),
+                ]);
             }
-            ReportFormat::Human => {
-                writeln!(
-                    io::stdout().lock(),
-                    "build {}: {}",
-                    if self.success { "completed" } else { "failed" },
-                    receipt_path.display()
-                )?;
-                if self.execution.cleanup_skipped {
-                    writeln!(
-                        io::stderr().lock(),
-                        "automatic removal not requested; resource state and recovery commands: {}",
-                        receipt_path.display()
-                    )?;
-                }
-                if let Some(error) = &self.execution.failure {
-                    writeln!(io::stderr().lock(), "{error}")?;
-                }
-                if let Some(error) = &self.execution.artifact_error {
-                    writeln!(io::stderr().lock(), "artifact retrieval: {error}")?;
-                }
-                if let Some(error) = &self.engine_validation_error {
-                    writeln!(io::stderr().lock(), "engine result verification: {error}")?;
-                }
-                if let Some(error) = &self.execution.cleanup_failure {
-                    writeln!(io::stderr().lock(), "cleanup: {error}")?;
-                }
+            next_steps.insert("shell", shell);
+        }
+        let report = BuildReport {
+            format_version: 1,
+            tool: crate::tool::identity(),
+            operation: "build",
+            stage: self.stage,
+            success: self.success,
+            receipt: receipt_path.to_string_lossy(),
+            failure: self.execution.failure.as_deref(),
+            artifact_error: self.execution.artifact_error.as_deref(),
+            engine_validation_error: self.engine_validation_error.as_deref(),
+            cleanup_failure: self.execution.cleanup_failure.as_deref(),
+            cleanup_skipped: self.execution.cleanup_skipped,
+            logs: [directory.join("host"), directory.join("engine")]
+                .into_iter()
+                .filter(|path| path.is_dir())
+                .collect(),
+            artifacts: self.success.then(|| directory.join("engine")),
+            working_directory: std::env::current_dir()?,
+            next_steps,
+        };
+        match options.format {
+            ReportFormat::Toml => crate::report::write(&mut io::stdout().lock(), &report),
+            ReportFormat::Human => report.write_human(),
+        }
+    }
+}
+
+impl BuildReport<'_> {
+    fn write_human(&self) -> io::Result<()> {
+        use crate::output_cli::{HumanLevel, human_path, stderr};
+        let mut out = stderr();
+        out.message(
+            if self.success {
+                HumanLevel::Info
+            } else {
+                HumanLevel::Error
+            },
+            None,
+            format_args!(
+                "{} {}",
+                match self.stage {
+                    Stage::Prep => "prep",
+                    Stage::Build => "build",
+                },
+                if self.success { "completed" } else { "failed" }
+            ),
+        )?;
+        for (stage, error) in [
+            ("execution", self.failure),
+            ("artifact retrieval", self.artifact_error),
+            ("result verification", self.engine_validation_error),
+            ("cleanup", self.cleanup_failure),
+        ] {
+            if let Some(error) = error {
+                out.message(HumanLevel::Error, None, format_args!("{stage}: {error}"))?;
             }
+        }
+        for path in &self.logs {
+            out.message(
+                HumanLevel::Info,
+                None,
+                format_args!("logs: {}", human_path(path).display()),
+            )?;
+        }
+        if let Some(path) = &self.artifacts {
+            out.message(
+                HumanLevel::Info,
+                None,
+                format_args!("artifacts: {}", human_path(path).display()),
+            )?;
+        }
+        out.message(
+            HumanLevel::Debug,
+            None,
+            format_args!("receipt: {}", self.receipt),
+        )?;
+        for (action, argv) in &self.next_steps {
+            if *action == "retry" && self.success {
+                continue;
+            }
+            let command = argv
+                .iter()
+                .map(|arg| shell_words::quote(arg))
+                .collect::<Vec<_>>()
+                .join(" ");
+            out.message(HumanLevel::Info, None, format_args!("{action}: {command}"))?;
         }
         Ok(())
     }
@@ -571,9 +763,15 @@ impl Receipt<'_> {
 struct BuildReport<'a> {
     format_version: u32,
     tool: crate::tool::Identity,
+    stage: Stage,
     operation: &'static str,
     success: bool,
     receipt: Cow<'a, str>,
+    logs: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    artifacts: Option<PathBuf>,
+    working_directory: PathBuf,
+    next_steps: std::collections::BTreeMap<&'static str, Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]

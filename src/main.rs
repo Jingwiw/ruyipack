@@ -11,27 +11,35 @@ mod check;
 mod check_report;
 mod clean;
 mod cli;
+mod dependency;
+mod draft;
 mod edit;
+mod editor;
 mod environment;
 mod file_digest;
 mod file_lock;
 mod file_output;
+mod file_tree;
 mod generate;
 mod host_process;
 mod inspect;
 mod new;
+mod open;
 mod output_cli;
 mod parser_diagnostic;
+mod plan;
 mod profile;
+mod prompt;
+mod remote_build;
 mod render;
 mod report;
 mod schema;
 mod source;
+mod source_fetch;
 mod source_hash;
 mod source_location;
 mod spec;
 mod spec_metadata;
-mod stage;
 mod tool;
 mod utf8_file;
 mod verify_sources;
@@ -44,15 +52,23 @@ use cli::{Cli, Command};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    output_cli::set_debug(cli.debug);
     match cli.command {
+        Command::Completions { shell } => exit_for(cli::completions(shell)),
         Command::Init(options) => exit_for(workspace::run(&options).map(|()| true)),
+        Command::RemoteBuild(options) => exit_for(remote_build::run(&options)),
         Command::Build(options) => exit_for(build::run(&options)),
         Command::Shell(options) => exit_for(build::shell::run(&options)),
         Command::Schema(options) => exit_for(schema::run(&options)),
+        Command::Pr(options) => exit_for(workspace::pr::run(&options)),
+        Command::Commit(options) => exit_for(workspace::commit::run(&options)),
         Command::Clean(options) => exit_for(clean::run(&options)),
+        Command::Delete(options) => exit_for(workspace::delete::run(&options)),
         Command::New(options) => exit_for(new::run(&options).map(|()| true)),
+        Command::Open(options) => exit_for(open::run(&options)),
         Command::Edit(options) => exit_for(edit::run(options)),
         Command::Source(command) => match command {
+            cli::SourceCommand::Fetch(options) => exit_for(source_fetch::run(&options)),
             cli::SourceCommand::Hash(options) => exit_for(source_hash::run(&options)),
             cli::SourceCommand::Verify(options) => exit_for(verify_sources::run(&options)),
         },

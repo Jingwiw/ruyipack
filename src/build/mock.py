@@ -10,9 +10,42 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import time
+import urllib.request
+import xml.etree.ElementTree as ET
+
+
+def select_repository(target, deadline):
+    """Choose one complete repository before any chroot dependency transaction."""
+    attempts = []
+    for url in dict.fromkeys([target["repository"], target["repository_fallback"]]):
+        record = {"url": url}
+        attempts.append(record)
+        try:
+            if not url.startswith("https://"):
+                raise ValueError("build repositories must use HTTPS")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("repository selection budget exhausted")
+            with urllib.request.urlopen(url.rstrip("/") + "/repodata/repomd.xml",
+                                        timeout=min(10, remaining)) as response:
+                if not response.url.startswith("https://"):
+                    raise ValueError("repository metadata redirected away from HTTPS")
+                data = response.read(4 * 1024 * 1024 + 1)
+                if len(data) > 4 * 1024 * 1024:
+                    raise ValueError("repository metadata exceeds 4 MiB")
+                root = ET.fromstring(data)
+                if root.tag != "{http://linux.duke.edu/metadata/repo}repomd" or not root.findall("{*}data"):
+                    raise ValueError("repository did not return RPM metadata")
+                record.update(status=response.status, metadata_url=response.url,
+                              repomd_sha256=hashlib.sha256(data).hexdigest())
+                return {"selected": url, "fallback": url != target["repository"], "attempts": attempts}
+        except (OSError, ValueError, ET.ParseError) as error:
+            record["error"] = str(error)
+    return {"selected": None, "fallback": False, "attempts": attempts}
 
 
 def main():
@@ -21,12 +54,13 @@ def main():
     parser.add_argument("--sources", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout", type=int, required=True)
+    parser.add_argument("--stage", choices=("prep", "build"), default="build")
     args = parser.parse_args()
     output = args.output
     output.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + args.timeout
     receipt = {"format_version": 1, "engine": "mock", "success": False,
-               "stages": [], "artifacts": [], "failure": None, "collection_errors": []}
+               "target_stage": args.stage, "stages": [], "artifacts": [], "failure": None, "collection_errors": []}
     os.environ["LC_ALL"] = "C"
 
     def save():
@@ -51,8 +85,37 @@ def main():
             with stdout.open("wb") as out, stderr.open("wb") as err:
                 process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                                            start_new_session=True)
+                # Tail regular log files, not pipes: descendants cannot hold an EOF open.
                 try:
-                    record["exit_code"] = process.wait(timeout=remaining)
+                    with stdout.open("rb") as out_read, stderr.open("rb") as err_read:
+                        streams = [(out_read, sys.stdout.buffer), (err_read, sys.stderr.buffer)]
+                        def relay():
+                            if stage not in ("srpm", "prep", "rebuild"):
+                                return
+                            for reader, display in streams:
+                                end = os.fstat(reader.fileno()).st_size
+                                while reader.tell() < end:
+                                    chunk = reader.read(min(65536, end - reader.tell()))
+                                    if not chunk:
+                                        break
+                                    try:
+                                        display.write(chunk)
+                                        display.flush()
+                                    except BrokenPipeError:
+                                        pass  # Logs and process cleanup remain authoritative.
+                        try:
+                            while True:
+                                relay()
+                                remaining = deadline - time.monotonic()
+                                if remaining <= 0:
+                                    raise subprocess.TimeoutExpired(argv, 0)
+                                try:
+                                    record["exit_code"] = process.wait(timeout=min(0.05, remaining))
+                                    break
+                                except subprocess.TimeoutExpired:
+                                    continue
+                        finally:
+                            relay()
                 except subprocess.TimeoutExpired:
                     # sudo/Mock descendants may have different credentials or sessions.
                     # Never wait indefinitely here; the backend stops the entire worker.
@@ -91,16 +154,61 @@ def main():
         config = Path(os.environ["MOCK_CONFIG"])
         target = Path(os.environ["BUILD_TARGET"])
         receipt["target"] = json.loads(target.read_text())
+        bootstrap = Path("/etc/ruyipack-bootstrap-repository")
+        if bootstrap.is_file():
+            receipt["bootstrap_repository"] = bootstrap.read_text().strip()
+        receipt["input_mock_config_sha256"] = digest(config)
+        configured = config.read_text()
+        # Evaluate Mock's actual configuration rather than grepping Python source.
+        configured += "\nif config_opts['target_arch'] != " + repr(receipt["target"]["architecture"]) + ": raise ValueError('Mock target_arch differs from build target')\n"
+        preflight = output / "mock-preflight.cfg"
+        preflight.write_text(configured)
+        required("target-config", ["mock", "-r", str(preflight), "--debug-config"])
+        if receipt["target"].get("repository_fallback"):
+            selection = select_repository(receipt["target"], deadline)
+            receipt["repository_selection"] = selection
+            save()
+            if selection["selected"] is None:
+                raise RuntimeError("all configured repositories are unavailable; see repository_selection")
+            # The shipped profile has exactly one repository. Override the complete
+            # dnf configuration, not a mirror list that could mix package origins.
+            selected = selection["selected"]
+            configured += "\n" + "\n".join([
+                "from configparser import ConfigParser",
+                "from io import StringIO",
+                "selected_repos = ConfigParser(interpolation=None)",
+                "selected_repos.read_string(config_opts['dnf.conf'])",
+                "if set(selected_repos.sections()) != {'main', 'openruyi'}: raise ValueError('repository fallback requires the single-repository profile')",
+                "selected_repos['openruyi']['baseurl'] = " + repr(selected),
+                "selected_repos['openruyi'].pop('mirrorlist', None)",
+                "selected_repos['openruyi'].pop('metalink', None)",
+                "selected_config = StringIO()",
+                "selected_repos.write(selected_config)",
+                "config_opts['dnf.conf'] = selected_config.getvalue()",
+                "config_opts['macros']['%_vendor_repo_url'] = " + repr(selected),
+            ]) + "\n"
+            print("repository: " + selected + (" (fallback; primary unavailable)" if selection["fallback"] else ""), flush=True)
+        config = output / "mock.cfg"
+        config.write_text(configured)
         receipt["mock_config_sha256"] = digest(config)
-        (output / "mock.cfg").write_bytes(config.read_bytes())
         (output / "target.json").write_bytes(target.read_bytes())
         # The environment supplies a privilege-aware mock entry point.
         mock = ["mock", "-r", str(config)]
+        if receipt.get("repository_selection"):
+            # The worker retains this identity outside /input and /output. A change
+            # of origin requires discarding installed dependencies and cached RPMs.
+            origin = Path.home() / ".ruyipack-repository"
+            selected = receipt["repository_selection"]["selected"]
+            if not origin.is_file() or origin.read_text() != selected:
+                required("repository-clean", [*mock, "--scrub", "all"])
+                origin.write_text(selected)
         required("environment", ["rpm", "-qa", "--qf", "%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}\t%{ARCH}\n"])
         required("mock-version", [mock[0], "--version"])
         required("effective-config", [*mock, "--debug-config"])
+        # Discard prior builds/debug sessions once; both stages share this fresh chroot.
+        required("clean", [*mock, "--clean"])
         required("srpm", [*mock, "--resultdir", str(output / "srpm"),
-                          "--no-cleanup-after", "--buildsrpm", "--spec", str(args.spec), "--sources", str(args.sources)])
+                          "--no-clean", "--no-cleanup-after", "--buildsrpm", "--spec", str(args.spec), "--sources", str(args.sources)])
         srpms = sorted((output / "srpm").glob("*.src.rpm"))
         if len(srpms) != 1:
             raise RuntimeError(f"expected one SRPM, found {len(srpms)}")
@@ -115,12 +223,25 @@ def main():
 
         # A reusable SRPM remains identified even if dependency preparation or rebuild fails.
         record_artifact(srpms[0])
-        required("rebuild", [*mock, "--resultdir", str(output / "rpm"), "--no-cleanup-after", "--rebuild", str(srpms[0])])
-        rpms = sorted((output / "rpm").glob("*.rpm"))
-        if not any(not p.name.endswith((".src.rpm", ".nosrc.rpm")) for p in rpms):
-            raise RuntimeError("Mock returned success without a binary RPM")
-        for package in rpms:
-            record_artifact(package)
+        if args.stage == "prep":
+            required("prep", [*mock, "--resultdir", str(output / "prep"), "--no-clean", "--no-cleanup-after",
+                              "--rebuild", str(srpms[0]), "--short-circuit", "prep"])
+            root = Path(required("root-path", [*mock, "--print-root-path"]).read_text().strip())
+            builddir = required("build-directory", [*mock, "--chroot", "--", "rpm", "--eval", "%{_builddir}"]).read_text().strip()
+            if not builddir.startswith("/") or ".." in Path(builddir).parts:
+                raise RuntimeError("native build directory is not an absolute confined path")
+            prepared = root / builddir.lstrip("/")
+            if not prepared.is_dir():
+                raise RuntimeError("prepared source directory is absent")
+            shutil.copytree(prepared, output / "prep-baseline", symlinks=True)
+            receipt["prepared_directory"] = builddir
+        else:
+            required("rebuild", [*mock, "--resultdir", str(output / "rpm"), "--no-clean", "--no-cleanup-after", "--rebuild", str(srpms[0])])
+            rpms = sorted((output / "rpm").glob("*.rpm"))
+            if not any(not p.name.endswith((".src.rpm", ".nosrc.rpm")) for p in rpms):
+                raise RuntimeError("Mock returned success without a binary RPM")
+            for package in rpms:
+                record_artifact(package)
         receipt["success"] = True
     except (OSError, KeyError, ValueError, RuntimeError) as error:
         receipt["failure"] = str(error)
@@ -153,26 +274,5 @@ def main():
     return 0 if receipt["success"] else 1
 
 
-def shell():
-    mock = ["mock", "-r", os.environ["MOCK_CONFIG"]]
-    def query(argv):
-        return subprocess.check_output(argv, text=True, timeout=30).strip()
-    root = Path(query([*mock, "--print-root-path"]))
-    if not root.is_dir():
-        raise RuntimeError("the retained Mock chroot is absent; build the package first")
-    directory = query([*mock, "--chroot", "--", "rpm", "--eval", "%{_builddir}"])
-    if not directory.startswith("/") or not (root / directory.lstrip("/")).is_dir():
-        raise RuntimeError("the native RPM build directory does not exist yet")
-    # Enter Mock's actual chroot, not merely the outer worker container.
-    os.execvp(mock[0], [*mock, "--shell", "--cwd", directory])
-
-
 if __name__ == "__main__":
-    if sys.argv[1:] == ["--shell"]:
-        try:
-            shell()
-        except (OSError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
-            print(f"shell: {error}", file=sys.stderr)
-            sys.exit(1)
-    else:
-        sys.exit(main())
+    sys.exit(main())

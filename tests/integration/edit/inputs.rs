@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::{fs, path::Path, process::Stdio};
 
 fn stage(directory: &Path) -> std::path::PathBuf {
-    directory.join(".ruyipack-stage/ed")
+    directory.join(".ruyipack-draft/ed")
 }
 
 #[cfg(unix)]
@@ -69,14 +69,7 @@ fn default_toml_editor_retains_unfinished_work_without_claiming_a_candidate() {
             request.env("EDITOR", "/usr/bin/true");
         }
         let output = request.output().unwrap();
-        if explicit {
-            success(&output);
-        } else {
-            assert_eq!(output.status.code(), Some(1), "{output:?}");
-            assert!(
-                String::from_utf8_lossy(&output.stderr).contains("editing requires a terminal")
-            );
-        }
+        success(&output);
         assert_eq!(
             fs::read_to_string(stage(directory.path()).join("ed.toml")).unwrap(),
             incomplete
@@ -131,7 +124,7 @@ fn cli_set_saves_toml_stage_and_does_not_run_static_checks() {
 
 #[cfg(unix)]
 #[test]
-fn input_selection_follows_saved_edits_not_failed_requests() {
+fn saved_edits_preserve_binding_and_failed_candidates() {
     let directory = tempfile::tempdir().unwrap();
     let work = recipe_workspace(directory.path(), "requested", "ed", SPEC);
     let config = work.join(".config.toml");
@@ -148,7 +141,7 @@ fn input_selection_follows_saved_edits_not_failed_requests() {
         assert_eq!(output.status.code(), Some(1), "{output:?}");
         assert_eq!(fs::read(&config).unwrap(), authoring);
         assert_eq!(
-            fs::read_to_string(work.join("checkout/SPECS/ed/ed.spec")).unwrap(),
+            fs::read_to_string(work.join("recipe/SPECS/ed/ed.spec")).unwrap(),
             SPEC
         );
     }
@@ -166,22 +159,21 @@ fn input_selection_follows_saved_edits_not_failed_requests() {
         machine_report(&saved)["files"][0]["state"].as_str(),
         Some("candidate")
     );
-    let selected: toml::Table = toml::from_str(&fs::read_to_string(config).unwrap()).unwrap();
-    assert_eq!(selected["input"].as_str(), Some("edit"));
+    assert_eq!(fs::read(&config).unwrap(), authoring);
     let pending: toml::Table =
-        toml::from_str(&fs::read_to_string(work.join("stage/ed.toml")).unwrap()).unwrap();
+        toml::from_str(&fs::read_to_string(work.join("ed.toml")).unwrap()).unwrap();
     assert_eq!(
         pending["package"]["license"].as_str(),
         Some("not-a-valid-license")
     );
     assert_eq!(
-        fs::read_to_string(work.join("checkout/SPECS/ed/ed.spec")).unwrap(),
+        fs::read_to_string(work.join("recipe/SPECS/ed/ed.spec")).unwrap(),
         SPEC
     );
 }
 
 #[test]
-fn prepare_keeps_batches_external_and_selects_only_one_managed_package() {
+fn prepare_keeps_batches_external_and_preserves_managed_bindings() {
     let directory = tempfile::tempdir().unwrap();
     let first = recipe_workspace(directory.path(), "first", "ed", SPEC);
     let second = recipe_workspace(
@@ -195,7 +187,7 @@ fn prepare_keeps_batches_external_and_selects_only_one_managed_package() {
         .iter()
         .map(|path| fs::read(path).unwrap())
         .collect::<Vec<_>>();
-    let managed = first.join("stage");
+    let managed = first.clone();
     let refused = command(directory.path())
         .args(["first", "second", "--field=package.version", "--prepare"])
         .arg(&managed)
@@ -203,7 +195,7 @@ fn prepare_keeps_batches_external_and_selects_only_one_managed_package() {
         .unwrap();
     assert_eq!(refused.status.code(), Some(1), "{refused:?}");
     assert!(String::from_utf8_lossy(&refused.stderr).contains("external DIR"));
-    assert!(!managed.exists());
+    assert!(!managed.join(".state").exists());
     let external = directory.path().join("batch");
     success(
         &command(directory.path())
@@ -225,15 +217,14 @@ fn prepare_keeps_batches_external_and_selects_only_one_managed_package() {
             .output()
             .unwrap(),
     );
-    let selected: toml::Table = toml::from_str(&fs::read_to_string(&configs[0]).unwrap()).unwrap();
-    assert_eq!(selected["input"].as_str(), Some("edit"));
+    assert_eq!(fs::read(&configs[0]).unwrap(), before[0]);
     assert_eq!(fs::read(&configs[1]).unwrap(), before[1]);
     assert_eq!(
-        fs::read_to_string(first.join("checkout/SPECS/ed/ed.spec")).unwrap(),
+        fs::read_to_string(first.join("recipe/SPECS/ed/ed.spec")).unwrap(),
         SPEC
     );
     assert_eq!(
-        fs::read_to_string(second.join("checkout/SPECS/other/other.spec")).unwrap(),
+        fs::read_to_string(second.join("recipe/SPECS/other/other.spec")).unwrap(),
         SPEC.replace("Name:           ed", "Name:           other")
     );
 }
@@ -393,8 +384,8 @@ fn cli_editor_and_resume_preserve_one_toml_stage() {
 fn hash_uses_edited_urls_and_includes_unmarked_signatures_but_not_local_files() {
     let server = Server::new(false, |path| response(path.as_bytes()));
     let original = format!(
-        "Name: ed\nVersion: 1\nSource0: {}/%{{version}}.tar\nSource1: {}/%{{version}}.tar.sig\nSource2: local.txt\n%description\nDemo\n",
-        server.url, server.url
+        "Name: ed\nVersion: 1\nSource0: {}/%{{version}}.tar\nSource1: {}/%{{version}}.tar.sig\nSource2: local.txt\nSource3: {}/%{{version}}.tar\n%description\nDemo\n",
+        server.url, server.url, server.url
     );
     let directory = fixture(&original);
     let result = server
@@ -428,6 +419,14 @@ fn hash_uses_edited_urls_and_includes_unmarked_signatures_but_not_local_files() 
             .iter()
             .all(|source| source["number"].as_integer() != Some(2))
     );
+    assert_eq!(
+        record["source_hashes"]["sources"][2]["number"].as_integer(),
+        Some(3)
+    );
+    assert_eq!(
+        record["source_hashes"]["sources"][2]["sha256"],
+        record["source_hashes"]["sources"][0]["sha256"]
+    );
     assert_eq!(*server.calls.lock().unwrap(), ["/2.tar", "/2.tar.sig"]);
     let values: toml::Value =
         toml::from_str(&fs::read_to_string(stage(directory.path()).join("ed.toml")).unwrap())
@@ -438,7 +437,7 @@ fn hash_uses_edited_urls_and_includes_unmarked_signatures_but_not_local_files() 
             .is_some_and(|hash| hash.len() == 64)
     );
     let candidate = fs::read_to_string(stage(directory.path()).join("ed.candidate.spec")).unwrap();
-    assert_eq!(candidate.matches("#!RemoteAsset:").count(), 2);
+    assert_eq!(candidate.matches("#!RemoteAsset:").count(), 3);
     assert!(candidate.contains("Source2: local.txt"));
     assert_eq!(
         fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
@@ -563,4 +562,109 @@ fn failed_rebase_index_retains_loadable_original_and_reports_published_spec() {
         Some("source-changed")
     );
     assert!(!String::from_utf8_lossy(&check.stdout).contains("saved original hash mismatch"));
+}
+
+#[cfg(unix)]
+#[test]
+fn candidate_actions_never_launch_an_editor_based_on_saved_state() {
+    for saved in [false, true] {
+        for action in ["--diff", "--apply", "--check"] {
+            let directory = fixture(SPEC);
+            let marker = directory.path().join("editor-called");
+            let script = directory.path().join("editor-marker.sh");
+            fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\ntouch {}\n",
+                    shell_words::quote(&marker.to_string_lossy())
+                ),
+            )
+            .unwrap();
+            if saved {
+                success(
+                    &command(directory.path())
+                        .args(["--spec=ed.spec", "--set=package.version=2"])
+                        .output()
+                        .unwrap(),
+                );
+            }
+            let result = command(directory.path())
+                .args(["--spec=ed.spec", action])
+                .env(
+                    "GIT_EDITOR",
+                    format!("/bin/sh {}", shell_words::quote(&script.to_string_lossy())),
+                )
+                .output()
+                .unwrap();
+            assert!(!marker.exists(), "{saved} {action}: {result:?}");
+            if saved || action == "--check" {
+                success(&result);
+            } else {
+                assert_eq!(result.status.code(), Some(1));
+                assert!(String::from_utf8_lossy(&result.stderr).contains("no saved edits"));
+                assert!(!stage(directory.path()).exists());
+            }
+            let expected = if saved && action == "--apply" {
+                SPEC.replace("Version:        1.22.5", "Version:        2")
+            } else {
+                SPEC.to_owned()
+            };
+            assert_eq!(
+                fs::read_to_string(directory.path().join("ed.spec")).unwrap(),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn script_assignment_replaces_and_addition_appends_checked_text() {
+    let directory = fixture(SPEC);
+    let run = |args: &[&str]| {
+        command(directory.path())
+            .args(["--spec=ed.spec", "--apply"])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    success(&run(&["--add", "build.stages.conf.prepend=echo first"]));
+    success(&run(&[
+        "--add",
+        "build.stages.conf.prepend=echo second",
+        "--add",
+        "build.stages.conf.prepend=echo third",
+    ]));
+    let source = fs::read_to_string(directory.path().join("ed.spec")).unwrap();
+    assert!(source.contains("%conf -p\necho first\necho second\necho third\n"));
+    success(&run(&[
+        "--set",
+        "build.stages.conf.prepend=echo replacement",
+    ]));
+    let expected = fs::read_to_string(directory.path().join("ed.spec")).unwrap();
+    assert_eq!(
+        expected,
+        source.replace("echo first\necho second\necho third", "echo replacement")
+    );
+    for args in [
+        vec![
+            "--set",
+            "build.stages.conf.prepend=echo one",
+            "--add",
+            "build.stages.conf.prepend=echo two",
+        ],
+        vec!["--add", "build.stages.conf.prepend=%files\n/unselected"],
+        vec!["--add", "package.version=2"],
+    ] {
+        let rejected = fixture(&expected);
+        let result = command(rejected.path())
+            .args(["--spec=ed.spec", "--apply"])
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert_eq!(
+            fs::read_to_string(rejected.path().join("ed.spec")).unwrap(),
+            expected
+        );
+    }
 }

@@ -22,7 +22,7 @@ fn gen_command(directory: &Path, spec: &str) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ruyipack"));
     command
         .current_dir(directory)
-        .args(["gen", "review", "--spec", spec]);
+        .args(["gen", "review", "--output", spec]);
     command
 }
 
@@ -80,7 +80,7 @@ fn diff_never_writes_new_changed_or_identical_targets() {
 }
 
 #[test]
-fn spec_selects_a_cwd_relative_file_and_uses_the_same_overwrite_policy() {
+fn output_selects_a_cwd_relative_file_and_uses_the_same_overwrite_policy() {
     let directory = workspace();
     let generated = gen_command(directory.path(), "review.spec.new")
         .output()
@@ -128,11 +128,13 @@ fn skip_existing_keeps_edits_and_creates_missing_targets() {
     assert!(target.is_file());
     fs::write(&target, "hand edited\n").unwrap();
     let kept = gen_command(directory.path(), "ed.spec")
-        .arg("--skip-existing")
+        .args(["--skip-existing", "--format=toml"])
         .output()
         .unwrap();
     assert!(kept.status.success());
-    assert!(kept.stdout.is_empty());
+    assert!(kept.stderr.is_empty(), "{kept:?}");
+    let report = super::support::machine_report(&kept);
+    assert!(report["written"].as_array().unwrap().is_empty());
     assert_file(target, "hand edited\n");
 }
 

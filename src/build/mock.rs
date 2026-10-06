@@ -11,6 +11,7 @@ struct Receipt {
     format_version: u32,
     engine: String,
     success: bool,
+    target_stage: super::Stage,
     artifacts: Vec<Artifact>,
 }
 
@@ -23,7 +24,7 @@ struct Artifact {
 
 use std::{io, path::Path, time::Duration};
 
-pub(super) struct Mock;
+pub(super) struct Mock(pub(super) super::Stage);
 
 impl Engine for Mock {
     fn name(&self) -> &'static str {
@@ -31,11 +32,11 @@ impl Engine for Mock {
     }
 
     fn shell(&self) -> Vec<String> {
-        vec![
-            "python3".into(),
-            "/input/engine.py".into(),
-            "--shell".into(),
-        ]
+        python(include_str!("mock_shell.py"))
+    }
+
+    fn export_patch(&self) -> Vec<String> {
+        python(include_str!("mock_export.py"))
     }
 
     fn stage(
@@ -56,6 +57,12 @@ impl Engine for Mock {
             "/output".into(),
             "--timeout".into(),
             timeout.as_secs().to_string(),
+            "--stage".into(),
+            match self.0 {
+                super::Stage::Prep => "prep",
+                super::Stage::Build => "build",
+            }
+            .into(),
         ])
     }
     fn verify_result(&self, output: &Path) -> io::Result<()> {
@@ -68,6 +75,7 @@ impl Engine for Mock {
             serde_json::from_slice(&fs_err::read(receipt_path)?).map_err(io::Error::other)?;
         if receipt.format_version != 1
             || receipt.engine != self.name()
+            || receipt.target_stage != self.0
             || !receipt.success
             || receipt.artifacts.is_empty()
         {
@@ -97,4 +105,8 @@ impl Engine for Mock {
         }
         Ok(())
     }
+}
+
+fn python(script: &str) -> Vec<String> {
+    vec!["python3".into(), "-c".into(), script.into()]
 }

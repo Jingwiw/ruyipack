@@ -51,6 +51,20 @@ impl<'src> Inspection<'src> {
         parser_diagnostic::write(&self.diagnostics, writer)
     }
 
+    /// These are declared values, not claims about native macro expansion.
+    pub(crate) fn write_identity(&self, writer: &mut impl Write) -> io::Result<()> {
+        let config = PrinterConfig::default().with_preamble_value_column(None);
+        let contents = printer::print_with(&self.view, &config);
+        for line in contents.lines().filter(|line| {
+            ["Name:", "Version:", "Release:"]
+                .iter()
+                .any(|tag| line.starts_with(tag))
+        }) {
+            writeln!(writer, "build: {line}")?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn write_human(&self, writer: &mut impl Write) -> io::Result<()> {
         let config = PrinterConfig::default().with_preamble_value_column(None);
         let contents = printer::print_with(&self.view, &config);

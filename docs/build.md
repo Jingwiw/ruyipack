@@ -6,229 +6,321 @@ SPDX-License-Identifier: MulanPSL-2.0
 
 # Native development builds
 
-`build WORK` resolves a saved package binding through the nearest workspace root,
-then builds the SPEC in its development checkout. A missing area is created only
-after a unique committed recipe SPEC is found. It does not fetch missing materials
-or change the recipe. Static `check` remains independent of Docker, Mock, and
-native RPM.
+`build WORK` builds the SPEC in the saved recipe directory.
+It does not run `gen`, apply TOML changes or rewrite the recipe.
+Static `check` requires neither Docker nor native RPM.
 
 ## One command
 
-Install the standard Docker CLI and Compose plugin with access to a Linux daemon.
-Initialize a workspace and prepare its configured recipe Git repository first:
+Install the Docker CLI and Compose plugin. Connect them to a Linux daemon.
+Initialize a workspace. For an existing Git package, prepare its configured recipe repository.
 
 ```sh
-cd /path/to/workspace
 ruyipack build busybox
-# A separate development area for the same package:
 ruyipack build busybox-test --pkgname busybox
 ```
 
-The defaults are `recipes = "openruyi"`, `work = "work"` and `specs = "SPECS"` in
-`.ruyiconfig/config.toml`. A plain WORK name always means a workspace development
-area, even if a file with that name exists in the current directory. Discovery
-works from nested directories. New areas use PKG = WORK unless `--pkgname PKG` supplies
-the initial binding; existing areas reuse their saved binding and cannot be
-rebound. The input SPEC is `SPECS/PKG/PKG.spec` under the configured checkout,
-not a guessed RPM Name or a file from the current directory. Without an implicit
-match in committed main, use an explicit `--pkgname` binding.
+The second command creates a separate development area for the same package.
+A new implicit area requires a unique recipe in committed main.
+Existing areas use their saved binding; they cannot be rebound.
+WORK always names a development area, even when a same-named file exists.
+Workspace discovery also works from subdirectories.
 
-Results live in `work/WORK/build/` (under the configured work directory), beside
-`work/WORK/checkout/`, and keep the existing `input/`, `host/`, `engine/` and
-`receipt.json` structure. Machine stdout is a TOML outcome with `operation`,
-`success`, the producer identity, observed failures, and `receipt` pointing to the
-full saved JSON receipt; persistent receipt protocols are not migrated yet. Prepared materials are copied recursively from
-`checkout/SPECS/PKG/` (using configured `specs`), including local patches and
-already present source files. No remote download, automatic source-directory
-flattening, or Source digest acceptance is implied. The workspace's
-`.ruyiconfig/build/` assets are copied into the result's `.config/` and their actual
-hashes are recorded; user edits and original permissions are preserved.
+Default paths in `.ruyiconfig/config.toml` are:
 
-Named builds do not accept `--source-dir` or `--dir`: the binding has one checkout
-package directory and one retained build result. An existing result is never
-overwritten; return with `shell WORK`, or explicitly clean it before another
-attempt. `--timeout 1800` bounds backend execution; bounded termination, artifact
-retrieval and cleanup may run afterward. Use `--format toml` for a typed outcome linking the complete saved receipt
-on stdout; progress goes to stderr.
+| Setting | Default | Use |
+| --- | --- | --- |
+| `recipes` | `openruyi` | Recipe Git repository |
+| `specs` | `SPECS` | Package directories inside the repository |
+| `work` | `work` | Development areas |
 
-For an explicitly prepared SPEC outside the managed name route, use its path:
+All areas build `work/WORK/recipe/SPECS/PKG/PKG.spec`. The configured `specs` path selects packages in the source and commit repository.
+The command does not infer paths from the RPM Name or current directory.
+
+## Prepare materials independently
+
+```sh
+ruyipack source fetch busybox
+ruyipack check busybox --materials
+ruyipack build busybox --offline
+```
+
+`source fetch` checks declarations before downloading. It needs no Docker and copies committed package files when required.
+Fetch and build download missing remote materials only with a valid declared SHA-256.
+Local materials must already exist. Neither operation changes declarations.
+
+Material resolution requires static Source/Patch values, not expanded build options or dependency strings.
+Unrelated target macros remain uninterpreted.
+Executable macros, injected declarations, includes and ambiguous material branches block resolution.
+This does not establish arbitrary target macro behavior.
+
+**`--offline` stops material downloads, not Mock dependency networking.**
+Hash refresh downloads current upstream bytes and retains them by content hash.
+Build can reuse those bytes after verification. `source verify` downloads independently; it does not trust this cache.
+
+Materials come from the recipe directory and `work/WORK/sources/`.
+The build copies ordinary recipe files recursively, including local patches.
+Conflicting copies fail instead of selecting one silently.
+An optional offline check for external materials is:
+
+```sh
+ruyipack check --spec package.spec --materials --source-dir SOURCES
+```
+
+## Results and repeated builds
+
+Current results are in `work/WORK/build/`:
+
+| Path | Content |
+| --- | --- |
+| `.config/` | Workspace assets or embedded defaults; absent with explicit `--config` |
+| `input/` | Staged recipe, materials and engine program |
+| `host/` | Docker/Compose logs and runtime inspection records |
+| `engine/receipt.json` | Mock stages, configuration, installed packages, RPM identities and artifact hashes |
+| `engine/srpm/`, `engine/rpm/` | SRPM/RPM files and Mock logs |
+| `receipt.json` | Input hashes, tool identity, arguments, exit status, cancellation, runtime and cleanup results |
+
+Named builds do not accept `--source-dir` or `--output-dir`.
+Their binding selects one recipe directory and one current result.
+
+Repeat `build WORK` after editing. Material preflight runs before archiving the previous result.
+Bad materials leave that result unchanged.
+Earlier results move to `work/WORK/build-history/` and consume disk until you clean them.
+
+An unchanged environment can reuse its stopped worker and Mock dependency caches.
+A repeated build still runs; an old success is not a new result.
+After a shell session, the old environment stays with its archived receipt.
+The next build uses a fresh worker to exclude interactive changes.
+Configuration changes also require a fresh worker.
+
+Use `inspect WORK` to list current and historical attempt IDs and resource states.
+`shell WORK --attempt ID` and `clean WORK --attempt ID` select a saved attempt.
+`current` selects the current build. IDs identify stored attempts, not immutable success claims.
+
+Build output streams to stderr and remains in logs.
+`--format toml` writes one outcome to stdout, linking the full JSON receipt.
+Human and machine summaries share logs, accepted artifacts, `working_directory` and `next_steps` command arrays.
+Run suggested commands from that directory.
+A shell hint means a worker was retained; it does not prove chroot preparation succeeded.
+
+`--timeout 1800` limits backend execution.
+Bounded termination, artifact retrieval and cleanup can continue after that deadline.
+
+## Build an external SPEC
+
+For prepared input outside a named area:
 
 ```sh
 ruyipack build --spec /path/to/package.spec \
   --source-dir /path/to/SOURCES \
-  --dir ./build
+  --output-dir ./build
 ```
 
-This advanced mode still requires `--source-dir`, rejects `--pkgname`, and stores one
-result in `DIR/SPEC_STEM` (`DIR` defaults to `build`; its parent must exist).
-A relative `--spec ./package.spec` selects the same mode. It does
-not create or borrow a WORK binding, and without `--config` uses the embedded
-openRuyi environment. Use another `--dir` or clean that result for another attempt.
+This mode requires `--source-dir` and rejects `--pkgname`.
+It stores results in `DIR/SPEC_STEM`; DIR defaults to `build`, and its parent must exist.
+It does not create or borrow a WORK binding.
+Without `--config`, it uses the embedded openRuyi environment.
+Repeat the same command to archive the previous evidence and build again.
 
-By default the worker is **stopped and retained**, including its Mock chroot.
-The receipt includes commands to restart or remove it. Add `--rm` to remove the
-build's containers, networks and temporary volumes after evidence retrieval.
-`--rm` is an explicit disposal policy, including failed builds, timeouts and
-failed retrieval. Retrieval errors are still reported; unavailable evidence may
-be lost. Neither mode deletes host results or shared images.
+## Clean results or discard resources
 
-To remove a build's retained resources **and** its host result directory:
+Workers stop and remain available by default, including the Mock chroot.
+Receipts include restart and removal commands.
+
+Add `build --rm` to remove containers, networks and temporary volumes after retrieval.
+This applies to failed builds, timeouts and retrieval failures too.
+**With `--rm`, evidence that could not be retrieved can be lost.**
+Host results and shared images remain.
+
+To remove retained resources and host results:
 
 ```sh
-ruyipack clean busybox          # show scope and confirm
-ruyipack clean busybox --force  # skip confirmation
+ruyipack clean busybox
+ruyipack clean busybox --force
+ruyipack clean busybox --history --force
 ```
 
-Noninteractive cleanup requires `--force`. This flag does not bypass directory
-or daemon identity checks. Cleanup uses the recorded project labels, not commands
-from the receipt or a potentially changed Compose file. Results are local trusted
-state; do not clean a build receipt supplied by an untrusted party. A Docker
-connection is required even when no container remains. Shared images are retained.
-Save `--format toml` stdout separately if you need a record of successful cleanup.
+The first command shows the scope and asks for confirmation.
+`--force` skips confirmation; it does not bypass directory or daemon identity checks.
+Noninteractive cleanup requires this flag.
+`--history` keeps the current result and cleans archived attempts.
+Failed attempts remain available for retry, and each failure is reported.
 
-Inputs are copied, not mounted from the client filesystem. Thus the backend does
-not assume a remote daemon can see local paths. It invokes standard Docker and
-Compose only; the daemon's VM provider is not part of the interface. The command
-uses Docker's existing connection configuration unless `--context NAME` is given
-for an explicit override. The user's current context is never changed. Personal
-context names and credentials belong to Docker configuration, not the project.
-
-Optional preflight: `ruyipack check --spec package.spec --materials --source-dir SOURCES`.
-This checks declared material presence and digests without downloading. Building
-is a separate native operation, not proof that every static or source-integrity
-rule passed.
+For an explicit archived path, use `clean --build-dir PATH --force`.
+A historical receipt that relinquished its worker removes logs only, never the current worker.
+Cleanup uses recorded project labels, not executable commands from a receipt or changed Compose file.
+A Docker connection is required even when no container remains. Shared images are retained.
+Use only trusted local receipts. Save TOML stdout elsewhere if you need a cleanup record.
 
 ## Return to the build directory
 
 ```sh
 ruyipack shell busybox
-# Explicit prepared-SPEC result: receipt package key, not WORK:
-ruyipack shell package --dir ./build
+ruyipack shell --build-dir ./build/package
+ruyipack shell busybox --timeout 120 -- rpm --eval '%{_builddir}'
 ```
 
-Without `--dir`, `shell WORK` reuses the saved binding and the fixed WORK/build
-receipt under the workspace root; it never creates a missing area. With explicit
-`--dir`, its positional argument is the receipt's recipe key and the result is
-`DIR/RECIPE`. This is a separate advanced mode, not fallback for a missing WORK.
-Named build and shell hold the cooperative area lock throughout the operation;
-shell also locks its receipt to serialize sessions.
+`shell` restarts the retained worker and enters Mock's chroot at `%{_builddir}`.
+It does not create an environment or rebuild.
+The build must have reached chroot initialization without `--rm`.
+Missing workers, missing build directories, ownership mismatches and running workers cause errors.
 
-This restarts the retained worker and enters **Mock's chroot**, at RPM's native
-`%{_builddir}`. It does not merely open a shell in the outer container, create a
-new environment, or rebuild. It requires a build without `--rm` that reached
-chroot initialization. A removed worker or missing build directory is an error.
-The recorded daemon and worker ownership must match; a running worker is refused.
-A terminal gets an interactive TTY; piped input works without one, but Mock still
-starts an interactive shell and may print prompts or job-control warnings. Shell
-streams are not a JSON command-execution protocol.
+`shell` and `clean` accept WORK with `--attempt ID`, or an explicit `--build-dir PATH`.
+They do not create missing areas or guess WORK from paths.
+Named build and shell hold the area lock; shell also locks its receipt.
+These locks coordinate RuyiPack operations, not arbitrary external writers.
 
-On ordinary shell exit, the worker is stopped again, not deleted. The original
-build receipt remains historical evidence; each session writes a separate
-`host/shell-*.json` with its status and lifecycle commands. Interactive streams
-are attached directly, not recorded as a transcript. Changes in this debugging
-session are **not** exported patches or a verified clean rebuild. Shell interaction
-has no time limit; `--timeout` bounds each probe and stop. Abrupt host termination
-can leave the worker running; shell does not promise build's cancellation recovery.
+A terminal gets an interactive TTY. Piped input needs no TTY, but Mock can print prompts or job-control warnings.
+Interactive sessions have no deadline; `--timeout` limits probes and stopping the worker.
+Arguments after `--` execute directly in the Mock build directory with a deadline.
+Use an explicit shell only when you need shell syntax.
+Command stdout and stderr remain separate and are saved in session logs.
+`--debug` adds internal stages and log paths.
+
+On ordinary exit, the worker stops but is not deleted.
+Each session writes `host/shell-*.json`; the original build receipt remains unchanged.
+Interactive streams are not recorded as a transcript.
+Abrupt host termination can leave the worker running.
+Shell does not provide build's cancellation recovery.
+
+Sessions mark the environment as potentially modified, so later builds do not reuse it for verification.
+Patch export alone does not mark it modified.
+Receipts without explicit session tracking are treated conservatively.
+The current CLI supplies the shell adapter without rewriting original build input or Mock configuration.
+
+## Prepare, debug, export a Patch
+
+```sh
+ruyipack build busybox --stage prep
+ruyipack shell busybox
+ruyipack shell busybox --export-patch fix.patch --source-root busybox-1.37.0 --path applets/example.c
+# Copy the Patch into the recipe directory and declare it in the SPEC.
+ruyipack build busybox
+```
+
+Replace the source root and file path with those from your build.
+`--stage prep` creates an SRPM and runs native prep. It is not a full build.
+Successful prep saves a source baseline; full builds do not.
+
+Export compares selected UTF-8 regular files with that baseline, including additions and deletions.
+It rejects symlinks, binary files, unsafe paths and existing output files.
+It does not export permissions or select generated files for you.
+No source or SPEC is written back automatically. Validate the Patch with a fresh build.
+`shell --timeout` bounds export; interactive shell time remains unlimited.
 
 ## Advanced configuration
 
-Named builds select ROOT/.ruyiconfig/build/compose.yaml by default and snapshot
-that directory into the result's `.config/`. The original workspace assets are
-never overwritten by embedded defaults or normalized in place. Keep relative
-asset references within that directory so the copied context is self-contained.
-Advanced explicit-SPEC builds without `--config` instead materialize the four
-embedded `environments/openruyi/` files. In both default modes only this small
-`.config/` directory is the Docker build context; recipe materials and logs are
-not sent as image inputs. The receipt records the copied file hashes.
+Named builds copy `.ruyiconfig/build/` into the result's `.config/`.
+Actual file hashes and original permissions are retained.
+Embedded defaults never overwrite user workspace assets.
+Keep relative asset references inside that directory.
 
-`--config /path/to/compose.yaml` overrides either default with a standard Compose
-file. Its parent is the project/build context. The explicit file is not rewritten;
-its hash is recorded, but arbitrary referenced files are **not** snapshotted.
-Keep a custom context narrow and version-controlled.
+External-SPEC builds without `--config` use the four embedded `environments/openruyi/` files.
+In both default modes, only `.config/` becomes the Docker build context.
+Recipe materials and logs are not image inputs.
 
-Before image creation, `build` checks Compose availability, daemon identity/Linux
-OS, and Compose configuration validity. Actual worker execution checks Python,
-Mock, RPM and the target configuration. These checks do not predict repository
-availability, supported emulation, every SPEC macro, or eventual build success;
-those require their real native stages.
+`--config /path/to/compose.yaml` selects a custom Compose file.
+Its parent is the project/build context. The file is not rewritten, and its hash is recorded.
+Arbitrary referenced files are not snapshotted. Keep custom contexts small and version-controlled.
 
-## The three boundaries
+Inputs are copied rather than mounted from the client filesystem.
+A remote daemon need not see local paths.
+RuyiPack uses standard Docker and Compose, not a provider-specific VM interface.
+It uses Docker's connection configuration unless you select `--context NAME`.
+It never changes your current Docker context.
+Keep personal context names and credentials in Docker configuration.
 
-- **Engine (`src/build/mock.rs`, `mock.py`)** stages an executable invocation,
-  creates an SRPM, runs Mock's full rebuild, records RPM facts, and verifies the
-  returned receipt and artifact hashes. It does not call Docker or know a context.
-- **Backend (`src/build/compose.rs`, `compose/clean.rs`)** builds/starts the `worker` service, copies
-  input, executes argv, retrieves output, and cleans up. It has no RPM semantics.
-- **Environment (`environments/openruyi`)** supplies the Dockerfile, standard
-  Compose definition, target repositories, macros and privileges. These are not
-  embedded in backend logic or substituted by the authoring profile.
+### Environment checks
 
-A new engine implements staging, result verification and its shell argv; a new backend
-implements validation, execution and shell attachment, and supplies its name. Select it at the CLI composition point. These are
-private Rust boundaries, not a plugin ABI or a promise that every combination
-works. An environment must provide the selected engine's executable requirements.
+Before image creation, build checks Compose, daemon identity, Linux OS and Compose configuration.
+Before engine execution, it checks the resolved platform against the image and queries the worker's RPM architecture.
+Temporary mount and chroot probes check required capabilities.
+Mock configuration must match the target architecture.
+Execution also checks Python, Mock, RPM and target configuration.
 
-The Compose backend expects one service named `worker`, a long-lived default
-command, readable `/input` and writable `/output`. It transfers files with Docker
-copy, so no daemon socket or host source mounts are required. Keep the environment
-build context narrow; it is trusted executable configuration.
+These probes do not predict repository availability, every SPEC macro or build success.
+They do not install binfmt handlers or manage a VM.
+They do not identify an emulator; the translator is reported as unknown.
 
-The Mock engine requires Python 3.11+, RPM, a privilege-aware `mock` command,
-`MOCK_CONFIG` naming a Mock configuration, and `BUILD_TARGET` naming target JSON.
-The supplied image uses a normal `builder` user and a sudo wrapper restricted to
-Mock's entry point. This is a convenience boundary, not a sandbox against hostile
-Mock configuration or SPEC macros.
+## Engine, backend and environment
+
+| Component | Responsibility |
+| --- | --- |
+| Engine (`src/build/mock.rs`, `mock.py`) | Stage execution, create SRPM, run Mock, record RPM facts and verify returned artifacts |
+| Backend (`src/build/compose.rs`) | Start the worker, transfer files, execute arguments, retrieve output and clean resources |
+| Environment (`environments/openruyi`) | Supply image, Compose service, repositories, macros and privileges |
+
+The engine does not call Docker. The backend has no RPM semantics.
+The authoring profile does not replace the target environment.
+A new engine supplies staging, result verification and shell arguments.
+A new backend supplies validation, execution, attachment and its name.
+Select them at the CLI composition point. These private interfaces are not a plugin ABI.
+An environment must provide the chosen engine's requirements; combinations are not automatically supported.
+
+Compose needs a long-lived `worker` service with readable `/input` and writable `/output`.
+Docker copy transfers files; no daemon socket or host source mount is required.
+The build context is trusted executable configuration.
+
+Mock needs Python 3.11+, RPM and a privilege-aware `mock` command.
+`MOCK_CONFIG` identifies its configuration; `BUILD_TARGET` identifies target JSON.
+The supplied image uses a normal `builder` user with a sudo wrapper restricted to Mock.
+This is not isolation against hostile Mock configuration or SPEC macros.
 
 ## Evidence and failure
 
-The output contains:
+Engine stages record SRPM creation and full rebuild, or the requested prep stage.
+Native phase detail stays in `build.log`, `root.log` and `state.log`.
+A `Finish` line is not sufficient for success. Nonempty stderr is not sufficient for failure.
+The engine verifies receipts and artifact bytes before build exits 0.
+Completed SRPM identity is recorded before rebuild, even if rebuild later fails.
 
-- `.config/`: the selected workspace asset snapshot or embedded defaults (absent with explicit `--config`);
-- `input/`: the exact staged recipe, materials and engine program;
-- `receipt.json`: input SHA-256 identities, tool identity, actual argv/exit status,
-  timeouts/cancellation, Docker runtime identity and transport/cleanup results;
-- `host/`: raw Docker/Compose stdout and stderr, daemon and container inspect JSON;
-- `engine/receipt.json`: Mock stages, target/config identity, installed packages,
-  native RPM identities and artifact sizes/SHA-256;
-- `engine/srpm/` and `engine/rpm/`: SRPM/RPM files and raw Mock logs.
+Failure categories distinguish execution, retrieval, verification and cleanup.
+Cleanup failure does not replace an earlier failure or skip artifact validation.
+Without `--rm`, retrieval failure retains a stopped container and recovery commands.
+With `--rm`, removal is still attempted and retrieval failure remains reported.
 
-The machine stages are SRPM creation and full rebuild, not guessed RPM phase
-outcomes. `build.log`, `root.log` and `state.log` retain native detail. A `Finish`
-line alone is not success. Nonempty stderr alone is not failure. Successful
-transport also is not a successful build: the engine verifies its returned
-receipt and artifact bytes before `build` exits 0. A completed SRPM is recorded
-before rebuild, so a later failure does not lose its machine-readable identity.
-
-Without `--rm`, artifact-copy failure retains a stopped container and records
-recovery commands. With `--rm`, deletion is still attempted and retrieval failure
-is reported rather than silently changing the disposal policy. Cleanup failure never replaces the original failure. On Unix,
-timeout terminates the host command group. A failed execution stops the worker
-before retrieving evidence. Removal afterward requires `--rm`. Ctrl-C (and SIGTERM/SIGHUP on Unix) cancels
-active build commands, then runs bounded stop/copy/removal and writes the failure
-receipt. Further signals do not interrupt recovery. SIGKILL, host loss and daemon
-failure cannot guarantee cleanup; inspect the recorded Docker project before retrying.
-Artifact validation still runs when only cleanup failed, so cleanup errors cannot
-hide damaged output. `clean` itself retains ordinary process signal behavior.
+On Unix, timeout terminates the host command group.
+Failed execution stops the worker before evidence retrieval; removal requires `--rm`.
+Ctrl-C, SIGTERM and SIGHUP cancel active commands, then run bounded recovery and write the failure receipt.
+Further signals do not interrupt recovery. `clean` retains ordinary signal behavior.
+SIGKILL, host loss and daemon failure cannot guarantee cleanup.
+Inspect the recorded Docker project before retrying after such failures.
 Report path strings are display text, not a byte-exact replay protocol.
 
 ## Supported scope and trust
 
-The supplied target is openRuyi **x86_64**, not Fedora with renamed macros.
-It uses Mock `simple` chroot isolation, no nested Docker/Podman or nspawn, and
-Docker's default capability set plus `SYS_ADMIN` (not `privileged`). This grants
-substantial privilege: use a disposable, trusted build host, not untrusted PRs on
-a shared daemon. Compose overrides may change these properties; the actual
-container inspect is retained.
+The supplied target is openRuyi x86_64, not Fedora with substituted macros.
+Mock uses `simple` chroot isolation, without nested Docker, Podman or nspawn.
+Docker uses default capabilities plus `SYS_ADMIN`, not `privileged` mode.
+**Use a disposable, trusted build host. Do not run untrusted PRs on a shared daemon.**
+Compose overrides can change these properties; receipts retain actual container inspection.
 
-The base image digest is pinned, but the openRuyi package repository is rolling
-and currently configured without package signature verification. Installed
-versions are recorded; exact environment replay and offline builds are **not**
-claimed. `%autorelease` / `%autochangelog` follow the pinned upstream CI macro
-configuration recorded in `target.json`; OBS release counters are not injected.
-Artifacts are local development builds, not production release identities.
+The base image digest is pinned. The package repository is rolling and currently disables package signature verification.
+Receipts record installed versions, but do not establish exact replay or offline builds.
+The bundled Mock config sets `%autorelease` to `1%{?dist}` and `%autochangelog` to `%{nil}`.
+`target.json` labels this development policy; the receipt retains the effective Mock config.
+OBS release counters and changelog services are not validated. These are development artifacts, not production release identities.
 
-Mock 6.5's package-state plugin queries the removed RPM 6 `pkgid` tag. This target
-disables that plugin; the engine validates and records a native NEVRA query
-instead. Build/test success remains limited to the actual recipe and target:
-disabled upstream tests and cross-architecture emulation are not native test
-coverage. Do not share raw environment/log evidence without checking for secrets.
+Mock 6.5's package-state plugin queries RPM 6's removed `pkgid` tag.
+The target disables it; the engine records and validates a native NEVRA query instead.
+Results apply only to the tested recipe and target.
+Disabled tests and cross-architecture emulation are not native test coverage.
+Check logs and environment evidence for secrets before sharing them.
+
+## Repository fallback
+
+The profile probes primary RPM metadata before installing dependencies.
+If metadata is unavailable or invalid, it probes boat and uses only that repository for the attempt.
+If both probes fail, the attempt stops.
+Compilation failures and missing dependencies do not trigger a switch.
+Receipts record probes, selected URL and metadata digest.
+
+Changed or unknown repository identity causes chroot and dependency-cache cleanup.
+Repeated builds with the same origin can reuse caches. Shell uses the saved effective configuration.
+Successful metadata retrieval does not guarantee later RPM downloads.
+There is no mid-build switch or mixing of repositories.
+
+Image bootstrap uses the same order through native DNF metadata refresh.
+Only the selected repository is enabled; its URL is saved in the image and recorded when available.
+For existing workspaces, add `repository_fallback` to build `target.json` explicitly and rebuild the image.
+Upgrades never rewrite workspace configuration.

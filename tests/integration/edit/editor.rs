@@ -59,7 +59,7 @@ fn persistent_stage_paths_resume_from_a_changed_directory_with_shell_characters(
     for editor_fails in [false, true] {
         // Each case starts with a pristine source and a fresh persistent stage.
         fs::write(directory.join("ed.spec"), SPEC).unwrap();
-        let pending = directory.join(".ruyipack-stage");
+        let pending = directory.join(".ruyipack-draft");
         if pending.exists() {
             fs::remove_dir_all(&pending).unwrap();
         }
@@ -83,7 +83,7 @@ fn persistent_stage_paths_resume_from_a_changed_directory_with_shell_characters(
             .unwrap();
         assert_eq!(output.status.code(), Some(i32::from(editor_fails)));
         unchanged(&directory);
-        let saved = directory.join(".ruyipack-stage/ed");
+        let saved = directory.join(".ruyipack-draft/ed");
         let shell = format!(
             "{} edit --from={} --apply",
             shell_words::quote(env!("CARGO_BIN_EXE_ruyipack")),
@@ -116,7 +116,7 @@ fn quoted_editor_command_edits_toml_without_polluting_spec_stdout() {
     success(&output);
     assert_eq!(output.stdout, version_source("1.22.6").as_bytes());
     assert!(String::from_utf8_lossy(&output.stderr).contains("EDITOR_OUTPUT"));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("stage saved:"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("saved:"));
     unchanged(directory.path());
 }
 
@@ -146,7 +146,7 @@ fn explicit_apply_saves_checked_changes_and_keeps_the_persistent_stage() {
             directory.path().join("ed.spec"),
             &(version_source("1.22.6")),
         );
-        assert!(String::from_utf8_lossy(&output.stderr).contains("stage saved:"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("saved:"));
         assert!(!fs::read_dir(directory.path()).unwrap().any(|entry| {
             entry
                 .unwrap()
@@ -161,7 +161,7 @@ fn explicit_apply_saves_checked_changes_and_keeps_the_persistent_stage() {
                 .join(if persistent {
                     "drafts/ed.toml"
                 } else {
-                    ".ruyipack-stage/ed/ed.toml"
+                    ".ruyipack-draft/ed/ed.toml"
                 })
                 .is_file()
         );
@@ -207,7 +207,7 @@ fn notification_failure_retains_editor_work_before_publication() {
         assert!(output.stdout.is_empty());
         assert!(!directory.path().join("copy.spec").exists());
         let document: toml::Table = toml::from_str(
-            &fs::read_to_string(directory.path().join(".ruyipack-stage/ed/ed.toml")).unwrap(),
+            &fs::read_to_string(directory.path().join(".ruyipack-draft/ed/ed.toml")).unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -267,7 +267,7 @@ fn editor_failure_retains_its_changed_draft() {
     assert!(stderr.contains("editor exited"));
     let retained = stderr
         .lines()
-        .find_map(|line| line.strip_prefix("Persistent stage retained: "))
+        .find_map(|line| line.strip_prefix("Edits retained: "))
         .unwrap();
     let draft = Path::new(retained).join("ed.toml");
     assert!(draft.is_file());
@@ -305,7 +305,7 @@ fn editor_preview_and_copy_keep_all_persistent_stages() {
                 .output()
                 .unwrap();
             success(&output);
-            let retained = directory.path().join(".ruyipack-stage/ed/ed.toml");
+            let retained = directory.path().join(".ruyipack-draft/ed/ed.toml");
             let document: toml::Table =
                 toml::from_str(&fs::read_to_string(retained).unwrap()).unwrap();
             assert_eq!(

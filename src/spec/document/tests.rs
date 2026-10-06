@@ -49,7 +49,7 @@ fn equal_length_dependency_edits_preserve_line_layout() {
 }
 
 #[test]
-fn resizing_nonempty_dependencies_rebuilds_only_the_contiguous_group() {
+fn resizing_dependencies_preserves_unchanged_declarations() {
     for (case, values, expected) in [
         (
             "grow",
@@ -59,7 +59,7 @@ fn resizing_nonempty_dependencies_rebuilds_only_the_contiguous_group() {
         (
             "shrink",
             &["first"][..],
-            "Name: demo\nBuildRequires:  first\n\n%description\nA demo.\n",
+            "Name: demo\nBuildRequires:\tfirst\n\n%description\nA demo.\n",
         ),
     ] {
         assert_eq!(dependencies(values), expected, "{case}: {values:?}");
@@ -72,7 +72,7 @@ fn empty_dependencies_remove_the_existing_group() {
 }
 
 #[test]
-fn annotated_dependency_groups_allow_append_but_not_ambiguous_regrouping() {
+fn dependency_changes_preserve_intervening_comments() {
     let source = DEPENDENCIES.replace(
         "BuildRequires:  second",
         "# 分组原因保留\nBuildRequires:  second",
@@ -99,10 +99,9 @@ fn annotated_dependency_groups_allow_append_but_not_ambiguous_regrouping() {
         .as_array_mut()
         .unwrap()
         .remove(0);
-    assert!(
-        render(&snapshot, &edited)
-            .unwrap_err()
-            .contains("across separate source groups")
+    assert_eq!(
+        render(&snapshot, &edited).unwrap(),
+        "Name: demo\nBuildRequires:  third\n# 分组原因保留\n\n%description\nA demo.\n"
     );
 }
 
@@ -126,11 +125,7 @@ fn copyright_years_and_holders_change_without_overlapping_replacements() {
             snapshot.document()["spec"]["copyright-holders"][0].as_str(),
             Some(first)
         );
-        if years == "INVALID" || first.is_empty() {
-            assert!(render(&snapshot, snapshot.document()).is_err());
-        } else {
-            assert_eq!(render(&snapshot, snapshot.document()).unwrap(), source);
-        }
+        assert_eq!(render(&snapshot, snapshot.document()).unwrap(), source);
         for (holders, expected) in [
             (
                 vec!["Updated Holder", "Second Holder"],
@@ -303,6 +298,131 @@ proptest! {
 }
 
 #[test]
+fn crlf_field_values_roundtrip_and_replacements_keep_crlf() {
+    let source = SPEC.replace('\n', "\r\n");
+    let snapshot = capture(&source);
+    let lf = capture(SPEC);
+    assert_eq!(snapshot.document(), lf.document());
+    assert_eq!(render(&snapshot, snapshot.document()).unwrap(), source);
+    for (field, value) in [
+        ("package.version", Value::from("1.22.6")),
+        (
+            "package.description",
+            Value::from("第一行\nSecond line\n\n"),
+        ),
+        ("spec.changelog", Value::from("New entry\n")),
+        ("sources.0.sha256", Value::from("a".repeat(64))),
+        (
+            "spec.comments",
+            Value::Array(vec!["# First\n# 第二行".into()]),
+        ),
+        (
+            "package.files.doc",
+            Value::Array(vec!["README".into(), "NEWS".into()]),
+        ),
+        ("package.files.entries", Value::Array(vec![])),
+        ("build-requires.rpm", Value::Array(vec!["make".into()])),
+        (
+            "spec.copyright-holders",
+            Value::Array(vec!["One".into(), "Two".into(), "Three".into()]),
+        ),
+    ] {
+        let mut edited = snapshot.document().clone();
+        *super::table::lookup_mut(&mut edited, field).unwrap() = value;
+        let candidate = crate::spec::candidate::prepare(&snapshot, &edited, &[], false).unwrap();
+        assert_eq!(
+            candidate.spec.source(),
+            render(&lf, &edited).unwrap().replace('\n', "\r\n"),
+            "{field}"
+        );
+    }
+    let source = "Name: demo\r\nBuildRequires: first";
+    let snapshot = capture(source);
+    let mut edited = snapshot.document().clone();
+    edited["build-requires"]["rpm"]
+        .as_array_mut()
+        .unwrap()
+        .push("second".into());
+    assert_eq!(
+        render(&snapshot, &edited).unwrap(),
+        "Name: demo\r\nBuildRequires: first\r\nBuildRequires:  second\r\n"
+    );
+}
+
+#[test]
+fn mixed_line_endings_preserve_untouched_bytes_and_reject_bare_controls() {
+    let source = "Name: demo\r\nVersion: 1\r\nSummary: unchanged\n%description\r\nold\r\nbody\n";
+    let snapshot = capture(source);
+    assert_eq!(render(&snapshot, snapshot.document()).unwrap(), source);
+    let mut edited = snapshot.document().clone();
+    edited["package"]["version"] = "2".into();
+    edited["package"]["description"] = "new\nbody\n".into();
+    assert_eq!(
+        render(&snapshot, &edited).unwrap(),
+        "Name: demo\r\nVersion: 2\r\nSummary: unchanged\n%description\r\nnew\r\nbody\r\n"
+    );
+    for source in ["Name: demo\rVersion: 1\n", "Name: demo\0\n"] {
+        assert!(
+            Snapshot::capture_selected(&ParsedSpec::parse(source), &["package.name".into()])
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn dependency_namespaces_and_conditions_roundtrip_without_flattening() {
+    let source = "Name: demo\nBuildRequires: pkgconfig(zlib) >= 1.2\nBuildRequires: make\n%if 0%{?feature}\nBuildRequires: cmake(Foo)\n%else\nBuildRequires: fallback\n%endif\n\n%description\nDemo\n";
+    let snapshot = selected(source, &["build-requires".into()]);
+    assert_eq!(render(&snapshot, snapshot.document()).unwrap(), source);
+    assert_eq!(
+        snapshot.document()["build-requires"]["pkgconfig"][0].as_str(),
+        Some("zlib >= 1.2")
+    );
+    let mut edited = snapshot.document().clone();
+    edited["build-requires"]["if1-else"]["rpm"] = Value::Array(vec![]);
+    edited["build-requires"]["if1-then1"]["cmake"] = Value::Array(vec!["Bar".into()]);
+    let result = render(&snapshot, &edited).unwrap();
+    assert_eq!(
+        result,
+        source
+            .replace("cmake(Foo)", "cmake(Bar)")
+            .replace("BuildRequires: fallback\n", "")
+    );
+    let reparsed = selected(&result, snapshot.selection());
+    assert_eq!(reparsed.document(), &edited);
+}
+
+#[test]
+fn explicit_empty_dependency_namespace_is_inserted_in_selected_branch() {
+    let source =
+        "Name: demo\n%if 1\nBuildRequires: make\n%else\n# keep\n%endif\n\n%description\nDemo\n";
+    let snapshot = selected(source, &["build-requires.if1-else.pkgconfig".into()]);
+    let mut edited = snapshot.document().clone();
+    edited["build-requires"]["if1-else"]["pkgconfig"] = Value::Array(vec!["zlib".into()]);
+    let result = render(&snapshot, &edited).unwrap();
+    assert_eq!(
+        result,
+        source.replace("%else\n", "%else\nBuildRequires:  pkgconfig(zlib)\n")
+    );
+    assert_eq!(selected(&result, snapshot.selection()).document(), &edited);
+}
+
+#[test]
+fn first_dependency_preserves_the_header_and_follows_package_metadata() {
+    let source = "# SPDX-License-Identifier: MIT\nName: demo\nVersion: 1\n\n%description\nDemo\n";
+    let snapshot = selected(source, &["build-requires.pkgconfig".into()]);
+    let mut edited = snapshot.document().clone();
+    edited["build-requires"]["pkgconfig"] = Value::Array(vec!["zlib".into()]);
+    assert_eq!(
+        render(&snapshot, &edited).unwrap(),
+        source.replace(
+            "Version: 1\n",
+            "Version: 1\nBuildRequires:  pkgconfig(zlib)\n"
+        )
+    );
+}
+
+#[test]
 fn supported_projection_keeps_the_parser_failure() {
     let parsed = ParsedSpec::parse("Name: example\n%endif\n");
     let selected = Snapshot::capture_selected(&parsed, &["package.name".into()])
@@ -314,4 +434,60 @@ fn supported_projection_keeps_the_parser_failure() {
         supported.contains("`%endif` without matching `%if`"),
         "{supported}"
     );
+}
+
+#[test]
+fn unrelated_edits_preserve_unresolved_source_but_reject_changed_invalid_url() {
+    let source = SPEC.replace(
+        "https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz",
+        "%{unknown}",
+    );
+    let snapshot = selected(&source, &["package.summary".into(), "sources.0.url".into()]);
+    let mut edited = snapshot.document().clone();
+    edited["package"]["summary"] = "Updated summary".into();
+    assert_eq!(
+        render(&snapshot, &edited).unwrap(),
+        source.replace("A line-oriented text editor", "Updated summary")
+    );
+    edited["sources"]["0"]["url"] = "https://example.org/with space".into();
+    assert!(render(&snapshot, &edited).is_err());
+}
+
+#[test]
+fn configure_fragments_use_checked_candidates_and_preserve_other_bytes() {
+    use crate::spec::candidate;
+    for mode in ["prepend", "append", "replace"] {
+        let field = format!("build.stages.conf.{mode}");
+        let snapshot = selected(SPEC, std::slice::from_ref(&field));
+        let mut edited = snapshot.document().clone();
+        *super::table::lookup_mut(&mut edited, &field).unwrap() = "echo configured".into();
+        let candidate = candidate::prepare(&snapshot, &edited, &[], false).unwrap();
+        let header = match mode {
+            "prepend" => "%conf -p",
+            "append" => "%conf -a",
+            _ => "%conf",
+        };
+        let block = format!("{header}\necho configured\n\n");
+        assert_eq!(candidate.spec.source().replace(&block, ""), SPEC);
+        let next = selected(candidate.spec.source(), std::slice::from_ref(&field));
+        assert_eq!(
+            render(&next, next.document()).unwrap(),
+            candidate.spec.source()
+        );
+        *super::table::lookup_mut(&mut edited, &field).unwrap() =
+            "echo configured\n%files\n/unselected".into();
+        assert!(candidate::prepare(&snapshot, &edited, &[], false).is_err());
+    }
+}
+
+#[test]
+fn configure_ambiguity_is_not_silently_replaced() {
+    let field = vec!["build.stages.conf.prepend".into()];
+    for block in [
+        "%conf -p\necho one\n%conf -p\necho two\n",
+        "%if 0\n%conf -p\necho one\n%endif\n",
+    ] {
+        let text = SPEC.replace("%files", &format!("{block}\n%files"));
+        assert!(Snapshot::capture_selected(&ParsedSpec::parse(text), &field).is_err());
+    }
 }

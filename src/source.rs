@@ -12,7 +12,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     cell::Cell,
-    io::Read,
+    io::{Read, Seek, Write},
     sync::LazyLock,
     time::{Duration, Instant},
 };
@@ -94,7 +94,7 @@ pub(crate) fn require_https(field: &str, url: &Url) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct Download {
     resolved_url: String,
     effective_url: String,
@@ -156,24 +156,54 @@ pub(crate) fn prepare_remote(
     Ok(urls)
 }
 
-/// The complete map is checked before the first download can start.
+/// The map is checked before downloading; completed observations survive a later failure.
 pub(crate) fn download_prepared(
     urls: std::collections::BTreeMap<u32, RemoteSource<'_>>,
-) -> Result<std::collections::BTreeMap<u32, Download>, Error> {
-    urls.into_iter()
-        .map(|(number, url)| {
-            url.download()
-                .map(|download| (number, download))
-                .map_err(|error| error.at(number))
-        })
-        .collect()
+    cache: Option<&std::path::Path>,
+    completed: &mut std::collections::BTreeMap<u32, Download>,
+) -> Result<(), Error> {
+    let mut downloads = Downloads::new(cache);
+    for (number, url) in urls {
+        let download = downloads.fetch(url).map_err(|error| error.at(number))?;
+        completed.insert(number, download);
+    }
+    Ok(())
+}
+
+/// Successful observations shared within one operation, never across invocations.
+/// Callers retain their own selection, admission and partial-failure rules.
+pub(crate) struct Downloads<'cache> {
+    cache: Option<&'cache std::path::Path>,
+    completed: std::collections::BTreeMap<String, Download>,
+}
+
+impl<'cache> Downloads<'cache> {
+    pub(crate) fn new(cache: Option<&'cache std::path::Path>) -> Self {
+        Self {
+            cache,
+            completed: std::collections::BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn fetch(&mut self, source: RemoteSource<'_>) -> Result<Download, Error> {
+        if let Some(download) = self.completed.get(source.original) {
+            return Ok(download.clone());
+        }
+        let original = source.original.to_owned();
+        let download = source.download_cached(self.cache)?;
+        self.completed.insert(original, download.clone());
+        Ok(download)
+    }
 }
 
 pub(crate) fn download_selected(
     resolved: &spec::sources::Resolution,
     numbers: &[u32],
+    cache: Option<&std::path::Path>,
 ) -> Result<std::collections::BTreeMap<u32, Download>, Error> {
-    download_prepared(prepare_selected(resolved, numbers)?)
+    let mut completed = std::collections::BTreeMap::new();
+    download_prepared(prepare_selected(resolved, numbers)?, cache, &mut completed)?;
+    Ok(completed)
 }
 
 /// Classifies normalized URL schemes; uppercase HTTP(S) is still remote.
@@ -189,11 +219,17 @@ pub(crate) struct RemoteSource<'url> {
 }
 
 impl<'url> RemoteSource<'url> {
+    pub(crate) fn same_request(&self, original: &str) -> bool {
+        Url::parse(original).is_ok_and(|url| {
+            url[..url::Position::AfterQuery] == self.url[..url::Position::AfterQuery]
+        })
+    }
+
     pub(crate) fn parse(original: &'url str) -> Result<Self, Error> {
         Self::classify(original)?.ok_or_else(|| Error::new(Reason::UrlPolicy, INVALID_URL))
     }
 
-    fn classify(original: &'url str) -> Result<Option<Self>, Error> {
+    pub(crate) fn classify(original: &'url str) -> Result<Option<Self>, Error> {
         let url = remote_url(original).map_err(|e| Error::new(Reason::UrlPolicy, e))?;
         url.map(|url| {
             credentials(&url).map_err(|e| Error::new(Reason::UrlPolicy, e))?;
@@ -203,7 +239,58 @@ impl<'url> RemoteSource<'url> {
     }
 
     /// Hash archive bytes directly. No HTTP content decoding or temporary archive.
-    pub(crate) fn download(self) -> Result<Download, Error> {
+    fn download(self) -> Result<Download, Error> {
+        self.download_with(Self::client()?, Duration::from_mins(5))
+    }
+
+    /// Hash refresh still fetches current bytes; retain them by content identity
+    /// so a later verified build need not download them again. No URL cache index.
+    fn download_cached(self, cache: Option<&std::path::Path>) -> Result<Download, Error> {
+        let Some(cache) = cache else {
+            return self.download();
+        };
+        let objects = cache.join(".objects");
+        let output_error =
+            |error| Error::new(Reason::Output, format!("{}: {error}", objects.display()));
+        fs_err::create_dir_all(&objects).map_err(output_error)?;
+        if !fs_err::symlink_metadata(&objects)
+            .map_err(output_error)?
+            .is_dir()
+        {
+            return Err(Error::new(
+                Reason::Output,
+                "material object directory must not be a symlink",
+            ));
+        }
+        let mut temporary = tempfile::NamedTempFile::new_in(&objects).map_err(output_error)?;
+        let downloaded = self.download_into(
+            Self::client()?,
+            Duration::from_mins(5),
+            Some(temporary.as_file_mut()),
+        )?;
+        let path = objects.join(&downloaded.sha256);
+        match crate::file_digest::read(&path) {
+            Ok(content) if content.sha256 == downloaded.sha256 => {}
+            Ok(_) => {
+                return Err(Error::new(
+                    Reason::Output,
+                    "stored material object does not match its digest; not overwritten",
+                ));
+            }
+            Err(crate::file_digest::Error::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                temporary.as_file().sync_all().map_err(output_error)?;
+                temporary
+                    .persist_noclobber(&path)
+                    .map_err(|e| output_error(e.error))?;
+            }
+            Err(error) => return Err(Error::new(Reason::Output, error.to_string())),
+        }
+        Ok(downloaded)
+    }
+
+    fn client() -> Result<&'static ureq::Agent, Error> {
         static CLIENT: LazyLock<Result<ureq::Agent, String>> = LazyLock::new(|| {
             let mut tls = ureq::tls::TlsConfig::builder();
             // Respect an explicit CA bundle without silently disabling TLS validation.
@@ -231,26 +318,75 @@ impl<'url> RemoteSource<'url> {
                 .build()
                 .into())
         });
-        let agent = CLIENT.as_ref().map_err(|e| Error::new(Reason::Tls, e))?;
-        self.download_with(agent, Duration::from_mins(5))
+        CLIENT.as_ref().map_err(|e| Error::new(Reason::Tls, e))
     }
 
     fn download_with(self, agent: &ureq::Agent, budget: Duration) -> Result<Download, Error> {
+        self.download_into(agent, budget, None)
+    }
+
+    /// Publish only complete, checksum-matching bytes; never replace an existing material.
+    pub(crate) fn download_to(
+        self,
+        path: &std::path::Path,
+        expected: &str,
+    ) -> Result<Download, Error> {
+        validate_sha256(expected).map_err(Error::invalid_digest)?;
+        let output_error =
+            |error| Error::new(Reason::Output, format!("{}: {error}", path.display()));
+        let mut temporary = tempfile::NamedTempFile::new_in(
+            path.parent().unwrap_or_else(|| std::path::Path::new(".")),
+        )
+        .map_err(output_error)?;
+        let downloaded = self.download_into(
+            Self::client()?,
+            Duration::from_mins(5),
+            Some(temporary.as_file_mut()),
+        )?;
+        if !downloaded.sha256.eq_ignore_ascii_case(expected) {
+            return Err(Error::invalid_digest(format!(
+                "{}: downloaded SHA-256 does not match declaration; material was not published",
+                path.display()
+            )));
+        }
+        temporary.as_file().sync_all().map_err(output_error)?;
+        temporary
+            .persist_noclobber(path)
+            .map_err(|error| output_error(error.error))?;
+        Ok(downloaded)
+    }
+
+    fn download_into(
+        self,
+        agent: &ureq::Agent,
+        budget: Duration,
+        mut output: Option<&mut std::fs::File>,
+    ) -> Result<Download, Error> {
         // Retries, redirects and body reads spend the same per-source budget.
         let deadline = Instant::now() + budget;
-        match self.attempt(agent, deadline) {
+        match self.attempt(agent, deadline, output.as_deref_mut()) {
             Err(error) if error.reason.retryable() && Instant::now() < deadline => {
                 std::thread::sleep(
                     Duration::from_millis(100)
                         .min(deadline.saturating_duration_since(Instant::now())),
                 );
-                self.attempt(agent, deadline)
+                self.attempt(agent, deadline, output)
             }
             result => result,
         }
     }
 
-    fn attempt(&self, agent: &ureq::Agent, deadline: Instant) -> Result<Download, Error> {
+    fn attempt(
+        &self,
+        agent: &ureq::Agent,
+        deadline: Instant,
+        mut output: Option<&mut std::fs::File>,
+    ) -> Result<Download, Error> {
+        if let Some(file) = output.as_deref_mut() {
+            file.set_len(0)
+                .and_then(|()| file.rewind())
+                .map_err(|e| Error::new(Reason::Output, e.to_string()))?;
+        }
         let mut url = self.url.clone();
         url.set_fragment(None);
         let mut redirects = 0;
@@ -265,7 +401,7 @@ impl<'url> RemoteSource<'url> {
                 .timeout_global(Some(remaining))
                 .build()
                 .call()
-                .map_err(Error::from)?;
+                .map_err(|error| Error::from(error).with_url(&url))?;
             match response.status().as_u16() {
                 301 | 302 | 303 | 307 | 308 => {
                     if redirects == 10 {
@@ -329,6 +465,10 @@ impl<'url> RemoteSource<'url> {
             if length == 0 {
                 break;
             }
+            if let Some(file) = output.as_deref_mut() {
+                file.write_all(&buffer[..length])
+                    .map_err(|e| Error::new(Reason::Output, e.to_string()))?;
+            }
             digest.update(&buffer[..length]);
             bytes += length as u64;
         }
@@ -352,6 +492,7 @@ enum Reason {
     Timeout,
     HttpStatus(u16),
     BodyRead,
+    Output,
     RedirectLimit,
     InvalidRedirect,
     Transport,
@@ -393,6 +534,7 @@ pub(crate) struct Error {
     message: String,
     reason: Reason,
     source_number: Option<u32>,
+    url: Option<String>,
 }
 
 /// Source evidence without a message, for callers that supply their own context.
@@ -404,6 +546,8 @@ pub(crate) struct Details<'a> {
     retryable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_number: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -439,7 +583,19 @@ impl Error {
             message: message.into(),
             reason,
             source_number: None,
+            url: None,
         }
+    }
+
+    fn with_url(mut self, url: &Url) -> Self {
+        let mut display = url.clone();
+        let _ = display.set_username("");
+        let _ = display.set_password(None);
+        display.set_query(None);
+        display.set_fragment(None);
+        self.message = format!("{}; url={display}", self.message);
+        self.url = Some(display.into());
+        self
     }
 
     pub(crate) fn resolution(message: impl Into<String>) -> Self {
@@ -470,6 +626,7 @@ impl Error {
             },
             retryable: self.reason.retryable(),
             source_number: self.source_number,
+            url: self.url.as_deref(),
         }
     }
 }
@@ -501,6 +658,33 @@ mod tests {
         net::TcpListener,
         thread,
     };
+
+    #[test]
+    fn request_identity_ignores_archive_name_but_preserves_path_and_query() {
+        let source =
+            RemoteSource::parse("https://example.org/1/download?token=a#/old.tar").unwrap();
+        assert!(source.same_request("https://EXAMPLE.org:443/1/download?token=a#/new.tar"));
+        assert!(!source.same_request("https://example.org/2/download?token=a#/old.tar"));
+        assert!(!source.same_request("https://example.org/1/download?token=b#/old.tar"));
+    }
+
+    #[test]
+    fn download_error_url_is_structured_and_redacts_credentials_and_query() {
+        let error = Error::from(ureq::Error::StatusCode(404))
+            .with_url(
+                &Url::parse("https://user:secret@example.org/pkg.tar.gz?token=secret#fragment")
+                    .unwrap(),
+            )
+            .at(0);
+        assert_eq!(error.details().url, Some("https://example.org/pkg.tar.gz"));
+        assert_eq!(error.details().source_number, Some(0));
+        assert!(
+            error
+                .to_string()
+                .contains("url=https://example.org/pkg.tar.gz")
+        );
+        assert!(!error.to_string().contains("secret"));
+    }
 
     #[test]
     fn failure_reports_and_embedded_details_preserve_source_evidence() {

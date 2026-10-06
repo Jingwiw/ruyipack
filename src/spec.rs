@@ -13,7 +13,10 @@ mod diagnostic;
 pub(crate) mod document;
 pub(crate) mod expression;
 pub(crate) mod files;
+pub(crate) mod identity;
 pub(crate) mod inspection;
+pub(crate) mod policy_fix;
+pub(crate) mod signature;
 pub(crate) mod sources;
 pub(crate) mod verify;
 

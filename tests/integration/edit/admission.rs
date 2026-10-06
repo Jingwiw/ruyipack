@@ -9,7 +9,7 @@ use std::fs;
 
 #[test]
 fn authoring_can_save_a_local_change_without_claiming_whole_package_validity() {
-    let source = SPEC.replace("BuildRequires:  autoconf\n", "");
+    let source = SPEC.replace("https://www.gnu.org/software/ed/", "ftp://example.org/");
     let directory = fixture(&source);
     let checked = command(directory.path())
         .args([
@@ -41,7 +41,7 @@ fn authoring_can_save_a_local_change_without_claiming_whole_package_validity() {
         &source.replace("1.22.5", "1.22.6"),
     );
 
-    // Saving did not waive the declaration contract for check or submission.
+    // Saving did not waive URL policy for check or submission.
     for policy in ["authoring", "submit"] {
         let output = super::super::support::command()
             .args([
@@ -57,12 +57,12 @@ fn authoring_can_save_a_local_change_without_claiming_whole_package_validity() {
         assert_eq!(output.status.code(), Some(1), "{output:?}");
         let report = super::support::machine_report(&output);
         assert_eq!(report["valid"].as_bool(), Some(false));
-        assert_eq!(report["findings"][0]["code"].as_str(), Some("RPK004"));
+        assert_eq!(report["findings"][0]["code"].as_str(), Some("RPK003"));
     }
 }
 
 #[test]
-fn equal_error_messages_cannot_hide_changed_invalid_rule_inputs() {
+fn changed_invalid_inputs_block_but_dependency_advice_does_not() {
     let source = SPEC.replace("https://www.gnu.org/software/ed/", "ftp://example.org/old");
     let directory = fixture(&source);
     let output = command(directory.path())
@@ -104,9 +104,9 @@ fn equal_error_messages_cannot_hide_changed_invalid_rule_inputs() {
         .args(["--check", "--format", "toml"])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(0));
     let report = super::support::machine_report(&output);
-    assert_eq!(report["files"][0]["admissible"].as_bool(), Some(false));
+    assert_eq!(report["files"][0]["admissible"].as_bool(), Some(true));
     assert_file(directory.path().join("ed.spec"), &source);
 }
 
@@ -134,9 +134,14 @@ fn interactive_edit_reports_legacy_issues_and_digest_help_once() {
         .unwrap();
     success(&output);
     let log = String::from_utf8(output.stderr).unwrap();
-    assert_eq!(log.matches("static blockers:").count(), 1, "{log}");
-    assert!(log.contains("new 0, inherited 4, resolved 0"), "{log}");
-    assert_eq!(log.matches("[RPK004]: inherited 4").count(), 1, "{log}");
+    assert_eq!(log.matches(": candidate\n").count(), 1, "{log}");
+    assert!(log.contains("autoconf, automake, libtool, make"), "{log}");
+    assert_eq!(
+        log.matches("[RPK004]: BuildRequires: consider explicitly declaring")
+            .count(),
+        1,
+        "{log}"
+    );
     for (code, text) in [("RPK004", "BuildSystem:"), ("RPK005", "Source0:")] {
         let line = source
             .lines()
@@ -144,10 +149,7 @@ fn interactive_edit_reports_legacy_issues_and_digest_help_once() {
             .unwrap()
             + 1;
         assert!(
-            log.contains(&format!(
-                "[{}] spec[{line}:1] [{code}]",
-                if code == "RPK004" { "ERROR" } else { "WARN" }
-            )),
+            log.contains(&format!("[WARN] spec[{line}:1] [{code}]")),
             "{log}"
         );
     }

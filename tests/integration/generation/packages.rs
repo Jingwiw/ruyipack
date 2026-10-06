@@ -145,9 +145,9 @@ replace = ""
     );
     assert!(generated.find("%description    meta").unwrap() < generated.find("%prep -p").unwrap());
     assert!(generated.find("%check\n").unwrap() < generated.find("%files\n").unwrap());
-    quiet_success(&run(
+    crate::support::success(&run(
         directory.path(),
-        &["gen", "authoring", "--spec=ed.spec"],
+        &["gen", "authoring", "--output=ed.spec"],
     ));
     assert_eq!(
         fs::read(directory.path().join("ed.spec")).unwrap(),
@@ -244,7 +244,7 @@ fn malformed_subpackage_dependencies_cannot_overwrite_even_with_force() {
             fs::write(&destination, "# maintained by hand\n").unwrap();
             let output = run(
                 directory.path(),
-                &["gen", "authoring", "--spec=ed.spec", "--force"],
+                &["gen", "authoring", "--output=ed.spec", "--force"],
             );
             assert_eq!(output.status.code(), Some(1), "{field}: {output:?}");
             assert!(output.stdout.is_empty());
@@ -253,7 +253,7 @@ fn malformed_subpackage_dependencies_cannot_overwrite_even_with_force() {
             assert!(
                 !directory
                     .path()
-                    .join("work/authoring/ed.resolved.toml")
+                    .join("work/authoring/.cache/ed.resolved.toml")
                     .exists()
             );
         }

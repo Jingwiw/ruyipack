@@ -76,8 +76,8 @@ fn selected_draft_requires_every_selected_field() {
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let report = super::support::machine_report(&output);
-    assert_eq!(report["format_version"].as_integer(), Some(4));
-    assert_eq!(report["scope"].as_str(), Some("edit-stage"));
+    assert_eq!(report["format_version"].as_integer(), Some(5));
+    assert_eq!(report["scope"].as_str(), Some("edit"));
     assert!(report.get("valid").is_none());
     assert!(report["files"][0].get("valid").is_none());
     assert_eq!(

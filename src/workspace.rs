@@ -4,12 +4,19 @@
 
 //! Workspace roots and user-owned configuration, independent of build tools.
 
-mod checkout;
+mod baseline;
+pub(crate) mod commit;
+mod commit_scope;
+pub(crate) mod delete;
 mod development;
+mod git;
 mod input;
+pub(crate) mod pr;
+mod recipe;
 
-pub(crate) use development::{Development, GenerationInput};
+pub(crate) use development::{Development, DevelopmentKind};
 pub(crate) use input::SpecOptions;
+pub(crate) use recipe::spec_in;
 
 use clap::Args;
 use fs_err as fs;
@@ -25,7 +32,7 @@ const DEFAULT_CONFIG: &str = "recipes = \"openruyi\"\nwork = \"work\"\nspecs = \
 #[derive(Args)]
 pub(crate) struct Options {
     /// Empty or nonexistent directory to initialize.
-    #[arg(value_name = "PATH", default_value = ".")]
+    #[arg(value_name = "PATH", default_value = ".", value_hint = clap::ValueHint::DirPath)]
     path: PathBuf,
     /// Clone a recipe Git repository after initialization; omit for offline initialization.
     #[arg(long, value_name = "URL")]
@@ -35,37 +42,77 @@ pub(crate) struct Options {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
+    #[serde(default)]
+    repology: std::collections::BTreeMap<String, String>,
     recipes: PathBuf,
     work: PathBuf,
     specs: PathBuf,
+    editor: Option<String>,
+    author: Option<String>,
 }
 
 pub(crate) struct Workspace {
+    repology: std::collections::BTreeMap<String, String>,
     root: PathBuf,
     recipes: PathBuf,
     work: PathBuf,
     specs: PathBuf,
+    editor: Option<String>,
+    author: Option<String>,
 }
 
 impl Workspace {
+    pub(crate) fn configuration(&self) -> PathBuf {
+        self.root.join(".ruyiconfig")
+    }
+
+    pub(crate) fn repology_project(&self, package: &str) -> Option<&str> {
+        self.repology.get(package).map(String::as_str)
+    }
+
+    /// User-owned packaging identity; unrelated workspace operations need not validate it.
+    pub(crate) fn author(&self) -> io::Result<Option<&str>> {
+        let author = self.author.as_deref().filter(|value| valid_author(value));
+        if author.is_none() {
+            crate::output_cli::stderr().message(
+                crate::output_cli::HumanLevel::Warn,
+                Some(&self.root.join(".ruyiconfig/config.toml")),
+                format_args!("author is missing or invalid; set author = \"Name <email>\". Package authors: spec.contributors"),
+            )?;
+        }
+        Ok(author)
+    }
+
+    pub(crate) fn recipes(&self) -> &Path {
+        &self.recipes
+    }
+
+    pub(crate) fn editor(&self) -> Option<&str> {
+        self.editor.as_deref()
+    }
+
     pub(crate) fn build_config(&self) -> PathBuf {
         self.root.join(".ruyiconfig/build/compose.yaml")
     }
 }
 
-/// Stop at the nearest marker, including an interrupted or invalid workspace.
 pub(crate) fn discover() -> io::Result<Workspace> {
+    discover_optional()?.ok_or_else(|| {
+        invalid("not in a RuyiPack workspace; run `ruyipack init` in an empty directory first")
+    })
+}
+
+/// Explicit file operations may run outside a workspace; an invalid marker still fails.
+pub(crate) fn discover_optional() -> io::Result<Option<Workspace>> {
     let current = std::env::current_dir()?;
     for root in current.ancestors() {
         match fs::symlink_metadata(root.join(".ruyiconfig")) {
-            Ok(_) => return load(root),
+            Ok(_) => return load(root).map(Some),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
     }
-    Err(invalid(
-        "not in a RuyiPack workspace; run `ruyipack init` in an empty directory first",
-    ))
+    Ok(None)
 }
 
 pub(crate) fn run(options: &Options) -> io::Result<()> {
@@ -123,7 +170,15 @@ pub(crate) fn run(options: &Options) -> io::Result<()> {
     // Exclusive creation arbitrates concurrent init. Leave partial state on failure;
     // retry must warn rather than overwrite files or erase an interrupted workspace.
     fs::create_dir(&marker)?;
-    fs::write(marker.join("config.toml"), DEFAULT_CONFIG)?;
+    let author = git_author(&root)?.unwrap_or_default();
+    fs::write(
+        marker.join("config.toml"),
+        format!("{DEFAULT_CONFIG}author = {}\n", toml::Value::String(author)),
+    )?;
+    fs::write(marker.join("commit-ignore.toml"), commit_scope::DEFAULT)?;
+    fs::write(marker.join("pr.md"), include_bytes!("../templates/pr.md"))?;
+    let workspace = load(&root)?;
+    workspace.author()?;
     crate::environment::write(&marker.join("build"))?;
     writeln!(
         io::stdout().lock(),
@@ -131,14 +186,13 @@ pub(crate) fn run(options: &Options) -> io::Result<()> {
         root.display()
     )?;
     if let Some(url) = &options.clone {
-        let workspace = load(&root)?;
         clone_recipes(&root, &workspace.recipes, url)?;
     }
     Ok(())
 }
 
 fn clone_recipes(root: &Path, recipes: &Path, url: &OsStr) -> io::Result<()> {
-    checkout::clone_repository(recipes, url).map_err(|error| {
+    git::clone_repository(recipes, url).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!(
@@ -190,9 +244,12 @@ fn load(root: &Path) -> io::Result<Workspace> {
         }
     }
     Ok(Workspace {
+        repology: config.repology,
         root: root.to_path_buf(),
         recipes,
         work,
+        editor: config.editor,
+        author: config.author,
         specs: config
             .specs
             .components()
@@ -265,4 +322,50 @@ fn directory(root: &Path, path: &Path, allow_symlinks: bool) -> io::Result<PathB
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
+}
+
+// Read global identity only at init, not repository identity or GIT_AUTHOR_* overrides.
+fn git_author(root: &Path) -> io::Result<Option<String>> {
+    let mut values = Vec::new();
+    for field in ["user.name", "user.email"] {
+        let output = match crate::host_process::capture(
+            std::process::Command::new("git").current_dir(root).args([
+                "config",
+                "--global",
+                "--includes",
+                "--get",
+                field,
+            ]),
+            std::time::Duration::from_secs(30),
+            64 * 1024,
+        ) {
+            Ok(output) if output.status.success() => output,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+            _ => return Ok(None),
+        };
+        let Ok(value) = String::from_utf8(output.stdout) else {
+            return Ok(None);
+        };
+        values.push(value.trim_end_matches('\n').to_owned());
+    }
+    let author = format!("{} <{}>", values[0], values[1]);
+    Ok(valid_author(&author).then_some(author))
+}
+
+fn valid_author(value: &str) -> bool {
+    crate::spec_metadata::validate_contributor(value).is_ok()
+        && value
+            .strip_suffix('>')
+            .and_then(|value| value.rsplit_once(" <"))
+            .is_some_and(|(name, email)| !name.trim().is_empty() && !email.trim().is_empty())
+}
+
+pub(crate) fn save_baseline(work: &Path, package: &Path) -> io::Result<()> {
+    baseline::save(
+        &work.join("baseline.toml"),
+        &baseline::Baseline {
+            files: baseline::read(package)?,
+            allow_create: true,
+        },
+    )
 }

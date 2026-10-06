@@ -29,7 +29,7 @@ fn verification_distinguishes_missing_mismatch_and_uncertainty_without_writing()
     });
     let hash = format!("{:x}", Sha256::digest(b"archive"));
     let source = format!(
-        "Name: probe\nVersion: 1\n%global host {}\n#!RemoteAsset:  sha256:{}\nSource0: %{{host}}/match\n#!RemoteAsset:  sha256:{}\nSource1: %{{host}}/mismatch\nSource2: %{{host}}/missing\nSource3: local.tar\nSource4: %{{host}}/fail\n#!RemoteAsset:  sha256:{}\nSource5: %{{host}}/later\nSource6: %{{unknown}}/archive\n",
+        "Name: probe\nVersion: 1\n%global host {}\n#!RemoteAsset:  sha256:{}\nSource0: %{{host}}/match\n#!RemoteAsset:  sha256:{}\nSource1: %{{host}}/match\nSource2: %{{host}}/match\nSource3: local.tar\nSource4: %{{host}}/fail\n#!RemoteAsset:  sha256:{}\nSource5: %{{host}}/later\nSource6: local:1.tar.gz\nSource7: https:/example.org/file\nSource8: ftp://example.org/file\nSource9: https://user:password@example.org/file\nSource10: %{{host}}/fail\nSource11: %{{unknown}}/archive\n",
         server.url,
         hash.to_uppercase(),
         "a".repeat(64),
@@ -60,6 +60,11 @@ fn verification_distinguishes_missing_mismatch_and_uncertainty_without_writing()
         "not-applicable",
         "error",
         "match",
+        "not-applicable",
+        "error",
+        "error",
+        "error",
+        "error",
         "unresolved",
     ]
     .iter()
@@ -90,12 +95,12 @@ fn verification_distinguishes_missing_mismatch_and_uncertainty_without_writing()
     assert!(report["sources"][4].get("download").is_none());
     assert_eq!(report["sources"][4]["reason"].as_str(), Some("http-status"));
     assert_eq!(report["sources"][4]["http_status"].as_integer(), Some(404));
-    assert_eq!(report["sources"][6]["reason"].as_str(), Some("resolution"));
-    assert_eq!(report["sources"][6]["retryable"].as_bool(), Some(false));
+    assert_eq!(report["sources"][11]["reason"].as_str(), Some("resolution"));
+    assert_eq!(report["sources"][11]["retryable"].as_bool(), Some(false));
     assert_file(&input, &source);
     assert_eq!(
         *server.calls.lock().unwrap(),
-        ["/match", "/mismatch", "/missing", "/fail", "/later"]
+        ["/match", "/fail", "/later", "/fail"]
     );
     fs::write(&input, "%include absent.inc\n").unwrap();
     let incomplete = run(&["--spec=input.spec", "--format", "toml"]);

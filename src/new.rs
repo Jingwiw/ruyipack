@@ -4,40 +4,59 @@
 //
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Package authoring scaffolds in named Git development areas.
+//! Package authoring inputs in named development areas.
 
-use crate::{file_output, output_cli, spec_metadata, workspace};
+mod spec_import;
+
+use crate::{file_output, output_cli, workspace};
 use askama::Template;
 use clap::{Args, ValueEnum};
 use std::{
     io::{self, Write},
-    path::Path,
-    process::Command,
-    time::Duration,
+    path::{Path, PathBuf},
 };
 
 #[derive(Args)]
 #[command(
-    after_help = "Creates work/WORK/checkout from the recipe repository's committed main.\n\
-The authoring scaffold is work/WORK/PKG.toml, outside Git.\n\
-Existing SPEC files are kept; this is not a reverse conversion of their contents.\n\
+    after_help = "Creates a local recipe directory without requiring Git. Existing packages are copied from committed main by edit/open/build.\n\
+The authoring TOML is outside the recipe directory and Git.\n\
+--from-toml copies an existing authoring TOML unchanged; its package.name supplies the package binding.\n\
+--from-dir imports a package directory; --from-spec imports only one SPEC and editable fields while retaining the original SPEC.\n\
 Preview with --stdout or --diff without creating a development area."
 )]
 pub(crate) struct Options {
-    /// Development area to create or reuse; also the default package name.
+    /// Development area name; the default package name only when no source supplies one.
     #[arg(value_name = "WORK")]
     name: String,
-    /// Actual package name; binds a new area and cannot rebind an existing one.
+    /// Override the package directory name, not the source selection or SPEC Name.
     #[arg(long, value_name = "PKG")]
     pkgname: Option<String>,
+    /// Import an authoring TOML verbatim; gen validates incomplete package facts.
+    #[arg(long = "from-toml", group = "source", value_name = "MANIFEST", value_hint = clap::ValueHint::FilePath,
+        conflicts_with_all = ["build_system", "comments"])]
+    from_toml: Option<PathBuf>,
+    /// Import only a SPEC; retain unmapped SPEC text.
+    #[arg(long = "from-spec", group = "source", value_name = "PATH", value_hint = clap::ValueHint::FilePath,
+        conflicts_with_all = ["build_system", "comments", "force", "skip_existing"])]
+    from_spec: Option<PathBuf>,
+    /// Copy a directory with exactly one top-level SPEC; use its filename as the package name.
+    #[arg(long = "from-dir", group = "source", value_name = "DIR", value_hint = clap::ValueHint::DirPath,
+        conflicts_with_all = ["build_system", "comments", "force", "skip_existing"])]
+    from_dir: Option<PathBuf>,
     /// Build system whose defaults and requirements seed the template.
     #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(crate::profile::buildsystems::systems()))]
     build_system: Option<String>,
     /// Amount of guidance in the template.
     #[arg(long, value_enum, default_value = "standard")]
     comments: Comments,
+    /// Print the authoring scaffold without creating a development area.
+    #[arg(long, conflicts_with_all = ["diff", "force", "skip_existing"])]
+    stdout: bool,
+    /// Compare the scaffold without creating or changing files.
+    #[arg(long, conflicts_with_all = ["force", "skip_existing"])]
+    diff: bool,
     #[command(flatten, next_help_heading = "Output options")]
-    output: output_cli::OutputActionOptions,
+    output: output_cli::ConflictOptions,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -48,10 +67,121 @@ enum Comments {
 
 pub(crate) fn run(options: &Options) -> Result<(), NewError> {
     let workspace = workspace::discover().map_err(NewError::Workspace)?;
-    let preview = options.output.stdout || options.output.diff;
+    if let Some(path) = &options.from_spec {
+        return spec_import::run(options, &workspace, path, false);
+    }
+    if let Some(directory) = &options.from_dir {
+        let directory = fs_err::canonicalize(directory).map_err(NewError::Workspace)?;
+        let spec = workspace::spec_in(&directory, None).map_err(NewError::Workspace)?;
+        return spec_import::run(options, &workspace, &spec, true);
+    }
+    let imported = options.from_toml.as_deref().map(import).transpose()?;
+    let package = imported.as_ref().and_then(|(_, name)| name.as_deref());
+    if let (Some(explicit), Some(imported)) = (options.pkgname.as_deref(), package)
+        && explicit != imported
+    {
+        return Err(NewError::Input(format!(
+            "package.name {imported:?} conflicts with --pkgname {explicit:?}"
+        )));
+    }
+    let preview = options.stdout || options.diff;
     let mut development = workspace
-        .development(&options.name, options.pkgname.as_deref(), preview)
+        .new_development(
+            &options.name,
+            options.pkgname.as_deref().or(package),
+            preview,
+            workspace::DevelopmentKind::Local,
+        )
         .map_err(NewError::Workspace)?;
+    let contents = match imported {
+        Some((contents, _)) => contents,
+        None => scaffold(
+            options,
+            development.package(),
+            workspace.author().map_err(NewError::Workspace)?,
+        )?,
+    };
+    if !preview {
+        development.create().map_err(NewError::Workspace)?;
+    }
+    let manifest = development.manifest();
+    if options.stdout || options.diff {
+        let text = if options.diff {
+            file_output::target_diff(&manifest, &contents).map_err(NewError::Output)?
+        } else {
+            contents
+        };
+        io::stdout()
+            .lock()
+            .write_all(text.as_bytes())
+            .map_err(|e| NewError::Output(file_output::OutputError::Stdout(e)))?;
+    } else {
+        let outcome = options
+            .output
+            .publish(&manifest, &contents)
+            .map_err(NewError::Output)?;
+        if matches!(outcome, file_output::EditOutcome::Written(ref path) if path != &manifest) {
+            output_cli::stderr()
+                .message(
+                    output_cli::HumanLevel::Info,
+                    Some(Path::new(&options.name)),
+                    format_args!("copy is not bound to this WORK; authoring input is unchanged"),
+                )
+                .map_err(NewError::Stderr)?;
+            return Ok(());
+        }
+    }
+    if !preview {
+        show_authoring(&options.name, &manifest)?;
+    }
+    Ok(())
+}
+
+fn show_authoring(work: &str, path: &Path) -> Result<(), NewError> {
+    let mut output = output_cli::stderr();
+    output
+        .message(
+            output_cli::HumanLevel::Info,
+            Some(Path::new(work)),
+            format_args!("authoring: {}", output_cli::human_path(path).display()),
+        )
+        .map_err(NewError::Stderr)?;
+    output
+        .message(
+            output_cli::HumanLevel::Info,
+            Some(Path::new(work)),
+            format_args!(
+                "next: ruyipack open {0} --authoring; ruyipack gen {0} --diff",
+                shell_words::quote(work)
+            ),
+        )
+        .map_err(NewError::Stderr)
+}
+
+fn import(path: &Path) -> Result<(String, Option<String>), NewError> {
+    let contents = crate::utf8_file::read(path).map_err(|e| NewError::Input(e.to_string()))?;
+    let document: toml::Table = toml::from_str(&contents)
+        .map_err(|e| NewError::Input(format!("{}: {e}", path.display())))?;
+    let name = (|| {
+        let Some(package) = document.get("package") else {
+            return Ok(None);
+        };
+        let package = package.as_table().ok_or("package must be a table")?;
+        package
+            .get("name")
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or("package.name must be a string")
+            })
+            .transpose()
+    })()
+    .map_err(|e: &str| NewError::Input(format!("{}: {e}", path.display())))?;
+    Ok((contents, name))
+}
+
+fn scaffold(options: &Options, name: &str, author: Option<&str>) -> Result<String, NewError> {
     let year = if let Ok(now) = time::OffsetDateTime::now_local() {
         now.year()
     } else {
@@ -59,59 +189,7 @@ pub(crate) fn run(options: &Options) -> Result<(), NewError> {
         time::OffsetDateTime::now_utc().year()
     }
     .to_string();
-    let author = git_author(&development.author_directory()).map_err(NewError::Workspace)?;
-    if author.is_none() {
-        warning(
-            "Git author is unavailable or unsuitable for a SPEC header; fill spec.contributors",
-        )?;
-    }
-    let contents = render(options, development.package(), &year, author.as_deref())?;
-    if !preview {
-        development.create().map_err(NewError::Workspace)?;
-    }
-    let manifest = development.manifest();
-    options
-        .output
-        .emit(&manifest, &contents)
-        .map_err(NewError::Output)?;
-    // A skipped conflicting file or a copied sidecar is not the authoring input
-    // requested here. Preview never changes the selection or allocates a lock.
-    if !preview && fs_err::read(&manifest).map_err(NewError::Workspace)? == contents.as_bytes() {
-        development
-            .select_input(workspace::GenerationInput::Authoring)
-            .map_err(NewError::Workspace)?;
-    }
-    Ok(())
-}
-
-fn git_author(directory: &Path) -> io::Result<Option<String>> {
-    let mut command = Command::new("git");
-    command.current_dir(directory).args([
-        "-c",
-        "user.useConfigOnly=true",
-        "var",
-        "GIT_AUTHOR_IDENT",
-    ]);
-    let output =
-        match crate::host_process::capture(&mut command, Duration::from_secs(30), 64 * 1024) {
-            Ok(output) => output,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
-            Err(_) => return Ok(None),
-        };
-    Ok((|| {
-        if !output.status.success() {
-            return None;
-        }
-        let ident = std::str::from_utf8(&output.stdout).ok()?.trim_end();
-        let (name_email, _) = ident.rsplit_once("> ")?;
-        let (name, email) = name_email.rsplit_once(" <")?;
-        if name.is_empty() || email.is_empty() {
-            return None;
-        }
-        let author = format!("{name_email}>");
-        spec_metadata::validate_contributor(&author).ok()?;
-        Some(author)
-    })())
+    Ok(render(options, name, &year, author)?)
 }
 
 #[derive(Template)]
@@ -121,7 +199,6 @@ struct Scaffold<'a> {
     year: &'a str,
     author: Option<&'a str>,
     system: Option<&'a str>,
-    requirements: &'a [String],
     stages: &'a [crate::profile::buildsystems::StageAction],
     full: bool,
 }
@@ -138,9 +215,6 @@ fn render(
 ) -> Result<String, askama::Error> {
     let system = options.build_system.as_deref();
     let contract = system.and_then(crate::profile::buildsystems::contract);
-    let requirements = contract
-        .map(|contract| contract.build_requires.as_slice())
-        .unwrap_or_default();
     let stages = contract
         .map(|contract| contract.stages.as_slice())
         .unwrap_or_default();
@@ -149,7 +223,6 @@ fn render(
         year,
         author,
         system,
-        requirements,
         stages,
         full: matches!(options.comments, Comments::Full),
     }
@@ -162,6 +235,8 @@ fn warning(message: &str) -> Result<(), NewError> {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum NewError {
+    #[error("{0}")]
+    Input(String),
     #[error("{0}")]
     Workspace(#[source] io::Error),
     #[error("failed to render manifest template: {0}")]

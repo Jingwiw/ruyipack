@@ -29,7 +29,7 @@ fn reviewed(output: &Output, field: &str) {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
-        stderr.contains("review required after changing") && stderr.contains(field),
+        stderr.contains("unverified source-authenticity") && stderr.contains(field),
         "{stderr}"
     );
 }
@@ -120,7 +120,7 @@ fn invalid_or_unsupported_sources_can_be_viewed_but_not_published() {
             "sources.0.url",
         );
         let spec = SPEC.replace(URL, url);
-        let _ = fs::remove_dir_all(directory.path().join(".ruyipack-stage"));
+        let _ = fs::remove_dir_all(directory.path().join(".ruyipack-draft"));
         fs::write(directory.path().join("ed.spec"), &spec).unwrap();
         let document = editable_view(directory.path());
         assert_eq!(document["sources"]["0"]["url"].as_str(), Some(url));
@@ -154,17 +154,14 @@ fn selected_source_repairs_validate_the_new_url_not_the_old_one() {
             "https://example.org/a%%20b.tar.lz",
         ),
     ] {
-        let _ = fs::remove_dir_all(directory.path().join(".ruyipack-stage"));
+        let _ = fs::remove_dir_all(directory.path().join(".ruyipack-draft"));
         let original = SPEC.replace(URL, old);
         fs::write(directory.path().join("ed.spec"), &original).unwrap();
         let same = format!("sources.0.url={old}");
-        rejected(
-            &run(
-                directory.path(),
-                &["edit", "--spec=ed.spec", "--set", &same, "--apply"],
-            ),
-            "sources.0.url",
-        );
+        success(&run(
+            directory.path(),
+            &["edit", "--spec=ed.spec", "--set", &same, "--apply"],
+        ));
         assert_file(directory.path().join("ed.spec"), &original);
         let assignment = format!("sources.0.url={replacement}");
         let preview = run(
@@ -256,8 +253,7 @@ fn generated_bare_sources_remain_editable_without_inventing_a_digest() {
     );
     success(&preview);
     assert!(
-        String::from_utf8_lossy(&preview.stderr)
-            .contains("warnings: new 0, inherited 0, resolved 1"),
+        String::from_utf8_lossy(&preview.stderr).contains("candidate changed sources.0.sha256"),
         "{preview:?}"
     );
     assert_eq!(preview.stdout, SPEC.as_bytes());
@@ -474,7 +470,7 @@ fn invalid_digests_can_be_inspected_but_not_published() {
             directory.path(),
             &["edit", "--spec=ed.spec", "--all", "--check"],
         );
-        assert_eq!(checked.status.code(), Some(1), "{checked:?}");
+        assert_eq!(checked.status.code(), Some(0), "{checked:?}");
         assert!(String::from_utf8_lossy(&checked.stderr).contains("64 hexadecimal digits"));
         assert_file(
             directory.path().join("ed.spec"),
@@ -526,7 +522,7 @@ fn views_preserve_raw_context_and_updates_require_available_values() {
                 "edit",
                 "--spec=ed.spec",
                 "--set",
-                "sources.0.url=%{url}/%{name}-%{version}.tar.lz",
+                "sources.0.url=%{url}/%{name}-%{version}.tar.lz?probe=1",
                 "--stdout",
             ],
         ),
@@ -548,7 +544,7 @@ fn source_context_never_executes_unknown_or_dynamic_package_values() {
             "Version:        1.22.5",
             &format!("Version:        {version}"),
         );
-        let _ = fs::remove_dir_all(directory.path().join(".ruyipack-stage"));
+        let _ = fs::remove_dir_all(directory.path().join(".ruyipack-draft"));
         fs::write(directory.path().join("ed.spec"), spec).unwrap();
         quiet_success(&run(
             directory.path(),
@@ -561,7 +557,7 @@ fn source_context_never_executes_unknown_or_dynamic_package_values() {
                     "edit",
                     "--spec=ed.spec",
                     "--set",
-                    &format!("sources.0.url={URL}"),
+                    &format!("sources.0.url={URL}?probe=1"),
                     "--stdout",
                 ],
             ),
@@ -617,7 +613,7 @@ fn remote_asset_digests_stay_bound_to_the_adjacent_source_identity() {
             &format!("#!RemoteAsset:  sha256:{HASH}\nSource0:"),
         ),
     ] {
-        let _ = fs::remove_dir_all(directory.path().join(".ruyipack-stage"));
+        let _ = fs::remove_dir_all(directory.path().join(".ruyipack-draft"));
         fs::write(directory.path().join("ed.spec"), &spec).unwrap();
         rejected(
             &run(

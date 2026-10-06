@@ -10,7 +10,7 @@ use crate::host_process;
 use fs_err as fs;
 use std::{
     ffi::OsString,
-    io::{self, Write},
+    io::{self, Read, Seek},
     path::Path,
     process::{Command, Stdio},
     time::Duration,
@@ -22,13 +22,40 @@ pub(super) struct Runner<'a> {
     pub(super) commands: Vec<CommandRecord>,
 }
 
+#[derive(Clone, Copy)]
+enum Display {
+    Quiet,
+    Build,
+    Command,
+}
+
 impl Runner<'_> {
-    /// Build output streams directly to files; it is not buffered in memory.
+    /// Preserve the command's stdout/stderr while retaining both logs.
+    pub(super) fn command(
+        &mut self,
+        argv: &[OsString],
+        stage: &str,
+        budget: Duration,
+    ) -> Result<usize, String> {
+        self.run_logged(argv, stage, budget, Display::Command)
+    }
+
+    /// Durable logs are tailed to stderr; stdout remains reserved for reports.
     pub(super) fn run(
         &mut self,
         argv: &[OsString],
         stage: &str,
         budget: Duration,
+    ) -> Result<usize, String> {
+        self.run_logged(argv, stage, budget, Display::Build)
+    }
+
+    fn run_logged(
+        &mut self,
+        argv: &[OsString],
+        stage: &str,
+        budget: Duration,
+        display: Display,
     ) -> Result<usize, String> {
         let index = self.commands.len();
         let stdout = format!("host/{index:03}-{stage}.stdout.log");
@@ -49,11 +76,13 @@ impl Runner<'_> {
             error: None,
             termination: None,
         };
-        let _ = writeln!(
-            io::stderr().lock(),
-            "build: {stage}; stdout: {}; stderr: {}",
-            self.output.join(&record.stdout).display(),
-            self.output.join(&record.stderr).display()
+        let _ = crate::output_cli::stderr().message(
+            crate::output_cli::HumanLevel::Debug,
+            None,
+            format_args!(
+                "{stage}; stdout: {}; stderr: {}",
+                record.stdout, record.stderr
+            ),
         );
         let result = (|| -> io::Result<bool> {
             let program = argv
@@ -65,7 +94,35 @@ impl Runner<'_> {
                 .stdin(Stdio::null())
                 .stdout(fs::File::create(self.output.join(&record.stdout))?.into_file())
                 .stderr(fs::File::create(self.output.join(&record.stderr))?.into_file());
-            let outcome = host_process::run(&mut command, budget, self.cancellable, || Ok(()));
+            let mut tails = [
+                fs::File::open(self.output.join(&record.stdout))?,
+                fs::File::open(self.output.join(&record.stderr))?,
+            ];
+            let split = matches!(display, Display::Command);
+            let mut display = !matches!(display, Display::Quiet);
+            let mut relay = || -> io::Result<()> {
+                if display {
+                    for (index, file) in tails.iter_mut().enumerate() {
+                        let remaining = file
+                            .metadata()?
+                            .len()
+                            .saturating_sub(file.stream_position()?);
+                        // A snapshot length bounds each poll even under continuous output.
+                        let result = if split && index == 0 {
+                            io::copy(&mut file.take(remaining), &mut io::stdout().lock())
+                        } else {
+                            io::copy(&mut file.take(remaining), &mut io::stderr().lock())
+                        };
+                        if result.is_err() {
+                            display = false; // A closed display must not lose logs or abandon the child.
+                            break;
+                        }
+                    }
+                }
+                Ok(())
+            };
+            let outcome = host_process::run(&mut command, budget, self.cancellable, &mut relay);
+            let tail_result = relay();
             record.started = outcome.started;
             record.exit_code = outcome.status.and_then(|status| status.code());
             record.exit_status = outcome.status.map(|status| status.to_string());
@@ -76,6 +133,7 @@ impl Runner<'_> {
             if let Some(error) = outcome.error {
                 return Err(error);
             }
+            tail_result?;
             Ok(outcome.status.is_some_and(|status| status.success()))
         })();
         let failure = match result {
@@ -104,7 +162,7 @@ impl Runner<'_> {
         stage: &str,
         budget: Duration,
     ) -> Result<String, String> {
-        let index = self.run(argv, stage, budget)?;
+        let index = self.run_logged(argv, stage, budget, Display::Quiet)?;
         fs::read_to_string(self.output.join(&self.commands[index].stdout))
             .map_err(|error| format!("read command output: {error}"))
     }

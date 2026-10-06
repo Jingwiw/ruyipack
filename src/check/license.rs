@@ -42,6 +42,7 @@ pub(crate) fn check(
         )
     };
     result.findings.push(Finding {
+        build_requirements: None,
         producer: "ruyipack",
         code: RULE.code,
         severity,

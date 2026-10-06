@@ -178,13 +178,15 @@ impl Resolver<'_> {
         let expression = raw.split_once(':').ok_or("preamble has no colon")?.1.trim();
         // The full AST may recover a malformed macro with only a warning.
         // Strict expression parsing must not turn that recovery into a URL.
-        let value = self.context.expand_str(expression).and_then(|value| {
-            if value.contains(['\n', '\r', '\0']) {
-                Err("preamble expansion changes line structure".into())
-            } else {
-                Ok(value)
-            }
-        });
+        let value = || {
+            self.context.expand_str(expression).and_then(|value| {
+                if value.contains(['\n', '\r', '\0']) {
+                    Err("preamble expansion changes line structure".into())
+                } else {
+                    Ok(value)
+                }
+            })
+        };
         let material = match item.tag {
             Tag::Source(number) => Some((false, number)),
             Tag::Patch(number) if self.include_patches => Some((true, number)),
@@ -213,7 +215,7 @@ impl Resolver<'_> {
             let url = self
                 .unknown
                 .as_ref()
-                .map_or(value, |reason| Err(reason.clone()));
+                .map_or_else(value, |reason| Err(reason.clone()));
             let source = Source {
                 span: super::diagnostic::location(item.data),
                 expression: expression.to_owned(),
@@ -238,14 +240,9 @@ impl Resolver<'_> {
                 self.invalidate(reason);
             }
         } else {
-            // Unknown expansions can emit declarations or change macros. The
-            // shipped Release convention is emitted, not evaluated by this tool.
-            if let Err(reason) = &value
-                && !(matches!(item.tag, Tag::Release)
-                    && expression == crate::profile::load().release)
-            {
-                self.invalidate(reason.clone());
-            }
+            // These values are not material inputs. Keep opaque target macros,
+            // but reject visible execution and locally defined injected lines.
+            let scalar = self.context.check_scalar(expression);
             let name = match item.tag {
                 Tag::Name => Some("name"),
                 Tag::Version => Some("version"),
@@ -260,9 +257,12 @@ impl Resolver<'_> {
                 {
                     Err(format!("ambiguous package field {name}"))
                 } else {
-                    value
+                    value()
                 };
                 self.context.literal(name, value);
+            }
+            if let Err(reason) = scalar {
+                self.invalidate(reason);
             }
         }
         Ok(())
@@ -282,13 +282,7 @@ impl Resolver<'_> {
                         "line {}: conditional is unresolved: {reason}",
                         condition.data.start_line
                     );
-                    self.invalidate(reason.clone());
-                    for branch in &condition.branches {
-                        self.uncertain(&branch.body, &reason)?;
-                    }
-                    if let Some(body) = &condition.otherwise {
-                        self.uncertain(body, &reason)?;
-                    }
+                    self.uncertain_condition(condition, &reason)?;
                     selected = None;
                     break;
                 }
@@ -306,26 +300,78 @@ impl Resolver<'_> {
         self.next_patch = None;
     }
 
+    fn uncertain_condition(
+        &mut self,
+        condition: &Conditional<Span, SpecItem<Span>>,
+        reason: &str,
+    ) -> Result<(), String> {
+        // Branches that only select build options need no host-side decision.
+        // Inspect all possible predicates/bodies for execution or material changes.
+        for branch in &condition.branches {
+            let header = self
+                .spec
+                .source
+                .get(branch.data.start_byte..branch.data.end_byte)
+                .ok_or("invalid conditional AST range")?
+                .lines()
+                .next()
+                .unwrap_or_default();
+            let predicate = header
+                .split_once(char::is_whitespace)
+                .map_or("", |(_, value)| value);
+            if self.context.check_scalar(predicate).is_err() {
+                self.invalidate(reason.to_owned());
+            }
+            self.uncertain(&branch.body, reason)?;
+        }
+        if let Some(body) = &condition.otherwise {
+            self.uncertain(body, reason)?;
+        }
+        Ok(())
+    }
+
     fn uncertain(&mut self, items: &[SpecItem<Span>], reason: &str) -> Result<(), String> {
         for item in items {
             match item {
-                SpecItem::MacroDef(definition) => self
-                    .context
-                    .literal(&definition.name, Err(reason.to_owned())),
+                SpecItem::MacroDef(definition) => {
+                    self.context
+                        .literal(&definition.name, Err(reason.to_owned()));
+                    self.invalidate(reason.to_owned());
+                }
                 SpecItem::Preamble(item) => match item.tag {
                     Tag::Source(_) => return Err(reason.to_owned()),
                     Tag::Patch(_) if self.include_patches => return Err(reason.to_owned()),
                     Tag::Name => self.context.literal("name", Err(reason.to_owned())),
                     Tag::Version => self.context.literal("version", Err(reason.to_owned())),
                     Tag::URL => self.context.literal("url", Err(reason.to_owned())),
-                    _ => {}
+                    Tag::Release => self.context.literal("release", Err(reason.to_owned())),
+                    _ => {
+                        let raw = &self.spec.source[item.data.start_byte..item.data.end_byte];
+                        if raw.split_once(':').is_none_or(|(_, value)| {
+                            self.context.check_scalar(value.trim()).is_err()
+                        }) {
+                            self.invalidate(reason.to_owned());
+                        }
+                    }
                 },
                 SpecItem::Conditional(condition) => {
-                    for branch in &condition.branches {
-                        self.uncertain(&branch.body, reason)?;
-                    }
-                    if let Some(body) = &condition.otherwise {
-                        self.uncertain(body, reason)?;
+                    self.uncertain_condition(condition, reason)?;
+                }
+                SpecItem::Section(section)
+                    if matches!(section.as_ref(), Section::Package { content, .. } if subpackage_sources(content, self.include_patches))
+                        || matches!(section.as_ref(), Section::SourceList { .. })
+                        || self.include_patches
+                            && matches!(section.as_ref(), Section::PatchList { .. }) =>
+                {
+                    return Err(reason.to_owned());
+                }
+                SpecItem::Comment(comment) if comment.style == CommentStyle::Hash => {
+                    if !self
+                        .context
+                        .expand(&comment.text)
+                        .is_ok_and(|text| !text.contains(['\n', '\r', '\0']))
+                    {
+                        self.invalidate(reason.to_owned());
                     }
                 }
                 SpecItem::Include(_) | SpecItem::Statement(_) => {
@@ -376,9 +422,63 @@ fn subpackage_sources(items: &[PreambleContent<Span>], patches: bool) -> bool {
     })
 }
 
+// RPM 6 newSource(): last slash, then last '=' in that suffix, with no URL decoding.
+// This is the build filename, not a path to copy from or a downloader's URL parser.
+pub(crate) fn filename(value: &str) -> Result<&str, String> {
+    let name = value.rsplit_once('/').map_or(value, |(_, tail)| {
+        tail.rsplit_once('=').map_or(tail, |(_, name)| name)
+    });
+    if name.is_empty()
+        || matches!(name, "." | "..")
+        || name.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err("RPM material filename is empty, a directory, or contains whitespace/control characters".into());
+    }
+    Ok(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn material_facts_do_not_require_unrelated_target_values() {
+        let source = "Vendor: %{target_vendor}\nName: pkg\nVersion: 1\nRelease: %autorelease\n\
+            Source0: https://example.org/%{name}-%{version}.tar\nPatch0: fix.patch\n\
+            BuildOption(conf): --prefix=%{_prefix}\nProvides: tool:%{_bindir}/pkg\n\
+            Requires: pkg = %{version}-%{release}\n\
+            %if %{with static}\nBuildOption(conf): --disable-shared\n\
+            %else\nBuildOption(conf): --disable-static\n%endif\n";
+        let parsed = ParsedSpec::parse(source);
+        let resolved = resolve_materials(&parsed, &[]).unwrap();
+        assert!(resolved.incomplete.is_none(), "{:?}", resolved.incomplete);
+        assert_eq!(
+            resolved.sources[&0].url.as_deref(),
+            Ok("https://example.org/pkg-1.tar")
+        );
+        assert_eq!(resolved.patches[&0].url.as_deref(), Ok("fix.patch"));
+        for expression in ["%{_prefix}", "%{release}", "%{unknown}"] {
+            let changed = source.replace("fix.patch", expression);
+            let resolved = resolve_materials(&ParsedSpec::parse(&changed), &[]).unwrap();
+            assert!(resolved.patches[&0].url.is_err(), "{expression}");
+        }
+        for unrelated in [
+            "Summary: %(touch MUST_NOT_EXIST)",
+            "%define inject %{lua:print('Source1: hidden')}\nSummary: %{inject}",
+            "%if %(touch MUST_NOT_EXIST)\nBuildOption(conf): --flag\n%endif",
+            "%if %{unknown}\nSource1: conditional.tar\n%endif",
+            "%if %{unknown}\n%global version 2\n%endif",
+            "%if %{unknown}\n%package extra\nSource1: hidden.tar\n%endif",
+            "%if %{unknown}\n# %{lua:print('hidden')}\n%endif",
+        ] {
+            let changed = format!("{source}{unrelated}\n");
+            let resolved = resolve_materials(&ParsedSpec::parse(&changed), &[]);
+            assert!(
+                resolved.is_err() || resolved.unwrap().incomplete.is_some(),
+                "{unrelated}"
+            );
+        }
+    }
 
     #[test]
     fn ordered_static_facts_never_guess_dynamic_sources() {
@@ -475,5 +575,97 @@ mod tests {
                 .as_deref(),
             Ok("https://example.org/arm")
         );
+    }
+}
+
+/// Removing a declaration must not leave an unconditional reference to its
+/// generated macro. This is a conservative AST check, not shell or Lua analysis.
+pub(crate) fn check_removal(before: &ParsedSpec<'_>, after: &ParsedSpec<'_>) -> Result<(), String> {
+    use rpm_spec::ast::{ConditionalMacro, MacroDef, MacroRef};
+    use rpm_spec_analyzer::visit::{Visit, walk_macro_ref};
+
+    struct References<'a> {
+        removed: &'a BTreeSet<String>,
+        retained: BTreeSet<String>,
+    }
+    impl<'ast> Visit<'ast> for References<'_> {
+        fn visit_macro_def(&mut self, node: &'ast MacroDef<Span>) {
+            if self.removed.contains(&node.name) {
+                self.retained.insert(node.name.clone());
+            }
+            rpm_spec_analyzer::visit::walk_macro_def(self, node);
+        }
+        fn visit_macro_ref(&mut self, node: &'ast MacroRef) {
+            if self.removed.contains(&node.name) {
+                if matches!(node.conditional, ConditionalMacro::None) {
+                    self.retained.insert(node.name.clone());
+                } else if matches!(node.conditional, ConditionalMacro::IfDefined) {
+                    // A removed Source macro cannot activate its guarded body.
+                    return;
+                }
+            }
+            walk_macro_ref(self, node);
+        }
+    }
+    let old = resolve(before, &[])?;
+    let new = resolve(after, &[])?;
+    let removed: BTreeSet<_> = old
+        .sources
+        .keys()
+        .filter(|number| !new.sources.contains_key(number))
+        .map(|number| format!("SOURCE{number}"))
+        .collect();
+    if removed.is_empty() {
+        return Ok(());
+    }
+    if old.incomplete.is_some() || new.incomplete.is_some() {
+        return Err("Source removal cannot be checked with unresolved declarations".into());
+    }
+    let mut references = References {
+        removed: &removed,
+        retained: BTreeSet::new(),
+    };
+    references.visit_spec(&after.parsed.spec);
+    if references.retained.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "removed Source macros are still referenced: {}; update their consumers before committing",
+            references
+                .retained
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use super::*;
+
+    #[test]
+    fn source_removal_preserves_macro_reference_semantics() {
+        let before = ParsedSpec::parse("Name: demo\nSource1: signature.asc\n%prep\n");
+        for body in [
+            "cat %{SOURCE1}",
+            "%global signature %{SOURCE1}\ncat %{signature}",
+            "%if 0\ncat %{SOURCE1}\n%endif",
+        ] {
+            let after = ParsedSpec::parse(format!("Name: demo\n%prep\n{body}\n"));
+            assert!(check_removal(&before, &after).is_err(), "{body}");
+        }
+        for body in [
+            "echo safe",
+            "echo %%{SOURCE1}",
+            "echo %{?SOURCE1}",
+            "%{?SOURCE1:cat %{SOURCE1}}",
+        ] {
+            let after = ParsedSpec::parse(format!("Name: demo\n%prep\n{body}\n"));
+            assert!(check_removal(&before, &after).is_ok(), "{body}");
+        }
+        let retained =
+            ParsedSpec::parse("Name: demo\nSource1: signature.asc\n%prep\ncat %{SOURCE1}\n");
+        assert!(check_removal(&before, &retained).is_ok());
     }
 }

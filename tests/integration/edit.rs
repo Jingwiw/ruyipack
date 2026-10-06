@@ -9,10 +9,10 @@
 mod admission;
 mod drafts;
 mod editor;
+mod inputs;
 mod reports;
 mod selection;
 mod sources;
-mod stage_model;
 mod terminal;
 
 use super::support::{self, assert_file, success};
@@ -37,6 +37,10 @@ fn command(directory: &Path) -> Command {
         .arg("edit")
         .current_dir(directory)
         .env("TMPDIR", directory)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("TERM", "dumb")
+        .env_remove("GIT_EDITOR")
         .env_remove("VISUAL")
         .env_remove("EDITOR")
         .stdin(Stdio::null());
@@ -105,6 +109,20 @@ fn change_version(path: &Path, version: &str) {
 #[test]
 fn unchanged_assignment_preserves_every_source_byte() {
     let directory = fixture(SPEC);
+    let initial = command(directory.path())
+        .args([
+            "--spec=ed.spec",
+            "--set",
+            "package.version=1.22.5",
+            "--format=toml",
+        ])
+        .output()
+        .unwrap();
+    success(&initial);
+    let report: toml::Value =
+        toml::from_str(std::str::from_utf8(&initial.stdout).unwrap()).unwrap();
+    assert_eq!(report["files"][0]["changed"].as_bool(), Some(false));
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     let output = command(directory.path())
         .args([
             "--spec=ed.spec",
@@ -139,6 +157,7 @@ fn unchanged_assignment_preserves_every_source_byte() {
     success(&saved);
     assert!(saved.stdout.is_empty());
     assert!(String::from_utf8_lossy(&saved.stderr).contains("Unchanged"));
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     unchanged(directory.path());
 }
 
@@ -289,11 +308,11 @@ fn default_noninteractive_edit_retains_a_stage_and_check_is_explicit() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("editing requires a terminal"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot select Git editor"));
     assert!(
         directory
             .path()
-            .join(".ruyipack-stage/ed/ed.toml")
+            .join(".ruyipack-draft/ed/ed.toml")
             .is_file()
     );
     let output = command(directory.path())
@@ -331,18 +350,18 @@ fn invalid_cli_combinations_fail_before_editing() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(!directory.path().join(".ruyipack-stage").exists());
+    assert!(!directory.path().join(".ruyipack-draft").exists());
     unchanged(directory.path());
     let output = command(directory.path())
         .args([
             "--spec=ed.spec",
             "--field=package.version",
-            "--prepare=.ruyipack-stage/ed",
+            "--prepare=.ruyipack-draft/ed",
         ])
         .output()
         .unwrap();
     success(&output);
-    let draft = directory.path().join(".ruyipack-stage/ed/ed.toml");
+    let draft = directory.path().join(".ruyipack-draft/ed/ed.toml");
     let saved = fs::read(&draft).unwrap();
     let output = command(directory.path())
         .args(["--spec=ed.spec", "--all", "--format=toml"])

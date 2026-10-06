@@ -53,3 +53,17 @@ pub(crate) fn read(path: &Path) -> Result<Content, Error> {
         sha256: format!("{:x}", hash.finalize()),
     })
 }
+
+/// Git and staged build inputs preserve the executable bit, not platform permission masks.
+pub(crate) fn executable(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        false
+    }
+}

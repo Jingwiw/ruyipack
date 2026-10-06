@@ -35,12 +35,20 @@ fn workspace() -> tempfile::TempDir {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     success(&run(root, &["init"]));
+    let config_path = root.join(".ruyiconfig/config.toml");
+    let mut config: toml::Table =
+        toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    config.insert(
+        "author".into(),
+        toml::Value::String("Packager \"A\" \\测试 <packager@example.org>".into()),
+    );
+    fs::write(config_path, toml::to_string(&config).unwrap()).unwrap();
     let repo = root.join("openruyi");
     fs::create_dir(&repo).unwrap();
     git(&repo, &["init", "--quiet", "-b", "main"]);
     for (path, contents) in [
         ("SPECS/ed/ed.spec", include_str!("../fixtures/ed.spec")),
-        ("SPECS/other/other.spec", "other package\n"),
+        ("SPECS/other/ed.spec", "other package\n"),
         ("SPECS/README", "shared package guidance\n"),
         ("scripts/nested/helper", "helper\n"),
         ("policies/rules", "rules\n"),
@@ -83,26 +91,28 @@ fn version_spec(version: &str) -> String {
     original.replace(field, &format!("Version:        {version}"))
 }
 
-fn binding(area: &Path) -> toml::Value {
-    toml::from_str(&fs::read_to_string(area.join(".config.toml")).unwrap()).unwrap()
-}
-
 #[test]
-fn edit_work_reads_its_saved_package_checkout_and_only_publishes_there() {
+fn edit_work_reads_its_saved_package_recipe_and_only_publishes_there() {
     let directory = workspace();
     let root = directory.path();
     let repo = root.join("openruyi");
     for work in ["ed-test", "ed-other"] {
         success(&run(root, &["new", work, "--pkgname", "ed"]));
+        seed_recipe(root, work);
     }
+    fs::write(
+        root.join("work/ed-test/ed.toml"),
+        include_str!("../../examples/ed/ed.toml"),
+    )
+    .unwrap();
     let area = root.join("work/ed-test");
-    let target = area.join("checkout/SPECS/ed/ed.spec");
+    seed_recipe(root, "ed-test");
+    let target = area.join("recipe/SPECS/ed/ed.spec");
     let original = version_spec("1.22.6");
     fs::write(&target, &original).unwrap();
     let retained: Vec<_> = [
         repo.join("SPECS/ed/ed.spec"),
-        area.join("ed.toml"),
-        root.join("work/ed-other/checkout/SPECS/ed/ed.spec"),
+        root.join("work/ed-other/recipe/SPECS/ed/ed.spec"),
         root.join("work/ed-other/ed.toml"),
         root.join("work/ed-other/.config.toml"),
     ]
@@ -112,7 +122,6 @@ fn edit_work_reads_its_saved_package_checkout_and_only_publishes_there() {
         (path, bytes)
     })
     .collect();
-    let worktrees = git(&repo, &["worktree", "list", "--porcelain"]).stdout;
     let nested = repo.join("scripts/nested");
     for cwd in [root, nested.as_path()] {
         assert_eq!(edit_version(cwd, "ed-test"), "1.22.6");
@@ -133,7 +142,7 @@ fn edit_work_reads_its_saved_package_checkout_and_only_publishes_there() {
     assert!(diff.contains("-Version:        1.22.6"), "{diff}");
     assert!(diff.contains("+Version:        1.22.7"), "{diff}");
     assert_file(&target, &original);
-    assert_eq!(binding(&area)["input"].as_str(), Some("edit"));
+
     for (path, bytes) in &retained {
         assert_eq!(fs::read(path).unwrap(), *bytes, "{}", path.display());
     }
@@ -154,10 +163,6 @@ fn edit_work_reads_its_saved_package_checkout_and_only_publishes_there() {
             assert_eq!(fs::read(path).unwrap(), *bytes, "{}", path.display());
         }
     }
-    assert_eq!(
-        git(&repo, &["worktree", "list", "--porcelain"]).stdout,
-        worktrees
-    );
 }
 
 #[test]
@@ -165,6 +170,7 @@ fn edit_work_wins_over_a_bare_file_and_explicit_paths_still_select_files() {
     let directory = workspace();
     let root = directory.path();
     success(&run(root, &["new", "ed-test", "--pkgname", "ed"]));
+    seed_recipe(root, "ed-test");
     let bare = root.join("ed-test");
     let spec = root.join("ed-test.spec");
     fs::write(&bare, version_spec("9.0")).unwrap();
@@ -208,7 +214,7 @@ fn edit_work_wins_over_a_bare_file_and_explicit_paths_still_select_files() {
     assert_file(bare, &version_spec("9.1"));
     assert_file(spec, &version_spec("8.1"));
     assert_file(
-        root.join("work/ed-test/checkout/SPECS/ed/ed.spec"),
+        root.join("work/ed-test/recipe/SPECS/ed/ed.spec"),
         include_str!("../fixtures/ed.spec"),
     );
 }
@@ -220,7 +226,7 @@ fn first_edit_creates_a_package_bound_work_without_changing_recipes() {
     let repo = root.join("openruyi");
     let original = fs::read(repo.join("SPECS/ed/ed.spec")).unwrap();
     let area = root.join("work/first-ed");
-    let target = area.join("checkout/SPECS/ed/ed.spec");
+    let target = area.join("recipe/SPECS/ed/ed.spec");
     assert!(!area.exists());
     success(&run(
         root,
@@ -234,7 +240,7 @@ fn first_edit_creates_a_package_bound_work_without_changing_recipes() {
             "--apply",
         ],
     ));
-    assert!(area.join("checkout/.git").is_file());
+    assert!(area.join("recipe/SPECS/ed/ed.spec").is_file());
     assert_file(&target, &version_spec("1.22.6"));
     assert_eq!(edit_version(root, "first-ed"), "1.22.6");
     success(&run(
@@ -265,111 +271,7 @@ fn first_edit_creates_a_package_bound_work_without_changing_recipes() {
 }
 
 #[test]
-fn first_work_uses_committed_main_and_existing_work_keeps_its_manual_branch() {
-    let directory = workspace();
-    let root = directory.path();
-    let repo = root.join("openruyi");
-    let main = git(&repo, &["rev-parse", "refs/heads/main"]).stdout;
-    git(&repo, &["switch", "--quiet", "-c", "recipe-topic"]);
-    fs::write(repo.join("SPECS/ed/ed.spec"), version_spec("9.0")).unwrap();
-    git(
-        &repo,
-        &["commit", "--quiet", "-am", "Different recipe HEAD"],
-    );
-    success(&run(root, &["new", "new-from-main", "--pkgname", "ed"]));
-    let view = run(
-        root,
-        &[
-            "inspect",
-            "edit-from-main",
-            "--pkgname",
-            "ed",
-            "--field",
-            "package.version",
-            "--editable",
-        ],
-    );
-    assert_eq!(
-        document(&view)["package"]["version"].as_str(),
-        Some("1.22.5")
-    );
-    let area = root.join("work/edit-from-main");
-    let saved_binding = fs::read(area.join(".config.toml")).unwrap();
-    assert!(!area.join("checkout").exists());
-    assert_eq!(fs::read(area.join(".config.toml")).unwrap(), saved_binding);
-    let readonly_worktrees = git(&repo, &["worktree", "list", "--porcelain"]).stdout;
-    fs::write(repo.join("SPECS/ed/ed.spec"), version_spec("9.1")).unwrap();
-    assert_eq!(edit_version(root, "edit-from-main"), "1.22.5");
-    assert!(!area.join("checkout").exists());
-    assert_eq!(
-        git(&repo, &["worktree", "list", "--porcelain"]).stdout,
-        readonly_worktrees
-    );
-    git(&repo, &["restore", "SPECS/ed/ed.spec"]);
-    success(&run(
-        root,
-        &[
-            "edit",
-            "edit-from-main",
-            "--set",
-            "package.version=1.22.6",
-            "--apply",
-        ],
-    ));
-    assert_eq!(binding(&area)["pkg"].as_str(), Some("ed"));
-    assert_eq!(binding(&area)["input"].as_str(), Some("edit"));
-    for (work, version) in [("new-from-main", "1.22.5"), ("edit-from-main", "1.22.6")] {
-        let checkout = root.join("work").join(work).join("checkout");
-        assert_eq!(git(&checkout, &["rev-parse", "HEAD"]).stdout, main);
-        assert_file(checkout.join("SPECS/ed/ed.spec"), &version_spec(version));
-    }
-
-    let checkout = root.join("work/new-from-main/checkout");
-    git(&checkout, &["switch", "--quiet", "-c", "manual-work"]);
-    fs::write(checkout.join("SPECS/ed/ed.spec"), version_spec("2.0")).unwrap();
-    let branch = git(&checkout, &["symbolic-ref", "HEAD"]).stdout;
-    success(&run(root, &["new", "new-from-main", "--skip-existing"]));
-    assert_eq!(edit_version(root, "new-from-main"), "2.0");
-    success(&run(
-        root,
-        &[
-            "edit",
-            "new-from-main",
-            "--set",
-            "package.version=2.1",
-            "--apply",
-        ],
-    ));
-    assert_eq!(git(&checkout, &["symbolic-ref", "HEAD"]).stdout, branch);
-    assert_file(checkout.join("SPECS/ed/ed.spec"), &version_spec("2.1"));
-    assert_file(repo.join("SPECS/ed/ed.spec"), &version_spec("9.0"));
-
-    git(&repo, &["branch", "-D", "main"]);
-    let worktrees = git(&repo, &["worktree", "list", "--porcelain"]).stdout;
-    for args in [
-        vec!["new", "missing-main-new", "--pkgname", "ed"],
-        vec![
-            "inspect",
-            "missing-main-edit",
-            "--pkgname",
-            "ed",
-            "--field",
-            "package.version",
-            "--editable",
-        ],
-    ] {
-        let output = run(root, &args);
-        assert_eq!(output.status.code(), Some(1), "{output:?}");
-        assert!(!root.join("work").join(args[1]).exists());
-        assert_eq!(
-            git(&repo, &["worktree", "list", "--porcelain"]).stdout,
-            worktrees
-        );
-    }
-}
-
-#[test]
-fn edit_missing_or_misnamed_package_spec_is_rejected_before_creating_a_worktree() {
+fn edit_missing_or_misnamed_package_spec_is_rejected_before_copying_package_files() {
     let directory = workspace();
     let root = directory.path();
     let repo = root.join("openruyi");
@@ -388,7 +290,6 @@ fn edit_missing_or_misnamed_package_spec_is_rejected_before_creating_a_worktree(
         &repo,
         &["commit", "--quiet", "-m", "Nonunique SPEC fixtures"],
     );
-    let worktrees = git(&repo, &["worktree", "list", "--porcelain"]).stdout;
     let bare = root.join("missing-pkg");
     let original = include_str!("../fixtures/ed.spec");
     fs::write(&bare, original).unwrap();
@@ -411,10 +312,6 @@ fn edit_missing_or_misnamed_package_spec_is_rejected_before_creating_a_worktree(
             assert!(!root.join("work").exists());
             assert_file(&bare, original);
             assert_file(repo.join("SPECS/ed/ed.spec"), original);
-            assert_eq!(
-                git(&repo, &["worktree", "list", "--porcelain"]).stdout,
-                worktrees
-            );
         }
     }
     let dotted = repo.join("SPECS/ed.plus");
@@ -426,15 +323,12 @@ fn edit_missing_or_misnamed_package_spec_is_rejected_before_creating_a_worktree(
     .unwrap();
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "--quiet", "-m", "Dotted package name"]);
-    let dotted_worktrees = git(&repo, &["worktree", "list", "--porcelain"]).stdout;
     assert_eq!(edit_version(root, "ed.plus"), "1.22.5");
     let area = root.join("work/ed.plus");
-    assert_file(area.join(".config.toml"), "pkg = \"ed.plus\"\n");
-    assert!(!area.join("checkout").exists());
-    assert_eq!(
-        git(&repo, &["worktree", "list", "--porcelain"]).stdout,
-        dotted_worktrees
-    );
+    let binding: toml::Table =
+        toml::from_str(&fs::read_to_string(area.join(".config.toml")).unwrap()).unwrap();
+    assert_eq!(binding["pkg"].as_str(), Some("ed.plus"));
+    assert!(!area.join("recipe").exists());
     success(&run(
         root,
         &[
@@ -445,7 +339,7 @@ fn edit_missing_or_misnamed_package_spec_is_rejected_before_creating_a_worktree(
             "--apply",
         ],
     ));
-    assert!(area.join("checkout/SPECS/ed.plus/ed.plus.spec").is_file());
+    assert!(area.join("recipe/SPECS/ed.plus/ed.plus.spec").is_file());
     assert_eq!(edit_version(root, "ed.plus"), "1.22.6");
 }
 
@@ -455,7 +349,8 @@ fn edit_work_refuses_a_locked_binding_even_for_read_only_operations() {
     let root = directory.path();
     success(&run(root, &["new", "ed-test", "--pkgname", "ed"]));
     let area = root.join("work/ed-test");
-    let target = area.join("checkout/SPECS/ed/ed.spec");
+    seed_recipe(root, "ed-test");
+    let target = area.join("recipe/SPECS/ed/ed.spec");
     let binding = area.join(".config.toml");
     let saved = fs::read(&binding).unwrap();
     let manifest = fs::read(area.join("ed.toml")).unwrap();
@@ -489,7 +384,7 @@ fn edit_work_refuses_a_locked_binding_even_for_read_only_operations() {
         assert_eq!(fs::read(&binding).unwrap(), saved);
         assert_eq!(fs::read(area.join("ed.toml")).unwrap(), manifest);
     }
-    drop(lock);
+    lock.unlock().unwrap();
     assert_eq!(edit_version(root, "ed-test"), "1.22.5");
 }
 
@@ -553,246 +448,6 @@ fn comment_modes_share_fields_and_filled_scaffolds_use_gen() {
 }
 
 #[test]
-fn package_binding_creates_one_sparse_checkout_and_previews_write_nothing() {
-    let directory = workspace();
-    let root = directory.path();
-    let repo = root.join("openruyi");
-    let baseline = git(&repo, &["rev-parse", "HEAD"]).stdout;
-    let worktrees = git(&repo, &["worktree", "list", "--porcelain"]).stdout;
-    for action in ["--stdout", "--diff"] {
-        let preview = run(root, &["new", "ed-test", "--pkgname", "ed", action]);
-        success(&preview);
-        assert!(!root.join("work").exists());
-        assert_eq!(
-            git(&repo, &["worktree", "list", "--porcelain"]).stdout,
-            worktrees
-        );
-    }
-    fs::write(
-        repo.join("SPECS/other/other.spec"),
-        "unrelated local edit\n",
-    )
-    .unwrap();
-    let output = run(
-        &repo.join("scripts/nested"),
-        &["new", "ed-test", "--pkgname", "ed"],
-    );
-    success(&output);
-    let area = root.join("work/ed-test");
-    let checkout = area.join("checkout");
-    assert!(checkout.join(".git").is_file());
-    assert!(area.join(".config.toml").is_file());
-    let manifest_text = fs::read_to_string(area.join("ed.toml")).unwrap();
-    assert!(manifest_text.contains("existing SPEC contents are not imported"));
-    let manifest: toml::Value = toml::from_str(&manifest_text).unwrap();
-    assert_eq!(manifest["package"]["name"].as_str(), Some("ed"));
-    assert_eq!(
-        document(&run(root, &["new", "ed-test", "--stdout"]))["package"]["name"].as_str(),
-        Some("ed")
-    );
-    assert_eq!(git(&checkout, &["rev-parse", "HEAD"]).stdout, baseline);
-    for path in [
-        "SPECS/ed/ed.spec",
-        "SPECS/README",
-        "scripts/nested/helper",
-        "policies/rules",
-        "README",
-    ] {
-        assert_eq!(
-            fs::read(checkout.join(path)).unwrap(),
-            fs::read(repo.join(path)).unwrap(),
-            "{path}"
-        );
-    }
-    assert!(!checkout.join("SPECS/other").exists());
-    assert_file(
-        repo.join("SPECS/other/other.spec"),
-        "unrelated local edit\n",
-    );
-    fs::write(
-        area.join("ed.toml"),
-        include_str!("../../examples/ed/ed.toml"),
-    )
-    .unwrap();
-    fs::write(checkout.join("SPECS/ed/ed.spec"), version_spec("8.0")).unwrap();
-    success(&run(
-        &repo.join("scripts/nested"),
-        &["gen", "ed-test", "--offline"],
-    ));
-    assert_file(checkout.join("SPECS/ed/ed.spec"), &version_spec("8.0"));
-    assert_file(
-        area.join("stage/ed.candidate.spec"),
-        include_str!("../fixtures/ed.spec"),
-    );
-    assert!(area.join("ed.resolved.toml").is_file());
-    success(&run(
-        &repo.join("scripts/nested"),
-        &["gen", "ed-test", "--offline", "--spec=auto", "--force"],
-    ));
-    assert_file(
-        checkout.join("SPECS/ed/ed.spec"),
-        include_str!("../fixtures/ed.spec"),
-    );
-    assert!(!root.join("ed-test.spec").exists());
-    assert!(!area.join("ed-test.toml").exists());
-}
-
-#[cfg(unix)]
-#[test]
-fn checkout_filter_cannot_publish_a_stale_authoring_input() {
-    let directory = workspace();
-    let root = directory.path();
-    let repo = root.join("openruyi");
-    // A trusted checkout filter models an external authoring edit while Git
-    // materializes files: the candidate must not publish the older manifest.
-    fs::write(
-        repo.join(".gitattributes"),
-        "README filter=manifest-change\n",
-    )
-    .unwrap();
-    git(&repo, &["add", ".gitattributes"]);
-    git(
-        &repo,
-        &["commit", "--quiet", "-m", "Checkout filter fixture"],
-    );
-    success(&run(root, &["inspect", "ed-race", "--pkgname", "ed"]));
-    let race = root.join("work/ed-race");
-    let manifest = race.join("ed.toml");
-    let input = include_str!("../../examples/ed/ed.toml")
-        .replace("version = \"1.22.5\"", "version = \"1.22.6\"");
-    fs::write(&manifest, &input).unwrap();
-    let binding = fs::read(race.join(".config.toml")).unwrap();
-    let filter = root.join("change-manifest.sh");
-    let quoted_manifest = shell_words::quote(manifest.to_str().unwrap());
-    fs::write(&filter, format!(
-        "sed 's/version = \"1.22.6\"/version = \"2\"/' {quoted_manifest} > {quoted_manifest}.updated\n\
-         mv {quoted_manifest}.updated {quoted_manifest}\ncat\n"
-    )).unwrap();
-    let smudge = format!("sh {}", shell_words::quote(filter.to_str().unwrap()));
-    git(&repo, &["config", "filter.manifest-change.smudge", &smudge]);
-    git(&repo, &["config", "filter.manifest-change.clean", "cat"]);
-    git(
-        &repo,
-        &["config", "filter.manifest-change.required", "true"],
-    );
-    let changed = run(
-        root,
-        &["gen", "ed-race", "--offline", "--spec=auto", "--force"],
-    );
-    assert_eq!(changed.status.code(), Some(1), "{changed:?}");
-    assert!(
-        output_text(&changed.stderr).contains("changed"),
-        "{changed:?}"
-    );
-    assert!(changed.stdout.is_empty());
-    assert_file(
-        &manifest,
-        &input.replace("version = \"1.22.6\"", "version = \"2\""),
-    );
-    assert_eq!(fs::read(race.join(".config.toml")).unwrap(), binding);
-    assert_file(
-        race.join("checkout/SPECS/ed/ed.spec"),
-        include_str!("../fixtures/ed.spec"),
-    );
-}
-
-#[test]
-fn nested_package_selection_preserves_source_sparse_settings_and_manual_branches() {
-    let directory = workspace();
-    let root = directory.path();
-    let repo = root.join("openruyi");
-    fs::create_dir(repo.join("distro")).unwrap();
-    fs::rename(repo.join("SPECS"), repo.join("distro/recipes")).unwrap();
-    fs::create_dir(repo.join("distro/tools")).unwrap();
-    fs::write(repo.join("distro/tools/helper"), "sibling helper\n").unwrap();
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "--quiet", "-m", "Nested recipes"]);
-    fs::write(
-        root.join(".ruyiconfig/config.toml"),
-        "recipes = 'openruyi'\nwork = 'work'\nspecs = 'distro/./recipes'\n",
-    )
-    .unwrap();
-    git(&repo, &["sparse-checkout", "set", "scripts"]);
-    assert!(!repo.join("distro/recipes/ed").exists());
-    let sparse = fs::read(repo.join(".git/info/sparse-checkout")).unwrap();
-    let status = git(&repo, &["status", "--porcelain=v1"]).stdout;
-    success(&run(root, &["new", "nested-ed", "--pkgname", "ed"]));
-    let checkout = root.join("work/nested-ed/checkout");
-    assert_file(
-        checkout.join("distro/recipes/ed/ed.spec"),
-        include_str!("../fixtures/ed.spec"),
-    );
-    assert_file(checkout.join("distro/tools/helper"), "sibling helper\n");
-    assert!(!checkout.join("distro/recipes/other").exists());
-    git(&checkout, &["switch", "--quiet", "-c", "manual-topic"]);
-    let branch = git(&checkout, &["symbolic-ref", "HEAD"]).stdout;
-    success(&run(root, &["new", "nested-ed", "--skip-existing"]));
-    assert_eq!(git(&checkout, &["symbolic-ref", "HEAD"]).stdout, branch);
-    assert_eq!(
-        fs::read(repo.join(".git/info/sparse-checkout")).unwrap(),
-        sparse
-    );
-    assert_eq!(git(&repo, &["status", "--porcelain=v1"]).stdout, status);
-    assert!(!repo.join("distro/recipes/ed").exists());
-}
-
-#[test]
-fn selected_uncommitted_materials_are_rejected_before_creating_a_worktree() {
-    let directory = workspace();
-    let root = directory.path();
-    let repo = root.join("openruyi");
-    let worktrees = git(&repo, &["worktree", "list", "--porcelain"]).stdout;
-    let path = repo.join("SPECS/ed/ed.spec");
-    fs::write(&path, "uncommitted edit\n").unwrap();
-    success(&run(
-        root,
-        &["new", "ed-test", "--pkgname", "ed", "--stdout"],
-    ));
-    assert!(!root.join("work").exists());
-    let output = run(root, &["new", "ed-test", "--pkgname", "ed", "--force"]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert_file(&path, "uncommitted edit\n");
-    assert!(root.join("work/ed-test/.config.toml").is_file());
-    assert!(!root.join("work/ed-test/checkout").exists());
-    git(&repo, &["add", "SPECS/ed/ed.spec"]);
-    assert_eq!(run(root, &["new", "ed"]).status.code(), Some(1));
-    git(
-        &repo,
-        &["restore", "--staged", "--worktree", "SPECS/ed/ed.spec"],
-    );
-    fs::write(repo.join("SPECS/ed/new.patch"), "untracked patch\n").unwrap();
-    assert_eq!(run(root, &["new", "ed"]).status.code(), Some(1));
-    fs::remove_file(repo.join("SPECS/ed/new.patch")).unwrap();
-    fs::write(repo.join(".git/info/exclude"), "SPECS/ed/ignored.tar.gz\n").unwrap();
-    fs::write(
-        repo.join("SPECS/ed/ignored.tar.gz"),
-        "ignored source material\n",
-    )
-    .unwrap();
-    assert_eq!(run(root, &["new", "ed"]).status.code(), Some(1));
-    fs::remove_file(repo.join("SPECS/ed/ignored.tar.gz")).unwrap();
-    for (set, clear) in [
-        ("--assume-unchanged", "--no-assume-unchanged"),
-        ("--skip-worktree", "--no-skip-worktree"),
-    ] {
-        git(&repo, &["update-index", set, "SPECS/ed/ed.spec"]);
-        fs::write(&path, "edit hidden from git status\n").unwrap();
-        assert!(git(&repo, &["status", "--porcelain=v1"]).stdout.is_empty());
-        let output = run(root, &["new", "ed"]);
-        assert_eq!(output.status.code(), Some(1), "{set}: {output:?}");
-        assert!(root.join("work/ed/.config.toml").is_file());
-        assert!(!root.join("work/ed/checkout").exists());
-        assert_file(&path, "edit hidden from git status\n");
-        git(&repo, &["update-index", clear, "SPECS/ed/ed.spec"]);
-        git(&repo, &["restore", "SPECS/ed/ed.spec"]);
-    }
-    assert_eq!(
-        git(&repo, &["worktree", "list", "--porcelain"]).stdout,
-        worktrees
-    );
-}
-
-#[test]
 fn new_preserves_manual_work_and_only_explicitly_overwrites_the_scaffold() {
     let directory = workspace();
     let root = directory.path();
@@ -800,11 +455,9 @@ fn new_preserves_manual_work_and_only_explicitly_overwrites_the_scaffold() {
     let area = root.join("work/demo");
     let target = area.join("demo.toml");
     let expected = fs::read(&target).unwrap();
-    let checkout = area.join("checkout");
-    let baseline = git(&checkout, &["rev-parse", "HEAD"]).stdout;
-    let branch = git(&checkout, &["symbolic-ref", "HEAD"]).stdout;
+    let recipe = area.join("recipe/SPECS/demo");
     let config = fs::read(area.join(".config.toml")).unwrap();
-    fs::write(checkout.join("README"), "local checkout edit\n").unwrap();
+    fs::write(recipe.join("README"), "local recipe edit\n").unwrap();
     fs::write(&target, "# manual content\n").unwrap();
     let lock = fs::OpenOptions::new()
         .read(true)
@@ -815,7 +468,7 @@ fn new_preserves_manual_work_and_only_explicitly_overwrites_the_scaffold() {
     let busy = run(root, &["new", "demo", "--pkgname", "demo", "--force"]);
     assert_eq!(busy.status.code(), Some(1), "{busy:?}");
     assert_file(&target, "# manual content\n");
-    drop(lock);
+    lock.unlock().unwrap();
     let repo = root.join("openruyi");
     fs::write(repo.join("README"), "new upstream commit\n").unwrap();
     git(
@@ -835,9 +488,7 @@ fn new_preserves_manual_work_and_only_explicitly_overwrites_the_scaffold() {
     assert_file(&target, "# manual content\n");
     success(&run(root, &["new", "demo", "--pkgname", "demo", "--force"]));
     assert_eq!(fs::read(&target).unwrap(), expected);
-    assert_eq!(git(&checkout, &["rev-parse", "HEAD"]).stdout, baseline);
-    assert_eq!(git(&checkout, &["symbolic-ref", "HEAD"]).stdout, branch);
-    assert_file(checkout.join("README"), "local checkout edit\n");
+    assert_file(recipe.join("README"), "local recipe edit\n");
     assert_eq!(
         run(
             root,
@@ -850,83 +501,48 @@ fn new_preserves_manual_work_and_only_explicitly_overwrites_the_scaffold() {
 }
 
 #[test]
-fn successful_input_selection_preserves_pending_edits_and_previews_do_not_switch() {
+fn edit_and_gen_share_the_authoring_input() {
     let directory = workspace();
     let root = directory.path();
     success(&run(root, &["new", "review", "--pkgname", "ed"]));
+    seed_recipe(root, "review");
     let area = root.join("work/review");
     let manifest = area.join("ed.toml");
-    assert_eq!(binding(&area)["input"].as_str(), Some("authoring"));
-
+    fs::write(&manifest, include_str!("../../examples/ed/ed.toml")).unwrap();
     success(&run(
         root,
+        &["edit", "review", "--set=package.version=1.22.7"],
+    ));
+    let document: toml::Table = toml::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+    assert_eq!(document["package"]["version"].as_str(), Some("1.22.7"));
+    let generated = run(root, &["gen", "review", "--offline", "--stdout"]);
+    success(&generated);
+    assert!(String::from_utf8_lossy(&generated.stdout).contains("Version:        1.22.7"));
+    assert_file(
+        area.join("recipe/SPECS/ed/ed.spec"),
+        include_str!("../fixtures/ed.spec"),
+    );
+    let contents = fs::read_to_string(&manifest).unwrap();
+    fs::write(
+        &manifest,
+        format!("{contents}\n[build.stages.build]\nappend = 'echo from-authoring'\n"),
+    )
+    .unwrap();
+    let edited = run(root, &["edit", "review", "--stdout"]);
+    success(&edited);
+    assert!(String::from_utf8_lossy(&edited.stdout).contains("echo from-authoring"));
+    let before = fs::read(&manifest).unwrap();
+    let unsupported = run(
+        directory.path(),
         &[
             "edit",
             "review",
             "--set",
-            "package.version=1.22.6",
-            "--prepare",
-            "external-stage",
+            "spec.copyright-holders=['Other holder']",
         ],
-    ));
-    assert_eq!(binding(&area)["input"].as_str(), Some("authoring"));
-    assert!(!area.join("stage/.state/index.toml").exists());
-    assert!(root.join("external-stage/ed.toml").is_file());
-
-    success(&run(
-        root,
-        &["edit", "review", "--set", "package.version=1.22.7"],
-    ));
-    assert_eq!(binding(&area)["input"].as_str(), Some("edit"));
-    let draft = area.join("stage/ed.toml");
-    let index = area.join("stage/.state/index.toml");
-    let pending = fs::read(&draft).unwrap();
-    let identity = fs::read(&index).unwrap();
-    assert_file(
-        area.join("checkout/SPECS/ed/ed.spec"),
-        include_str!("../fixtures/ed.spec"),
     );
-
-    fs::write(&manifest, include_str!("../../examples/ed/ed.toml")).unwrap();
-    success(&run(
-        root,
-        &["gen", "review", "--input", "authoring", "--offline"],
-    ));
-    assert_eq!(binding(&area)["input"].as_str(), Some("authoring"));
-    for action in ["--check", "--diff"] {
-        success(&run(root, &["edit", "review", action]));
-        assert_eq!(binding(&area)["input"].as_str(), Some("authoring"));
-        assert_eq!(fs::read(&draft).unwrap(), pending);
-    }
-    success(&run(
-        root,
-        &["edit", "review", "--set", "package.version=1.22.8"],
-    ));
-    assert_eq!(binding(&area)["input"].as_str(), Some("edit"));
-    let updated_pending = fs::read(&draft).unwrap();
-    let updated_identity = fs::read(&index).unwrap();
-    assert_ne!(updated_pending, pending);
-    assert_eq!(updated_identity, identity);
-
-    let failed = run(root, &["new", "review"]);
-    assert_eq!(failed.status.code(), Some(1), "{failed:?}");
-    for action in ["--stdout", "--diff", "--skip-existing"] {
-        success(&run(root, &["new", "review", action]));
-        assert_eq!(binding(&area)["input"].as_str(), Some("edit"));
-        assert_eq!(fs::read(&draft).unwrap(), updated_pending);
-        assert_eq!(fs::read(&index).unwrap(), updated_identity);
-    }
-    success(&run(root, &["new", "review", "--force"]));
-    assert_eq!(binding(&area)["input"].as_str(), Some("authoring"));
-    assert_eq!(fs::read(&draft).unwrap(), updated_pending);
-    assert_eq!(fs::read(&index).unwrap(), updated_identity);
-    fs::write(&manifest, include_str!("../../examples/ed/ed.toml")).unwrap();
-    success(&run(root, &["gen", "review", "--offline"]));
-    assert_file(
-        area.join("stage/ed.candidate.spec"),
-        include_str!("../fixtures/ed.spec"),
-    );
-    assert_eq!(fs::read(&draft).unwrap(), updated_pending);
+    assert_eq!(unsupported.status.code(), Some(1));
+    assert_eq!(fs::read(&manifest).unwrap(), before);
 }
 
 #[test]
@@ -935,23 +551,16 @@ fn edit_copy_output_cannot_replace_work_inputs_or_binding_state() {
     let root = directory.path();
     success(&run(root, &["new", "review", "--pkgname", "ed"]));
     let area = root.join("work/review");
+    seed_recipe(root, "review");
     let manifest = area.join("ed.toml");
     fs::write(&manifest, include_str!("../../examples/ed/ed.toml")).unwrap();
     success(&run(
         root,
         &["edit", "review", "--set=package.version=1.22.6"],
     ));
-    success(&run(
-        root,
-        &["gen", "review", "--input=authoring", "--offline"],
-    ));
-    let target = area.join("checkout/SPECS/ed/ed.spec");
-    let protected = [
-        manifest,
-        area.join("stage/ed.toml"),
-        area.join(".config.toml"),
-        area.join(".lock"),
-    ];
+    success(&run(root, &["gen", "review", "--offline"]));
+    let target = area.join("recipe/SPECS/ed/ed.spec");
+    let protected = [manifest, area.join(".config.toml"), area.join(".lock")];
     let saved = protected
         .iter()
         .chain(std::iter::once(&target))
@@ -966,7 +575,7 @@ fn edit_copy_output_cannot_replace_work_inputs_or_binding_state() {
         for (path, bytes) in &saved {
             assert_eq!(fs::read(path).unwrap(), *bytes, "{}", path.display());
         }
-        assert_eq!(binding(&area)["input"].as_str(), Some("authoring"));
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
@@ -1046,13 +655,7 @@ fn invalid_names_and_interrupted_areas_fail_without_overwriting_files() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert_eq!(fs::read_dir(uninitialized.path()).unwrap().count(), 0);
     success(&run(uninitialized.path(), &["init"]));
-    assert_eq!(
-        run(uninitialized.path(), &["new", "demo", "--pkgname", "demo"])
-            .status
-            .code(),
-        Some(1)
-    );
-    assert!(!uninitialized.path().join("work").exists());
+    success(&run(uninitialized.path(), &["new", "demo"]));
     let nested = root.join("nested");
     fs::create_dir_all(nested.join(".ruyiconfig")).unwrap();
     fs::write(nested.join(".ruyiconfig/config.toml"), "invalid [toml").unwrap();
@@ -1086,83 +689,78 @@ fn managed_symlinks_are_rejected_without_writing_to_their_targets() {
 }
 
 #[test]
-fn author_uses_git_precedence_and_never_invents_a_missing_identity() {
-    let directory = workspace();
-    let root = directory.path();
-    let repo = root.join("openruyi");
-    for (key, value) in [
-        ("user.name", "Local Author"),
-        ("user.email", "local@example.org"),
-    ] {
-        assert!(
-            Command::new("git")
-                .args(["config", key, value])
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success()
-        );
-    }
-    let global = root.join("gitconfig");
+fn author_is_snapshotted_at_init_and_workspace_edits_are_explicit() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("workspace");
+    let global = directory.path().join("gitconfig");
     fs::write(
         &global,
-        "[user]\nname = Global Author\nemail = global@example.org\n",
+        "[user]\nname = Initial Author\nemail = initial@example.org\n",
     )
     .unwrap();
-    let from_config = || {
-        command(root)
-            .env_remove("GIT_AUTHOR_NAME")
-            .env_remove("GIT_AUTHOR_EMAIL")
+    success(
+        &command(directory.path())
             .env("GIT_CONFIG_GLOBAL", &global)
-            .args(["new", "demo", "--pkgname", "demo", "--stdout"])
+            .args(["init", root.to_str().unwrap()])
             .output()
-            .unwrap()
-    };
-    let local = from_config();
-    assert_eq!(
-        document(&local)["spec"]["contributors"][0].as_str(),
-        Some("Local Author <local@example.org>")
+            .unwrap(),
     );
-    let environment = run(root, &["new", "demo", "--pkgname", "demo", "--stdout"]);
-    assert_eq!(
-        document(&environment)["spec"]["contributors"][0].as_str(),
-        Some("Packager \"A\" \\测试 <packager@example.org>")
+    fs::write(
+        &global,
+        "[user]\nname = Changed Author\nemail = changed@example.org\n",
+    )
+    .unwrap();
+    // Reinitialization must not refresh user-owned defaults from Git or the environment.
+    success(
+        &command(&root)
+            .env("GIT_CONFIG_GLOBAL", &global)
+            .arg("init")
+            .output()
+            .unwrap(),
     );
-    for key in ["user.name", "user.email"] {
-        assert!(
-            Command::new("git")
-                .args(["config", "--unset", key])
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success()
-        );
-    }
-    let from_global = from_config();
+    let output = command(&root)
+        .env("GIT_CONFIG_GLOBAL", &global)
+        .args(["new", "demo", "--stdout"])
+        .output()
+        .unwrap();
     assert_eq!(
-        document(&from_global)["spec"]["contributors"][0].as_str(),
-        Some("Global Author <global@example.org>")
+        document(&output)["spec"]["contributors"][0].as_str(),
+        Some("Initial Author <initial@example.org>")
     );
-    for name in [None, Some("%{unsafe}")] {
-        let mut cmd = command(root);
-        cmd.env_remove("GIT_AUTHOR_NAME")
-            .env_remove("GIT_AUTHOR_EMAIL");
-        if let Some(name) = name {
-            cmd.env("GIT_AUTHOR_NAME", name)
-                .env("GIT_AUTHOR_EMAIL", "author@example.org");
+    let config_path = root.join(".ruyiconfig/config.toml");
+    let mut config: toml::Table =
+        toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    for author in [
+        "Workspace Author <local@example.org>",
+        "",
+        "%{unsafe} <a@example.org>",
+    ] {
+        config.insert("author".into(), toml::Value::String(author.into()));
+        fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
+        let output = run(&root, &["new", "demo", "--stdout"]);
+        let doc = document(&output);
+        if author.starts_with("Workspace") {
+            assert_eq!(doc["spec"]["contributors"][0].as_str(), Some(author));
+        } else {
+            assert!(doc["spec"]["contributors"].as_array().unwrap().is_empty());
+            assert!(output_text(&output.stderr).contains(".ruyiconfig/config.toml"));
         }
-        let output = cmd
-            .args(["new", "demo", "--pkgname", "demo", "--stdout"])
-            .output()
-            .unwrap();
-        assert!(
-            document(&output)["spec"]["contributors"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
-        assert!(output_text(&output.stderr).contains("fill spec.contributors"));
     }
+    let empty = directory.path().join("empty");
+    fs::write(&global, "").unwrap();
+    let output = command(directory.path())
+        .env("GIT_CONFIG_GLOBAL", &global)
+        .args(["init", empty.to_str().unwrap()])
+        .output()
+        .unwrap();
+    success(&output);
+    assert!(output_text(&output.stderr).contains("author is missing or invalid"));
+    assert!(
+        document(&run(&empty, &["new", "demo", "--stdout"]))["spec"]["contributors"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -1177,11 +775,15 @@ fn autotools_scaffolds_share_the_contract_and_feed_existing_generation() {
     for field in ["spec", "package", "sources"] {
         scaffold[field] = fixture[field].clone();
     }
-    // Keep the actual template's build configuration and add only ed's archive tool.
-    scaffold["build-requires"]["rpm"]
-        .as_array_mut()
-        .unwrap()
-        .push("lzip".into());
+    support::authoring_workspace(root, "ed", "ed", &toml::to_string(&scaffold).unwrap());
+    let defaults = run(root, &["gen", "ed", "--stdout"]);
+    success(&defaults);
+    assert_eq!(
+        output_text(&defaults.stdout),
+        include_str!("../fixtures/ed.spec").replace("BuildRequires:  lzip\n", "")
+    );
+    // An explicit package list replaces defaults and includes ed's archive tool.
+    scaffold["build-requires"] = fixture["build-requires"].clone();
     support::authoring_workspace(root, "ed", "ed", &toml::to_string(&scaffold).unwrap());
     let generated = run(root, &["gen", "ed", "--stdout"]);
     success(&generated);
@@ -1210,7 +812,7 @@ fn autotools_scaffolds_share_the_contract_and_feed_existing_generation() {
     )
     .unwrap();
     let missing = run(root, &["gen", "ed"]);
-    assert_eq!(missing.status.code(), Some(1));
+    assert_eq!(missing.status.code(), Some(0));
     assert!(output_text(&missing.stderr).contains("RPK004"));
     assert!(!root.join("ed.spec").exists());
     for system in ["unknown", "", "../autotools"] {
@@ -1285,4 +887,378 @@ fn gen_reports_every_unfilled_scaffold_field_at_once() {
         );
     }
     assert!(!root.join("work/demo/demo.spec").exists());
+}
+
+#[test]
+fn imported_authoring_preserves_bytes_binding_and_existing_gen() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    success(&run(root, &["init"]));
+    let source = include_str!("../../examples/ed/ed.toml");
+    fs::write(root.join("upstream.toml"), source).unwrap();
+    let preview = run(
+        root,
+        &["new", "review", "--from-toml=upstream.toml", "--stdout"],
+    );
+    success(&preview);
+    assert_eq!(preview.stdout, source.as_bytes());
+    assert!(!root.join("work/review").exists());
+    success(&run(root, &["new", "review", "--from-toml=upstream.toml"]));
+    assert_file(root.join("work/review/ed.toml"), source);
+    assert_file(root.join("upstream.toml"), source);
+    success(&run(root, &["gen", "review", "--offline", "--check"]));
+    for (contents, args) in [
+        (
+            "broken = [",
+            vec!["new", "rejected", "--from-toml=bad.toml"],
+        ),
+        (
+            "[package]\nname = 1",
+            vec!["new", "rejected", "--from-toml=bad.toml"],
+        ),
+        (
+            source,
+            vec!["new", "rejected", "--from-toml=bad.toml", "--pkgname=other"],
+        ),
+    ] {
+        fs::write(root.join("bad.toml"), contents).unwrap();
+        assert_eq!(run(root, &args).status.code(), Some(1));
+        assert!(!root.join("work/rejected").exists());
+    }
+    fs::write(root.join("partial.toml"), "[package]\nname = 'ed'\n").unwrap();
+    success(&run(root, &["new", "partial", "--from-toml=partial.toml"]));
+    assert_file(
+        root.join("work/partial/ed.toml"),
+        "[package]\nname = 'ed'\n",
+    );
+    assert_eq!(
+        run(root, &["gen", "partial", "--offline", "--check"])
+            .status
+            .code(),
+        Some(1)
+    );
+}
+
+#[test]
+fn local_scaffold_and_import_use_recipe_operations_without_a_git_repository() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    success(&run(root, &["init"]));
+    success(&run(root, &["new", "ed"]));
+    let area = root.join("work/ed");
+    fs::write(
+        area.join("ed.toml"),
+        include_str!("../../examples/ed/ed.toml"),
+    )
+    .unwrap();
+    success(&run(root, &["gen", "ed", "--offline", "--apply"]));
+    let spec = area.join("recipe/SPECS/ed/ed.spec");
+    assert_file(&spec, include_str!("../fixtures/ed.spec"));
+    success(&run(
+        root,
+        &["edit", "ed", "--set=package.version=1.22.6", "--apply"],
+    ));
+    assert_file(&spec, &version_spec("1.22.6"));
+    success(&run(root, &["check", "ed"]));
+    let preview = run(root, &["delete", "ed", "--dry-run", "--format=toml"]);
+    success(&preview);
+    let report: toml::Value = toml::from_str(output_text(&preview.stdout)).unwrap();
+    assert!(
+        report["authoring_files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value.as_str() == fs::canonicalize(&spec).unwrap().to_str())
+    );
+    assert!(spec.exists());
+    success(&run(root, &["delete", "ed", "--force", "--format=toml"]));
+    assert!(!area.exists());
+}
+
+#[test]
+fn spec_import_preserves_scripts_materials_and_uses_a_fixed_authoring_input() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    success(&run(root, &["init"]));
+    let input = root.join("input");
+    fs::create_dir(&input).unwrap();
+    let source = include_str!("../fixtures/ed.spec")
+        .replace("%description", "%build\necho opaque-script\n\n%description");
+    fs::write(input.join("ed.spec"), &source).unwrap();
+    fs::write(input.join("fix.patch"), "patch bytes\n").unwrap();
+    fs::write(input.join("files.list"), "/usr/bin/ed\n").unwrap();
+    let preview = run(
+        root,
+        &[
+            "new",
+            "copy",
+            "--from-dir=input",
+            "--pkgname=ed",
+            "--stdout",
+        ],
+    );
+    let projected = document(&preview);
+    assert_eq!(projected["package"]["version"].as_str(), Some("1.22.5"));
+    assert!(!root.join("work/copy").exists());
+    success(&run(
+        root,
+        &["new", "copy", "--from-dir=input", "--pkgname=ed"],
+    ));
+    let area = root.join("work/copy");
+    let manifest = area.join("ed.toml");
+    // Checking a fresh import needs no output directory and publishes nothing.
+    success(&run(root, &["gen", "copy", "--offline", "--check"]));
+    assert!(!area.join("stage").exists());
+    assert!(!area.join("authoring/.cache/ed.resolved.toml").exists());
+    let rejected = run(
+        root,
+        &[
+            "gen",
+            "copy",
+            "--offline",
+            "--output=missing/output.spec",
+            "--format=toml",
+        ],
+    );
+    assert_eq!(rejected.status.code(), Some(1));
+    let report: toml::Table = toml::from_str(output_text(&rejected.stdout)).unwrap();
+    assert_eq!(report["error"]["code"].as_str(), Some("output-target"));
+    assert!(
+        report["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("missing/output.spec")
+    );
+    assert!(!root.join("missing").exists());
+    assert_file(area.join("recipe/SPECS/ed/ed.spec"), &source);
+    for name in ["fix.patch", "files.list"] {
+        assert_eq!(
+            fs::read(area.join("recipe/SPECS/ed").join(name)).unwrap(),
+            fs::read(input.join(name)).unwrap()
+        );
+    }
+    fs::write(
+        &manifest,
+        fs::read_to_string(&manifest)
+            .unwrap()
+            .replace("1.22.5", "1.22.6"),
+    )
+    .unwrap();
+    success(&run(
+        root,
+        &["edit", "copy", "--set=package.version=1.22.7"],
+    ));
+    let generated = run(root, &["gen", "copy", "--offline", "--stdout"]);
+    success(&generated);
+    assert_eq!(
+        generated.stdout,
+        source.replace("1.22.5", "1.22.7").as_bytes()
+    );
+    success(&run(root, &["gen", "copy", "--offline", "--apply"]));
+    success(&run(root, &["gen", "copy", "--offline", "--check"]));
+    assert_file(
+        area.join("recipe/SPECS/ed/ed.spec"),
+        &source.replace("1.22.5", "1.22.7"),
+    );
+    assert_file(input.join("ed.spec"), &source);
+    assert_eq!(
+        run(root, &["new", "copy", "--from-dir=input", "--pkgname=ed"])
+            .status
+            .code(),
+        Some(1)
+    );
+    success(&run(
+        root,
+        &["new", "renamed", "--from-dir=input", "--pkgname=other"],
+    ));
+    // Directory binding does not rename the imported RPM package.
+    let renamed = run(root, &["gen", "renamed", "--offline", "--stdout"]);
+    success(&renamed);
+    assert_eq!(renamed.stdout, source.as_bytes());
+    assert_file(
+        root.join("work/renamed/recipe/SPECS/other/ed.spec"),
+        &source,
+    );
+    success(&run(root, &["gen", "renamed", "--offline", "--apply"]));
+    assert_file(
+        root.join("work/renamed/recipe/SPECS/other/ed.spec"),
+        &source,
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("fix.patch", input.join("linked.patch")).unwrap();
+        assert_eq!(
+            run(
+                root,
+                &["new", "unsafe-copy", "--from-dir=input", "--pkgname=ed"]
+            )
+            .status
+            .code(),
+            Some(1)
+        );
+        assert!(!root.join("work/unsafe-copy").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn authoring_editor_opens_the_bound_input_without_generating_a_spec() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    success(&run(root, &["init"]));
+    let input = root.join("input");
+    fs::create_dir(&input).unwrap();
+    fs::write(input.join("ed.spec"), include_str!("../fixtures/ed.spec")).unwrap();
+    fs::write(
+        input.join("ed.toml"),
+        include_str!("../../examples/ed/ed.toml"),
+    )
+    .unwrap();
+    for (work, extra, author) in [
+        ("blank", vec![], "blank.toml"),
+        ("imported", vec!["--from-toml=input/ed.toml"], "ed.toml"),
+        (
+            "recipe",
+            vec!["--from-dir=input", "--pkgname=ed"],
+            "ed.toml",
+        ),
+    ] {
+        success(&run(root, &[vec!["new", work], extra].concat()));
+        let area = root.join("work").join(work);
+        let target = area.join(author);
+        let before = fs::read(&target).unwrap();
+        let output = run(
+            root,
+            &[
+                "open",
+                work,
+                "--authoring",
+                "--editor",
+                "printf '%s' > opened-path",
+            ],
+        );
+        success(&output);
+        assert_eq!(
+            fs::read_to_string(root.join("opened-path")).unwrap(),
+            fs::canonicalize(&target).unwrap().to_str().unwrap()
+        );
+        assert_eq!(fs::read(&target).unwrap(), before);
+        assert!(!area.join("stage").exists());
+    }
+    fs::remove_file(root.join("work/blank/blank.toml")).unwrap();
+    assert_eq!(
+        run(
+            root,
+            &[
+                "open",
+                "blank",
+                "--authoring",
+                "--editor",
+                "touch should-not-run"
+            ]
+        )
+        .status
+        .code(),
+        Some(1)
+    );
+    assert!(!root.join("should-not-run").exists());
+}
+
+fn seed_recipe(root: &Path, work: &str) {
+    fs::copy(
+        root.join("openruyi/SPECS/ed/ed.spec"),
+        root.join("work").join(work).join("recipe/SPECS/ed/ed.spec"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn repository_import_reads_main_and_keeps_local_changes_independent() {
+    let directory = workspace();
+    let root = directory.path();
+    let repo = root.join("openruyi");
+    git(&repo, &["switch", "--quiet", "-c", "other"]);
+    fs::write(repo.join("SPECS/ed/ed.spec"), version_spec("9.0")).unwrap();
+    git(&repo, &["commit", "-qam", "Other branch"]);
+    assert_eq!(edit_version(root, "ed"), "1.22.5");
+    let area = root.join("work/ed");
+    assert!(!area.join("recipe").exists());
+    success(&run(
+        root,
+        &["edit", "ed", "--set=package.version=1.22.6", "--apply"],
+    ));
+    fs::rename(&repo, root.join("offline-repo")).unwrap();
+    assert_eq!(edit_version(root, "ed"), "1.22.6");
+    assert_file(
+        area.join("recipe/SPECS/ed/ed.spec"),
+        &version_spec("1.22.6"),
+    );
+}
+
+#[test]
+fn directory_and_spec_imports_bind_paths_without_rewriting_names() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    success(&run(root, &["init"]));
+    fs::create_dir(root.join("renamed-dir")).unwrap();
+    fs::write(
+        root.join("renamed-dir/original.spec"),
+        include_str!("../fixtures/ed.spec"),
+    )
+    .unwrap();
+    fs::write(root.join("renamed-dir/fix.patch"), "patch material").unwrap();
+    success(&run(root, &["new", "whole", "--from-dir=renamed-dir"]));
+    assert_file(
+        root.join("work/whole/recipe/SPECS/original/original.spec"),
+        include_str!("../fixtures/ed.spec"),
+    );
+    assert_file(
+        root.join("work/whole/recipe/SPECS/original/fix.patch"),
+        "patch material",
+    );
+    fs::create_dir(root.join("empty")).unwrap();
+    fs::write(
+        root.join("renamed-dir/renamed-dir.spec"),
+        include_str!("../fixtures/ed.spec"),
+    )
+    .unwrap();
+    for (work, source) in [("empty-input", "empty"), ("ambiguous", "renamed-dir")] {
+        let rejected = run(root, &["new", work, "--from-dir", source]);
+        assert_eq!(rejected.status.code(), Some(1));
+        assert!(!root.join("work").join(work).exists());
+    }
+    success(&run(
+        root,
+        &[
+            "new",
+            "explicit",
+            "--from-spec=renamed-dir/original.spec",
+            "--pkgname=renamed",
+        ],
+    ));
+    assert_file(
+        root.join("work/explicit/recipe/SPECS/renamed/original.spec"),
+        include_str!("../fixtures/ed.spec"),
+    );
+    for (work, name) in [
+        ("macro-name", "%global upstream ed\nName: %{upstream}"),
+        (
+            "conditional-name",
+            "%if 0\nName: ed-bootstrap\n%else\nName: ed\n%endif",
+        ),
+    ] {
+        let source = include_str!("../fixtures/ed.spec").replace("Name:           ed", name);
+        fs::write(root.join("recipe.spec"), &source).unwrap();
+        success(&run(root, &["new", work, "--from-spec=recipe.spec"]));
+        assert_file(
+            root.join(format!("work/{work}/recipe/SPECS/recipe/recipe.spec")),
+            &source,
+        );
+        let generated = run(root, &["gen", work, "--offline", "--stdout"]);
+        success(&generated);
+        assert_eq!(generated.stdout, source.as_bytes());
+    }
+    let rejected = run(root, &["new", "recursive", "--from-dir=.", "--pkgname=ed"]);
+    assert_eq!(rejected.status.code(), Some(1));
+    assert!(!root.join("work/recursive").exists());
 }

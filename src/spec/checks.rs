@@ -15,6 +15,7 @@ pub(super) fn run(parsed: &super::ParsedSpec<'_>, defines: &[String]) -> RuleRes
     let spec = &parsed.parsed.spec;
     let source = parsed.source();
     let mut visitor = CheckVisitor {
+        source,
         result: RuleResult::default(),
         build: BuildRequirements::default(),
         conditional: false,
@@ -49,6 +50,7 @@ pub(super) fn run(parsed: &super::ParsedSpec<'_>, defines: &[String]) -> RuleRes
         .result
         .incomplete_reasons
         .extend(build.incomplete_reasons);
+    super::policy_fix::check(parsed, &mut visitor.result);
     check_sources(parsed, defines, &mut visitor.result);
     visitor.result
 }
@@ -87,6 +89,7 @@ fn check_sources(parsed: &super::ParsedSpec<'_>, defines: &[String], result: &mu
         if let Some(problem) = problem {
             let rule = crate::check::SOURCE_DIGEST_RULE;
             result.findings.push(crate::check_report::Finding {
+                build_requirements: None,
                 producer: "ruyipack",
                 code: rule.code,
                 severity: rule.severity,
@@ -98,7 +101,8 @@ fn check_sources(parsed: &super::ParsedSpec<'_>, defines: &[String], result: &mu
     }
 }
 
-struct CheckVisitor {
+struct CheckVisitor<'a> {
+    source: &'a str,
     result: RuleResult,
     build: BuildRequirements,
     conditional: bool,
@@ -106,8 +110,32 @@ struct CheckVisitor {
     build_unproven: bool,
 }
 
-impl<'ast> Visit<'ast> for CheckVisitor {
+impl<'ast> Visit<'ast> for CheckVisitor<'_> {
+    fn visit_file_entry(&mut self, entry: &'ast rpm_spec::ast::FileEntry<Span>) {
+        let Some(raw) = self.source.get(entry.data.start_byte..entry.data.end_byte) else {
+            return;
+        };
+        if ["%{_libdir}/pkgconfig/*", "%{_datadir}/pkgconfig/*"]
+            .iter()
+            .any(|prefix| raw.trim_start().starts_with(prefix))
+        {
+            let rule = crate::check::FILE_LIST_RULE;
+            self.result.findings.push(crate::check_report::Finding {
+                producer: "ruyipack", code: rule.code, severity: rule.severity,
+                span: super::diagnostic::location(entry.data),
+                message: "list installed pkg-config files explicitly; automatic repair requires an installed file list".into(),
+                rule_inputs: None, build_requirements: None,
+            });
+        }
+    }
     fn visit_section(&mut self, section: &'ast rpm_spec::ast::Section<Span>) {
+        self.build.uncertain |= matches!(
+            section,
+            rpm_spec::ast::Section::BuildScript {
+                kind: rpm_spec::ast::BuildScriptKind::GenerateBuildRequires,
+                ..
+            }
+        );
         let previous = self.subpackage;
         self.subpackage |= matches!(section, rpm_spec::ast::Section::Package { .. });
         rpm_spec_analyzer::visit::walk_section(self, section);
@@ -173,6 +201,7 @@ impl<'ast> Visit<'ast> for CheckVisitor {
             tag => {
                 let field = match tag {
                     Tag::Name => Field::Name,
+                    Tag::Summary => Field::Summary,
                     Tag::Version => Field::Version,
                     Tag::Release => Field::Release,
                     Tag::URL => Field::Url,
@@ -190,5 +219,36 @@ impl<'ast> Visit<'ast> for CheckVisitor {
                 finding.rule_inputs = None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pkgconfig_wildcards_need_artifact_evidence_not_guessed_names() {
+        let source =
+            "Name: pkg\n%description\n%{_libdir}/pkgconfig/*\n%files\n%{_libdir}/pkgconfig/*\n";
+        let parsed = super::super::ParsedSpec::parse(source);
+        let result = run(&parsed, &[]);
+        let findings: Vec<_> = result
+            .findings
+            .iter()
+            .filter(|f| f.code == "RPK008")
+            .collect();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].span.start.0, 5);
+        assert!(super::super::policy_fix::apply(&parsed).unwrap().is_none());
+        let explicit = source.replace(
+            "%files\n%{_libdir}/pkgconfig/*",
+            "%files\n%{_libdir}/pkgconfig/pkg.pc",
+        );
+        assert!(
+            !run(&super::super::ParsedSpec::parse(explicit), &[])
+                .findings
+                .iter()
+                .any(|f| f.code == "RPK008")
+        );
     }
 }

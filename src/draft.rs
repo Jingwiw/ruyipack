@@ -39,10 +39,16 @@ struct Entry {
     fields: Vec<String>,
 }
 
-pub(crate) fn create(
-    dir: &Path,
-    sources: &[(&Path, &str, &[String], &toml::Table)],
-) -> Result<Vec<PathBuf>, String> {
+/// Read and verify `path`; persist `destination` only when preparing a relocated import.
+pub(crate) struct Input<'a> {
+    pub path: &'a Path,
+    pub destination: Option<&'a Path>,
+    pub original: &'a str,
+    pub fields: &'a [String],
+    pub values: &'a toml::Table,
+}
+
+pub(crate) fn create(dir: &Path, sources: &[Input<'_>]) -> Result<Vec<PathBuf>, String> {
     if sources.is_empty() {
         return Err("no sources selected for draft preparation".into());
     }
@@ -54,7 +60,14 @@ pub(crate) fn create(
     // Unique draft names also reject selecting the same source twice.
     let mut names = HashSet::new();
     // Validate and serialize every input before creating any state or draft files.
-    for (position, (source, original, fields, table)) in sources.iter().enumerate() {
+    for (position, input) in sources.iter().enumerate() {
+        let Input {
+            path: source,
+            original,
+            fields,
+            values: table,
+            ..
+        } = input;
         let source = fs::canonicalize(source).map_err(|error| error.to_string())?;
         if !utf8_file::is_unchanged(&source, original)
             .map_err(|error| format!("cannot read source {}: {error}", source.display()))?
@@ -63,6 +76,10 @@ pub(crate) fn create(
                 "source {} changed since draft preparation; prepare fresh drafts",
                 source.display()
             ));
+        }
+        let source = input.destination.map_or(source, Path::to_path_buf);
+        if !source.is_absolute() {
+            return Err("draft source binding must be absolute".into());
         }
         let draft = draft_name(&source)?;
         if !names.insert(draft.clone()) {
@@ -100,7 +117,7 @@ pub(crate) fn create(
         fs::create_dir(path).map_err(|error| error.to_string())?;
     }
     let mut drafts = Vec::new();
-    for (position, ((entry, (document, schema)), (_, original, _, _))) in
+    for (position, ((entry, (document, schema)), input)) in
         index.drafts.iter().zip(contents).zip(sources).enumerate()
     {
         write_new(
@@ -108,7 +125,7 @@ pub(crate) fn create(
                 "originals/{position}-{}.spec",
                 entry.original_sha256
             )),
-            original.as_bytes(),
+            input.original.as_bytes(),
         )?;
         write_new(&state.join(format!("schema/{position}.json")), &schema)?;
         let path = dir.join(draft_name(&entry.source)?);
@@ -303,7 +320,7 @@ pub(crate) fn save_document(path: &Path, document: &toml::Table) -> Result<(), S
     crate::file_output::write_artifact(path, text.as_bytes()).map_err(|e| e.to_string())
 }
 
-/// Fill only digest fields already admitted by the stage's fixed mapping.
+/// Fill only digest fields already admitted by the draft's fixed mapping.
 pub(crate) fn complete_digests(
     document: &mut toml::Table,
     downloads: &std::collections::BTreeMap<u32, crate::source::Download>,
@@ -343,7 +360,7 @@ pub(crate) fn update(
     document: &toml::Table,
     applied: Option<&str>,
 ) -> Result<(), String> {
-    let root = path.parent().ok_or("stage input has no parent")?;
+    let root = path.parent().ok_or("draft input has no parent")?;
     let state = root.join(".state");
     let index_path = state.join("index.toml");
     let mut index = read_index(&index_path)?;
@@ -352,7 +369,7 @@ pub(crate) fn update(
         .iter_mut()
         .enumerate()
         .find(|(_, entry)| draft_name(&entry.source).is_ok_and(|name| path == root.join(name)))
-        .ok_or("stage input is not bound in its index")?;
+        .ok_or("draft input is not bound in its index")?;
     if let Some(original) = applied {
         if !utf8_file::is_unchanged(&entry.source, original).map_err(|e| e.to_string())? {
             return Err("applied source changed; retained draft baseline was not advanced".into());
@@ -408,9 +425,38 @@ mod tests {
     ) -> Result<Vec<PathBuf>, String> {
         let sources = sources
             .iter()
-            .map(|(p, s, f, t)| (p.as_path(), s.as_str(), f.as_slice(), t))
+            .map(|(p, s, f, t)| Input {
+                path: p,
+                destination: None,
+                original: s,
+                fields: f,
+                values: t,
+            })
             .collect::<Vec<_>>();
         super::create(dir, &sources)
+    }
+
+    #[test]
+    fn relocated_draft_checks_input_bytes_and_records_the_final_source() {
+        let root = tempfile::tempdir().unwrap();
+        let (path, original, fields, values) = source(root.path(), "ed");
+        let destination = root.path().join("final/recipe/ed.spec");
+        let dir = root.path().join("authoring");
+        let input = Input {
+            path: &path,
+            destination: Some(&destination),
+            original: &original,
+            fields: &fields,
+            values: &values,
+        };
+        fs::write(&path, "changed").unwrap();
+        assert!(super::create(&dir, std::slice::from_ref(&input)).is_err());
+        assert!(!dir.exists());
+        fs::write(&path, &original).unwrap();
+        super::create(&dir, &[input]).unwrap();
+        let loaded = load(&dir).unwrap();
+        assert_eq!(loaded[0].source, destination);
+        assert_eq!(loaded[0].original, original);
     }
 
     fn source(dir: &Path, name: &str) -> (PathBuf, String, Vec<String>, toml::Table) {

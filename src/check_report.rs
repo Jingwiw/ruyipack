@@ -44,7 +44,6 @@ const FORMAT_VERSION: u32 = 2;
 pub(crate) enum IncompleteReason {
     ParserError,
     UnresolvedLicense,
-    UnresolvedBuildRequirements,
     UnresolvedSources,
 }
 
@@ -54,7 +53,6 @@ impl IncompleteReason {
             Self::UnresolvedSources => "Source declarations require an unambiguous static context",
             Self::ParserError => "the SPEC parser reported an error",
             Self::UnresolvedLicense => "license expressions require RPM evaluation",
-            Self::UnresolvedBuildRequirements => "build requirements require RPM evaluation",
         }
     }
 }
@@ -72,6 +70,7 @@ pub(crate) struct CheckReport {
     source_revision: Option<String>,
     generated_spec_sha256: Option<String>,
     pub(crate) materials: Option<crate::check::materials::Report>,
+    pub(crate) upgrade: Option<crate::check::upgrade::Report>,
     policy: crate::check::Policy,
     source_uncertainty: Option<String>,
     defines: Vec<String>,
@@ -110,6 +109,7 @@ impl CheckReport {
             generated_spec_sha256: None,
             source_revision: None,
             materials: None,
+            upgrade: None,
             defines: defines.to_vec(),
             sha256: crate::utf8_file::sha256(source),
             policy,
@@ -183,7 +183,7 @@ impl CheckReport {
         })
     }
 
-    /// Identify immutable recipe content read without creating a checkout.
+    /// Identify immutable recipe content read without copying package files.
     pub(crate) fn set_spec_revision(&mut self, revision: Option<&str>) {
         self.source_revision = revision.map(str::to_owned);
     }
@@ -243,6 +243,23 @@ impl CheckReport {
         for finding in &self.findings {
             finding.write_human(writer)?;
         }
+        if let Some(upgrade) = &self.upgrade {
+            writer.message(
+                if upgrade.error.is_some() || upgrade.candidate.is_some() {
+                    HumanLevel::Warn
+                } else {
+                    HumanLevel::Info
+                },
+                None,
+                format_args!(
+                    "upgrade: {}; current={}; candidate={}; {}",
+                    upgrade.status,
+                    upgrade.current.as_deref().unwrap_or("unknown"),
+                    upgrade.candidate.as_deref().unwrap_or("none"),
+                    upgrade.error.as_deref().unwrap_or("recipe unchanged"),
+                ),
+            )?;
+        }
         self.write_incomplete(writer)
     }
 
@@ -276,6 +293,7 @@ impl CheckReport {
             valid: self.is_success(),
             generated_spec_sha256: self.generated_spec_sha256.as_deref(),
             materials: self.materials.as_ref(),
+            upgrade: self.upgrade.as_ref(),
             input: crate::report::Input {
                 display_path: path.to_string_lossy(),
                 sha256: Some(&self.sha256),
@@ -322,6 +340,7 @@ pub(crate) struct Report<'a> {
     valid: bool,
     generated_spec_sha256: Option<&'a str>,
     materials: Option<&'a crate::check::materials::Report>,
+    upgrade: Option<&'a crate::check::upgrade::Report>,
     format_version: u32,
     input: crate::report::Input<'a>,
     evidence: Evidence<'a>,
@@ -351,6 +370,15 @@ struct ComponentIdentity {
     revision: &'static str,
 }
 
+/// Static declaration evidence, not an installed dependency or tool-usage verdict.
+#[derive(Serialize)]
+pub(crate) struct BuildRequirementsEvidence {
+    pub(crate) build_system: String,
+    pub(crate) declared: Vec<String>,
+    pub(crate) suggested: Vec<String>,
+    pub(crate) uncertain: bool,
+}
+
 /// A finding with its actual producer, independent of the command that requested it.
 #[derive(Serialize)]
 pub(crate) struct Finding {
@@ -358,6 +386,8 @@ pub(crate) struct Finding {
     pub(crate) code: &'static str,
     pub(crate) severity: Severity,
     pub(crate) message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) build_requirements: Option<BuildRequirementsEvidence>,
     pub(crate) span: SourceLocation,
     /// All inputs used by this violation's rule, including its field identity.
     /// Producers without this evidence cannot authorize retaining a failed rule.
@@ -406,32 +436,30 @@ mod tests {
     }
 
     #[test]
-    fn edit_retains_only_proven_unchanged_rule_inputs_not_a_successful_check() {
+    fn build_requirement_advice_does_not_block_edit_or_submit() {
         let source = SPEC.replace("BuildRequires:  autoconf\n", "");
         let baseline = check(&source);
-        let changed = source.replace("1.22.5", "1.22.600");
-        let candidate = check(&changed);
-        assert!(!candidate.is_success());
-        assert!(candidate.allows_edit(&baseline));
-        assert_eq!(candidate.introduced_static_blockers(&baseline), Some(false));
-
-        // Even an unrelated direct requirement is an input to this rule; equal
-        // missing-tool messages are not enough to admit a changed contract.
-        let other_requirements =
-            check(&changed.replace("BuildRequires:  lzip", "BuildRequires:  zip"));
-        assert!(!other_requirements.allows_edit(&baseline));
-        assert_eq!(
-            other_requirements.introduced_static_blockers(&baseline),
-            Some(true)
-        );
-
-        let submit = crate::check::analyze(
-            &crate::spec::ParsedSpec::parse(&changed),
+        for policy in [
+            crate::check::Policy::Authoring,
             crate::check::Policy::Submit,
-            &[],
-        );
-        assert!(!submit.is_success());
-        assert!(!submit.allows_edit(&baseline));
+        ] {
+            let changed = source.replace("BuildRequires:  lzip", "BuildRequires:  zip");
+            let report =
+                crate::check::analyze(&crate::spec::ParsedSpec::parse(&changed), policy, &[]);
+            assert!(report.is_success());
+            assert!(report.allows_edit(&baseline));
+            assert_eq!(report.introduced_static_blockers(&baseline), Some(false));
+            let advice = report
+                .findings
+                .iter()
+                .find(|finding| finding.code == "RPK004")
+                .unwrap();
+            assert!(matches!(advice.severity, Severity::Warn));
+            assert_eq!(
+                advice.build_requirements.as_ref().unwrap().suggested,
+                ["autoconf"]
+            );
+        }
     }
 
     #[test]

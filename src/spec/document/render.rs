@@ -46,6 +46,9 @@ impl Snapshot<'_> {
         defines: &[String],
     ) -> Result<ParsedSpec<'static>, String> {
         validate_shape(&self.document, edited)?;
+        if edited == &self.document {
+            return Ok(ParsedSpec::parse(self.source.to_string()));
+        }
         let mut changes = Vec::new();
         for scalar in &self.scalars {
             let value = string(edited, &scalar.field)?;
@@ -54,7 +57,7 @@ impl Snapshot<'_> {
                 crate::source::reject_credentials(value)
                     .map_err(|reason| format!("package.url: {reason}"))?;
             }
-            if value != &self.source[scalar.range.clone()] {
+            if value != string(&self.document, &scalar.field)? {
                 changes.push((scalar.range.clone(), value.to_owned()));
             }
         }
@@ -93,8 +96,10 @@ impl Snapshot<'_> {
             }
             self.replace_list(list, &values, field, &list.prefix, &mut changes)?;
         }
+        self.replace_dependencies(edited, &mut changes)?;
+        self.replace_scripts(edited, &mut changes)?;
         self.replace_copyright(edited, &mut changes)?;
-        changes.sort_by_key(|(range, _)| range.start);
+        changes.sort_by_key(|(range, _)| (range.start, range.end));
         if changes
             .array_windows::<2>()
             .any(|[(left, _), (right, _)]| left.end > right.start)
@@ -105,7 +110,12 @@ impl Snapshot<'_> {
         let mut cursor = 0;
         for (range, value) in changes {
             output.push_str(&self.source[cursor..range.start]);
-            output.push_str(&value);
+            // Encode only replacement text; never normalize untouched source bytes.
+            if value.contains('\n') && self.line_ending(range.start) == "\r\n" {
+                output.push_str(&value.replace('\n', "\r\n"));
+            } else {
+                output.push_str(&value);
+            }
             cursor = range.end;
         }
         output.push_str(&self.source[cursor..]);
@@ -116,6 +126,9 @@ impl Snapshot<'_> {
         for scalar in &self.scalars {
             if let Some(number) = scalar.field.strip_circumfix("sources.", ".url") {
                 let value = string(edited, &scalar.field)?;
+                if value == string(&self.document, &scalar.field)? {
+                    continue;
+                }
                 let resolved = crate::spec::expression::substitute_fields(value, &[])
                     .or_else(|_| {
                         let source = sources
@@ -132,6 +145,18 @@ impl Snapshot<'_> {
             }
         }
         Ok(parsed)
+    }
+
+    fn line_ending(&self, offset: usize) -> &'static str {
+        let end = self.source[offset..]
+            .find('\n')
+            .map(|index| offset + index)
+            .or_else(|| self.source[..offset].rfind('\n'));
+        if end.is_some_and(|index| self.source[..index].ends_with('\r')) {
+            "\r\n"
+        } else {
+            "\n"
+        }
     }
 
     fn replace_copyright(
@@ -191,31 +216,10 @@ impl Snapshot<'_> {
     ) -> Result<(), String> {
         if values.len() == list.items.len() {
             for (range, value) in list.items.iter().zip(values) {
-                if *value != &self.source[range.clone()] {
+                if *value != super::logical_text(&self.source[range.clone()]) {
                     changes.push((range.clone(), (*value).to_owned()));
                 }
             }
-        } else if field == "build-requires.rpm"
-            && values.len() > list.items.len()
-            && list
-                .items
-                .iter()
-                .zip(values)
-                .all(|(range, value)| self.source[range.clone()] == **value)
-            && let Some(last) = list.lines.last()
-        {
-            // Append only: leave existing dependency groups and their comments intact.
-            // Other regroupings remain ambiguous and use the contiguous-block rule.
-            let mut added = String::new();
-            if !self.source[last.clone()].ends_with('\n') {
-                added.push('\n');
-            }
-            for value in &values[list.items.len()..] {
-                added.push_str(prefix);
-                added.push_str(value);
-                added.push('\n');
-            }
-            changes.push((last.end..last.end, added));
         } else if values.is_empty() {
             for range in &list.lines {
                 changes.push((range.clone(), String::new()));

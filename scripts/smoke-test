@@ -29,17 +29,17 @@ mkdir -p openruyi/SPECS/ed
 cp "$root/tests/fixtures/ed.spec" openruyi/SPECS/ed/ed.spec
 git -C openruyi add .
 git -C openruyi -c core.hooksPath=/dev/null -c commit.gpgSign=false commit --quiet -m 'Fixture baseline'
-"$binary" new ed > /dev/null
+"$binary" open ed --editor true > /dev/null
 cp "$root/examples/ed/ed.toml" work/ed/ed.toml
-spec=work/ed/checkout/SPECS/ed/ed.spec
+spec=work/ed/recipe/SPECS/ed/ed.spec
 cp "$spec" original.spec
 "$binary" gen ed --offline
 test -s work/ed/ed.resolved.toml
 test -s work/ed/stage/ed.candidate.spec
 cmp "$spec" original.spec
-"$binary" gen ed --offline --spec=.
+"$binary" gen ed --offline --output=.
 cmp work/ed/ed.spec original.spec
-"$binary" gen ed --offline --spec=auto
+"$binary" gen ed --offline --apply
 "$binary" check ed
 "$binary" inspect ed > inspect.txt
 "$binary" inspect ed --editable --field package.version > version.toml
@@ -55,9 +55,8 @@ fi
 cmp "$spec" original.spec
 "$binary" edit ed --set package.version=1.22.6 --apply
 cp "$spec" edited.spec
-"$binary" new ed-test --pkgname ed > /dev/null
-grep -q 'name = "ed"' work/ed-test/ed.toml
-cmp original.spec work/ed-test/checkout/SPECS/ed/ed.spec
+"$binary" open ed-test --pkgname ed --editor true > /dev/null
+cmp original.spec work/ed-test/recipe/SPECS/ed/ed.spec
 # Identical scaffolds and saved bindings are reused; manual content is protected.
 "$binary" new scratch --pkgname scratch > /dev/null
 scaffold=work/scratch/scratch.toml

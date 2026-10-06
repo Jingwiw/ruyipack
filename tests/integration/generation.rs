@@ -47,7 +47,7 @@ fn rejected(source: &str, message: &str) {
     assert!(
         !directory
             .path()
-            .join("work/authoring/ed.resolved.toml")
+            .join("work/authoring/.cache/ed.resolved.toml")
             .exists()
     );
     assert_file(directory.path().join("work/authoring/ed.toml"), source);
@@ -58,10 +58,10 @@ fn work_binding_controls_completion_and_spec_requires_explicit_destination() {
     let directory = workspace(MANIFEST);
     let work = directory.path().join("work/authoring");
     fs::write(work.join("other.toml"), "not valid TOML").unwrap();
-    quiet_success(&run(directory.path(), &["gen", "authoring", "--offline"]));
-    assert_file(work.join("stage/ed.candidate.spec"), SPEC);
+    crate::support::success(&run(directory.path(), &["gen", "authoring", "--offline"]));
+    assert_file(work.join(".cache/ed.candidate.spec"), SPEC);
     let completed: toml::Value =
-        toml::from_str(&fs::read_to_string(work.join("ed.resolved.toml")).unwrap()).unwrap();
+        toml::from_str(&fs::read_to_string(work.join(".cache/ed.resolved.toml")).unwrap()).unwrap();
     assert_eq!(
         completed["manifest"]["package"]["noarch"].as_bool(),
         Some(false)
@@ -84,16 +84,16 @@ fn work_binding_controls_completion_and_spec_requires_explicit_destination() {
         Some(format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(SPEC)).as_str())
     );
     assert_file(work.join("ed.toml"), MANIFEST);
-    assert!(!work.join("checkout").exists());
+    assert!(!work.join("recipe").exists());
     assert!(!work.join("ed.spec").exists());
-    quiet_success(&run(
+    crate::support::success(&run(
         directory.path(),
-        &["gen", "authoring", "--spec=.", "--offline"],
+        &["gen", "authoring", "--output=.", "--offline"],
     ));
     assert_file(work.join("ed.spec"), SPEC);
-    quiet_success(&run(
+    crate::support::success(&run(
         directory.path(),
-        &["gen", "authoring", "--spec=review.spec", "--offline"],
+        &["gen", "authoring", "--output=review.spec", "--offline"],
     ));
     assert_file(directory.path().join("review.spec"), SPEC);
     let rejected = run(directory.path(), &["gen", "--manifest=ed.toml"]);
@@ -247,7 +247,6 @@ fn required_and_invalid_fields_are_rejected_before_publication() {
             "system = \"unknown\"",
             "build.system",
         ),
-        ("\"autoconf\", ", "", "build-requires.rpm"),
         (
             "\"%{_bindir}/%{name}\"",
             "\"relative/path\"",
@@ -326,7 +325,7 @@ fn malformed_generated_text_cannot_be_published_even_with_force() {
         fs::write(&path, "# maintained by hand\n").unwrap();
         let output = run(
             directory.path(),
-            &["gen", "authoring", "--spec=ed.spec", "--force"],
+            &["gen", "authoring", "--output=ed.spec", "--force"],
         );
         assert_eq!(output.status.code(), Some(1));
         assert!(output.stdout.is_empty());
@@ -356,7 +355,7 @@ fn generation_errors_identify_the_work_input_without_writing() {
         assert!(
             !directory
                 .path()
-                .join("work/authoring/ed.resolved.toml")
+                .join("work/authoring/.cache/ed.resolved.toml")
                 .exists()
         );
     }
@@ -372,7 +371,7 @@ fn generation_reports_identify_real_inputs_and_never_publish() {
     let first = run(directory.path(), &args);
     quiet_success(&first);
     let report = super::support::machine_report(&first);
-    assert_eq!(report["format_version"].as_integer(), Some(4));
+    assert_eq!(report["format_version"].as_integer(), Some(5));
     assert_eq!(report["scope"].as_str(), Some("manifest-generation-static"));
     assert_eq!(report["valid"].as_bool(), Some(true));
     assert_eq!(
@@ -441,7 +440,7 @@ fn generation_reports_identify_real_inputs_and_never_publish() {
     assert!(
         !directory
             .path()
-            .join("work/authoring/ed.resolved.toml")
+            .join("work/authoring/.cache/ed.resolved.toml")
             .exists()
     );
 }
@@ -450,24 +449,36 @@ fn generation_reports_identify_real_inputs_and_never_publish() {
 fn generation_check_reports_static_failure_without_writing() {
     let manifest = MANIFEST.replace("GPL-3.0-or-later AND LGPL-2.1-or-later", "Invalid-License");
     let directory = workspace(&manifest);
-    let result = run(
-        directory.path(),
-        &["gen", "authoring", "--check", "--format", "toml"],
-    );
-    assert_eq!(result.status.code(), Some(1), "{result:?}");
-    assert!(result.stderr.is_empty(), "{result:?}");
-    let report = super::support::machine_report(&result);
-    assert_eq!(report["valid"].as_bool(), Some(false));
-    assert_eq!(
-        report["report"]["evidence"]["status"].as_str(),
-        Some("fail")
-    );
-    assert!(!directory.path().join("ed.spec").exists());
-    assert_file(directory.path().join("work/authoring/ed.toml"), &manifest);
+    for mode in [
+        vec!["--check"],
+        vec!["--diff"],
+        vec!["--diff", "--check"],
+        vec!["--diff", "--apply", "--force"],
+    ] {
+        let mut args = vec!["gen", "authoring", "--offline", "--format", "toml"];
+        args.extend(&mode);
+        let result = run(directory.path(), &args);
+        assert_eq!(result.status.code(), Some(1), "{result:?}");
+        assert!(result.stderr.is_empty(), "{result:?}");
+        let report = super::support::machine_report(&result);
+        assert_eq!(report["valid"].as_bool(), Some(false));
+        assert_eq!(
+            report["report"]["evidence"]["status"].as_str(),
+            Some("fail")
+        );
+        assert!(report["written"].as_array().unwrap().is_empty());
+        if mode.contains(&"--diff") {
+            assert!(report["diff"].as_str().unwrap().contains("+License:"));
+        }
+        let work = directory.path().join("work/authoring");
+        assert!(!work.join("recipe").exists());
+        assert!(!work.join(".cache/ed.resolved.toml").exists());
+        assert_file(work.join("ed.toml"), &manifest);
+    }
 }
 
 #[test]
-fn generation_input_failures_report_the_manifest_without_claiming_a_candidate() {
+fn generation_input_failures_report_known_scope_without_claiming_a_candidate() {
     use super::support::machine_report;
     for source in [
         "not valid TOML!".to_owned(),
@@ -486,6 +497,7 @@ fn generation_input_failures_report_the_manifest_without_claiming_a_candidate() 
         assert_eq!(result.status.code(), Some(1));
         assert!(result.stderr.is_empty(), "{result:?}");
         let report = machine_report(&result);
+        assert_eq!(report["scope"].as_str(), Some("manifest-generation-static"));
         assert!(report.get("valid").is_none());
         assert_eq!(report["success"].as_bool(), Some(false));
         assert!(report.get("report").is_none());
@@ -516,6 +528,16 @@ fn generation_input_failures_report_the_manifest_without_claiming_a_candidate() 
     let report = machine_report(&result);
     assert!(report["input"].get("sha256").is_none());
     assert!(report.get("report").is_none());
+    let directory = tempfile::tempdir().unwrap();
+    let result = run(
+        directory.path(),
+        &["gen", "missing", "--check", "--format=toml"],
+    );
+    assert_eq!(result.status.code(), Some(1));
+    assert_eq!(
+        machine_report(&result)["scope"].as_str(),
+        Some("generation-static")
+    );
 }
 
 #[test]
@@ -547,7 +569,7 @@ fn generation_and_editing_use_only_their_selected_authority() {
     let generated = run(directory.path(), &["gen", "authoring", "--stdout"]);
     quiet_success(&generated);
     assert_eq!(generated.stdout, SPEC.as_bytes());
-    let conflict = run(directory.path(), &["gen", "authoring", "--spec=ed.spec"]);
+    let conflict = run(directory.path(), &["gen", "authoring", "--output=ed.spec"]);
     assert_eq!(conflict.status.code(), Some(1));
     assert_file(&target, &edited);
     assert_file(directory.path().join("work/authoring/ed.toml"), MANIFEST);
@@ -577,7 +599,11 @@ fn materials_and_file_lists_compose_without_opening_local_inputs() {
     assert_eq!(spec.matches("#!RemoteAsset").count(), 1);
     assert!(spec.find("Patch20:").unwrap() < spec.find("Patch0:").unwrap());
     // No source, patch, or generated list is required on the author's machine.
-    assert!(!dir.path().join("work/authoring/ed.resolved.toml").exists());
+    assert!(
+        !dir.path()
+            .join("work/authoring/.cache/ed.resolved.toml")
+            .exists()
+    );
     for material in [
         "path = \"a.patch\"\nurl = \"https://example.org/a\"",
         "path = \"a.patch\"\nsha256 = \"bad\"",
@@ -622,6 +648,10 @@ fn selected_edit_input_retains_unmapped_script_bytes() {
         "%files\n",
         "%prep\nprintf '%s\\n' 'keep this exact custom script'\n\n%files\n",
     );
+    let source = source.replace(
+        "BuildSystem:",
+        "%if %{unavailable}\nSource: opaque.tar\n%endif\nSource: local.tar\nBuildSystem:",
+    );
     let work = super::support::recipe_workspace(directory.path(), "authoring", "ed", &source);
     success(&run(
         directory.path(),
@@ -631,51 +661,50 @@ fn selected_edit_input_retains_unmapped_script_bytes() {
             "--field",
             "package.summary",
             "--prepare",
-            "work/authoring/stage",
+            "work/authoring",
         ],
     ));
     let edited = "[package]\nsummary = 'Changed summary'\n";
-    fs::write(work.join("stage/ed.toml"), edited).unwrap();
-    quiet_success(&run(directory.path(), &["gen", "authoring", "--offline"]));
+    fs::write(work.join("ed.toml"), edited).unwrap();
+    crate::support::success(&run(directory.path(), &["gen", "authoring", "--offline"]));
     let candidate = source.replace("A line-oriented text editor", "Changed summary");
-    assert_file(work.join("stage/ed.candidate.spec"), &candidate);
-    assert_file(work.join("stage/ed.toml"), edited);
-    assert_file(work.join("ed.toml"), "invalid authoring TOML!\n");
-    assert_file(work.join("checkout/SPECS/ed/ed.spec"), &source);
-    quiet_success(&run(
+    assert_file(work.join(".cache/ed.candidate.spec"), &candidate);
+    assert_file(work.join("ed.toml"), edited);
+    assert_file(work.join("recipe/SPECS/ed/ed.spec"), &source);
+    crate::support::success(&run(
         directory.path(),
-        &["gen", "authoring", "--offline", "--spec=."],
+        &["gen", "authoring", "--offline", "--output=."],
     ));
-    assert_file(work.join("stage/ed.spec"), &candidate);
+    assert_file(work.join("ed.spec"), &candidate);
     let completed: toml::Table =
-        toml::from_str(&fs::read_to_string(work.join("stage/ed.resolved.toml")).unwrap()).unwrap();
+        toml::from_str(&fs::read_to_string(work.join(".cache/ed.resolved.toml")).unwrap()).unwrap();
     assert_eq!(
         completed["edit"]["values"]["package"]["summary"].as_str(),
         Some("Changed summary")
     );
-    fs::write(work.join("stage/ed.toml"), "[package]\nsummary = ''\n").unwrap();
+    fs::write(work.join("ed.toml"), "[package]\nsummary = ''\n").unwrap();
     let rejected = run(
         directory.path(),
-        &["gen", "authoring", "--offline", "--spec=rejected.spec"],
+        &["gen", "authoring", "--offline", "--output=rejected.spec"],
     );
     assert_eq!(rejected.status.code(), Some(1));
     assert!(!directory.path().join("rejected.spec").exists());
-    assert_file(work.join("stage/ed.candidate.spec"), &candidate);
+    assert_file(work.join(".cache/ed.candidate.spec"), &candidate);
     // Explicit auto publication updates only the bound checkout and advances its stage baseline.
-    fs::write(work.join("stage/ed.toml"), edited).unwrap();
-    quiet_success(&run(
+    fs::write(work.join("ed.toml"), edited).unwrap();
+    crate::support::success(&run(
         directory.path(),
-        &["gen", "authoring", "--offline", "--spec=auto"],
+        &["gen", "authoring", "--offline", "--apply"],
     ));
-    assert_file(work.join("checkout/SPECS/ed/ed.spec"), &candidate);
+    assert_file(work.join("recipe/SPECS/ed/ed.spec"), &candidate);
     assert_file(directory.path().join("openruyi/SPECS/ed/ed.spec"), &source);
-    quiet_success(&run(directory.path(), &["gen", "authoring", "--offline"]));
+    crate::support::success(&run(directory.path(), &["gen", "authoring", "--offline"]));
     // A valid saved index is still not permission to target another package or source.
-    fs::write(work.join("stage/ed.toml"), edited).unwrap();
+    fs::write(work.join("ed.toml"), edited).unwrap();
     let foreign = directory.path().join("foreign/ed.spec");
     fs::create_dir(foreign.parent().unwrap()).unwrap();
     fs::write(&foreign, &candidate).unwrap();
-    let index_path = work.join("stage/.state/index.toml");
+    let index_path = work.join(".state/index.toml");
     let mut index: toml::Value = toml::from_str(&fs::read_to_string(&index_path).unwrap()).unwrap();
     index["drafts"][0]["source"] = foreign
         .canonicalize()
@@ -686,8 +715,8 @@ fn selected_edit_input_retains_unmapped_script_bytes() {
     fs::write(index_path, toml::to_string(&index).unwrap()).unwrap();
     let unrelated = run(directory.path(), &["gen", "authoring", "--offline"]);
     assert_eq!(unrelated.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&unrelated.stderr).contains("not WORK's bound checkout SPEC"));
-    assert_file(work.join("stage/ed.candidate.spec"), &candidate);
+    assert!(String::from_utf8_lossy(&unrelated.stderr).contains("not WORK's bound SPEC"));
+    assert_file(work.join(".cache/ed.candidate.spec"), &candidate);
     assert_file(foreign, &candidate);
 }
 
@@ -705,11 +734,11 @@ fn indexed_generation_uses_local_admission_without_claiming_whole_spec_validity(
             "--field",
             "package.summary",
             "--prepare",
-            "work/authoring/stage",
+            "work/authoring",
         ],
     ));
     fs::write(
-        work.join("stage/ed.toml"),
+        work.join("ed.toml"),
         "[package]\nsummary = 'Repair unrelated summary'\n",
     )
     .unwrap();
@@ -724,7 +753,7 @@ fn indexed_generation_uses_local_admission_without_claiming_whole_spec_validity(
     assert_eq!(report["success"].as_bool(), Some(true));
     let published = run(
         directory.path(),
-        &["gen", "authoring", "--offline", "--spec=review.spec"],
+        &["gen", "authoring", "--offline", "--output=review.spec"],
     );
     success(&published);
     assert_file(
@@ -763,13 +792,13 @@ fn gen_auto_materializes_only_for_explicit_checked_spec_publication() {
     git(&["add", "README"]);
     git(&["commit", "--quiet", "-m", "Fixture baseline"]);
     let work = directory.path().join("work/authoring");
-    quiet_success(&run(directory.path(), &["gen", "authoring", "--offline"]));
-    assert!(!work.join("checkout").exists());
-    quiet_success(&run(
+    crate::support::success(&run(directory.path(), &["gen", "authoring", "--offline"]));
+    assert!(!work.join("recipe").exists());
+    crate::support::success(&run(
         directory.path(),
-        &["gen", "authoring", "--offline", "--spec=auto"],
+        &["gen", "authoring", "--offline", "--apply"],
     ));
-    assert_file(work.join("checkout/SPECS/ed/ed.spec"), SPEC);
+    assert_file(work.join("recipe/SPECS/ed/ed.spec"), SPEC);
     assert_file(work.join("ed.toml"), MANIFEST);
     assert!(!recipes.join("SPECS/ed/ed.spec").exists());
 }
@@ -786,10 +815,10 @@ fn completion_uses_binding_and_declared_build_contract_but_does_not_guess_packag
     input.remove("build-requires");
     let source = toml::to_string(&input).unwrap();
     let directory = workspace(&source);
-    quiet_success(&run(directory.path(), &["gen", "authoring", "--offline"]));
+    crate::support::success(&run(directory.path(), &["gen", "authoring", "--offline"]));
     let work = directory.path().join("work/authoring");
     let completed: toml::Table =
-        toml::from_str(&fs::read_to_string(work.join("ed.resolved.toml")).unwrap()).unwrap();
+        toml::from_str(&fs::read_to_string(work.join(".cache/ed.resolved.toml")).unwrap()).unwrap();
     assert_eq!(
         completed["manifest"]["package"]["name"].as_str(),
         Some("ed")
@@ -824,7 +853,7 @@ fn completion_uses_binding_and_declared_build_contract_but_does_not_guess_packag
         assert!(
             !directory
                 .path()
-                .join("work/authoring/ed.resolved.toml")
+                .join("work/authoring/.cache/ed.resolved.toml")
                 .exists()
         );
         assert_file(directory.path().join("work/authoring/ed.toml"), &missing);
@@ -846,18 +875,18 @@ fn auto_rebase_projects_actual_declarations_without_backfilling_derived_missing_
             "--field",
             "sources.0",
             "--prepare",
-            "work/authoring/stage",
+            "work/authoring",
         ],
     ));
-    fs::write(work.join("stage/ed.toml"), "[package]\nversion = '2'\n[sources.0]\nurl = 'https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz'\n").unwrap();
+    fs::write(work.join("ed.toml"), "[package]\nversion = '2'\n[sources.0]\nurl = 'https://ftpmirror.gnu.org/ed/ed-%{version}.tar.lz'\n").unwrap();
     let generated = run(
         directory.path(),
-        &["gen", "authoring", "--offline", "--spec=auto"],
+        &["gen", "authoring", "--offline", "--apply"],
     );
     success(&generated);
     assert!(String::from_utf8_lossy(&generated.stderr).contains("declaration, not verification"));
     let completed: toml::Table =
-        toml::from_str(&fs::read_to_string(work.join("stage/ed.resolved.toml")).unwrap()).unwrap();
+        toml::from_str(&fs::read_to_string(work.join(".cache/ed.resolved.toml")).unwrap()).unwrap();
     assert!(
         completed["edit"]["values"]["sources"]["0"]
             .as_table()
@@ -866,13 +895,13 @@ fn auto_rebase_projects_actual_declarations_without_backfilling_derived_missing_
             .is_none()
     );
     let stage: toml::Table =
-        toml::from_str(&fs::read_to_string(work.join("stage/ed.toml")).unwrap()).unwrap();
+        toml::from_str(&fs::read_to_string(work.join("ed.toml")).unwrap()).unwrap();
     assert_eq!(
         stage["sources"]["0"]["sha256"].as_str(),
         Some("56e107ddc2f29dad6690376c15bf9751509e1ee3b8241710e44edbe5c3a158cc")
     );
     let published = SPEC.replace("Version:        1.22.5", "Version:        2");
-    assert_file(work.join("checkout/SPECS/ed/ed.spec"), &published);
+    assert_file(work.join("recipe/SPECS/ed/ed.spec"), &published);
     // The next editor iteration reads a shape-complete declaration baseline,
     // without treating the completed TOML or cached SPEC as a new authority.
     success(&run(
@@ -886,7 +915,7 @@ fn auto_rebase_projects_actual_declarations_without_backfilling_derived_missing_
             "--diff",
         ],
     ));
-    assert_file(work.join("checkout/SPECS/ed/ed.spec"), &published);
+    assert_file(work.join("recipe/SPECS/ed/ed.spec"), &published);
     assert_file(directory.path().join("openruyi/SPECS/ed/ed.spec"), SPEC);
 }
 
@@ -894,11 +923,11 @@ fn auto_rebase_projects_actual_declarations_without_backfilling_derived_missing_
 fn late_completion_failure_reports_only_actual_spec_publication() {
     let directory = workspace(MANIFEST);
     let work = directory.path().join("work/authoring");
-    fs::create_dir(work.join("ed.resolved.toml")).unwrap();
+    fs::create_dir_all(work.join(".cache/ed.resolved.toml")).unwrap();
     let target = directory.path().join("review.spec");
     let written = run(
         directory.path(),
-        &["gen", "authoring", "--offline", "--spec=review.spec"],
+        &["gen", "authoring", "--offline", "--output=review.spec"],
     );
     assert_eq!(written.status.code(), Some(1));
     assert!(written.stdout.is_empty());
@@ -915,11 +944,11 @@ fn late_completion_failure_reports_only_actual_spec_publication() {
     assert!(error.contains("Publication was not rolled back"), "{error}");
     assert_file(&target, SPEC);
     assert_file(work.join("ed.toml"), MANIFEST);
-    assert!(!work.join("stage/ed.candidate.spec").exists());
+    assert!(!work.join(".cache/ed.candidate.spec").exists());
 
     let unchanged = run(
         directory.path(),
-        &["gen", "authoring", "--offline", "--spec=review.spec"],
+        &["gen", "authoring", "--offline", "--output=review.spec"],
     );
     assert_eq!(unchanged.status.code(), Some(1));
     assert!(!String::from_utf8_lossy(&unchanged.stderr).contains("SPEC files already written:"));
@@ -931,112 +960,102 @@ fn late_completion_failure_reports_only_actual_spec_publication() {
             "gen",
             "authoring",
             "--offline",
-            "--spec=review.spec",
+            "--output=review.spec",
             "--skip-existing",
         ],
     );
     assert_eq!(skipped.status.code(), Some(1));
     assert!(!String::from_utf8_lossy(&skipped.stderr).contains("SPEC files already written:"));
     assert_file(&target, "manual SPEC retained\n");
+    for written_count in [1, 0] {
+        let output = run(
+            directory.path(),
+            &[
+                "gen",
+                "authoring",
+                "--offline",
+                "--output=review.spec",
+                "--force",
+                "--format=toml",
+            ],
+        );
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let report = super::support::machine_report(&output);
+        assert_eq!(report["success"].as_bool(), Some(false));
+        assert_eq!(report["written"].as_array().unwrap().len(), written_count);
+        assert!(
+            report["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("derived artifact")
+        );
+        assert_file(&target, SPEC);
+    }
+    fs::remove_dir(work.join(".cache/ed.resolved.toml")).unwrap();
+    fs::create_dir(work.join(".cache/ed.candidate.spec")).unwrap();
+    let output = run(
+        directory.path(),
+        &[
+            "gen",
+            "authoring",
+            "--offline",
+            "--output=review.spec",
+            "--format=toml",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let report = super::support::machine_report(&output);
+    assert!(report["written"].as_array().unwrap().is_empty());
+    let artifacts = report["artifacts"].as_array().unwrap();
+    assert_eq!(artifacts.len(), 1);
+    assert_eq!(
+        fs::canonicalize(artifacts[0].as_str().unwrap()).unwrap(),
+        fs::canonicalize(work.join(".cache/ed.resolved.toml")).unwrap(),
+    );
+    assert_file(&target, SPEC);
     assert_file(work.join("ed.toml"), MANIFEST);
 }
 
 #[test]
-fn explicit_generation_input_switches_without_discarding_other_user_work() {
-    use super::support::{recipe_workspace, success};
-    let directory = tempfile::tempdir().unwrap();
-    let work = recipe_workspace(directory.path(), "switch", "ed", SPEC);
-    success(&run(
-        directory.path(),
-        &["edit", "switch", "--set=package.version=2"],
-    ));
-    let stage_path = work.join("stage/ed.toml");
-    let saved_stage = fs::read_to_string(&stage_path).unwrap();
-    let author = MANIFEST.replace("1.22.5", "3");
-    fs::write(work.join("ed.toml"), &author).unwrap();
-    let binding = || {
-        toml::from_str::<toml::Table>(&fs::read_to_string(work.join(".config.toml")).unwrap())
-            .unwrap()
-    };
-    assert_eq!(binding()["input"].as_str(), Some("edit"));
-    quiet_success(&run(
-        directory.path(),
-        &["gen", "switch", "--input=authoring", "--offline", "--check"],
-    ));
-    assert_eq!(binding()["input"].as_str(), Some("edit"));
-    quiet_success(&run(
-        directory.path(),
-        &["gen", "switch", "--input=authoring", "--offline"],
-    ));
-    assert_eq!(binding()["input"].as_str(), Some("authoring"));
-    let output = run(
-        directory.path(),
-        &["gen", "switch", "--offline", "--stdout"],
-    );
-    quiet_success(&output);
-    assert_eq!(output.stdout, SPEC.replace("1.22.5", "3").as_bytes());
-    success(&run(
-        directory.path(),
-        &["gen", "switch", "--input=edit", "--offline"],
-    ));
-    assert_eq!(binding()["input"].as_str(), Some("edit"));
-    assert_file(
-        work.join("stage/ed.candidate.spec"),
-        &SPEC.replace("Version:        1.22.5", "Version:        2"),
-    );
-    assert_file(stage_path, &saved_stage);
-    assert_file(work.join("ed.toml"), &author);
-    assert_file(work.join("checkout/SPECS/ed/ed.spec"), SPEC);
-}
-
-#[test]
-fn generation_cannot_overwrite_either_user_input_or_its_alias() {
-    use super::support::{recipe_workspace, success};
-    let directory = tempfile::tempdir().unwrap();
-    let work = recipe_workspace(directory.path(), "protect", "ed", SPEC);
-    success(&run(
-        directory.path(),
-        &["edit", "protect", "--set=package.version=2"],
-    ));
-    fs::write(work.join("ed.toml"), MANIFEST).unwrap();
-    let stage = work.join("stage/ed.toml");
-    let saved_stage = fs::read_to_string(&stage).unwrap();
-    for (input, target) in [
-        ("edit", work.join("ed.toml")),
-        ("authoring", stage.clone()),
-        ("authoring", work.join(".lock")),
-    ] {
-        let result = run(
+fn generation_cannot_overwrite_its_input_or_alias() {
+    use super::support::success;
+    let directory = workspace(MANIFEST);
+    let work = directory.path().join("work/authoring");
+    for target in [work.join("ed.toml"), work.join(".lock")] {
+        let before = fs::read(&target).unwrap();
+        let output = run(
             directory.path(),
             &[
                 "gen",
-                "protect",
-                &format!("--input={input}"),
+                "authoring",
                 "--offline",
                 "--force",
-                &format!("--spec={}", target.display()),
+                &format!("--output={}", target.display()),
             ],
         );
-        assert_eq!(result.status.code(), Some(1), "{result:?}");
-        assert_file(work.join("ed.toml"), MANIFEST);
-        assert_file(&stage, &saved_stage);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert_eq!(fs::read(target).unwrap(), before);
     }
     #[cfg(unix)]
     {
-        let alias = directory.path().join("author-alias.spec");
+        let alias = directory.path().join("alias.spec");
         fs::hard_link(work.join("ed.toml"), &alias).unwrap();
-        let result = run(
+        let output = run(
             directory.path(),
             &[
                 "gen",
-                "protect",
+                "authoring",
                 "--offline",
                 "--force",
-                &format!("--spec={}", alias.display()),
+                &format!("--output={}", alias.display()),
             ],
         );
-        assert_eq!(result.status.code(), Some(1), "{result:?}");
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
         assert_file(alias, MANIFEST);
     }
-    assert_file(work.join("checkout/SPECS/ed/ed.spec"), SPEC);
+    success(&run(
+        directory.path(),
+        &["gen", "authoring", "--offline", "--check"],
+    ));
 }
