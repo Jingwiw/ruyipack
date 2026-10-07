@@ -48,6 +48,9 @@ enum Command {
 
 #[derive(Args)]
 struct RunOptions {
+    /// Require a directory-check receipt for each WORK. Retained for later runs.
+    #[arg(long, value_name = "FILE")]
+    check_receipt: Option<PathBuf>,
     /// Validation target. Defaults to the saved target, or local for a new task.
     #[arg(long, value_enum)]
     validation: Option<Validation>,
@@ -88,6 +91,7 @@ enum Phase {
 #[serde(deny_unknown_fields)]
 struct Task {
     work: String,
+    check_receipt: Option<PathBuf>,
     remote: bool,
     phase: Phase,
     running: bool,
@@ -104,6 +108,7 @@ impl Task {
     fn new(work: String, options: &RunOptions) -> Self {
         Self {
             work,
+            check_receipt: None,
             remote: options.validation == Some(Validation::Remote),
             phase: Phase::Materials,
             running: false,
@@ -292,7 +297,11 @@ fn advance_plan(options: &RunOptions, plan: plan::Plan) -> io::Result<bool> {
                 }
                 let result = (|| {
                     let settings = package.settings.inherit(&plan.defaults);
+                    if let Some(receipt) = &options.check_receipt {
+                        task.check_receipt = Some(std::path::absolute(receipt)?);
+                    }
                     prepare(&workspace, options, &settings, &mut task)?;
+                    verify_check(&workspace, &task)?;
                     advance(
                         &workspace,
                         &executable,
@@ -300,7 +309,8 @@ fn advance_plan(options: &RunOptions, plan: plan::Plan) -> io::Result<bool> {
                         &path,
                         &settings,
                         &mut task,
-                    )
+                    )?;
+                    verify_check(&workspace, &task)
                 })();
                 if let Err(error) = result {
                     task.stop(&error);
@@ -372,6 +382,14 @@ fn advance_plan(options: &RunOptions, plan: plan::Plan) -> io::Result<bool> {
         .tasks
         .iter()
         .all(|t| !matches!(t.phase, Phase::Failed | Phase::Paused)))
+}
+
+fn verify_check(workspace: &workspace::Workspace, task: &Task) -> io::Result<()> {
+    if let Some(receipt) = &task.check_receipt {
+        let area = workspace.existing_development(&task.work)?;
+        crate::check::directory::verify(receipt, &area)?;
+    }
+    Ok(())
 }
 
 fn now() -> i64 {

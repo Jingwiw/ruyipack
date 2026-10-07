@@ -116,3 +116,24 @@ and reports pending WORKs. OBS projects, shared images and the plan file remain.
 Commit and delete batches report `results` and `pending`. Each result describes
 one attempted WORK. `pending` contains WORKs not attempted after cancellation.
 A failed result does not imply that its earlier actions were rolled back.
+
+
+## Require a directory check
+
+Prepare a directory with the selected WORK SPECs under `SPECS/PKG/` and the
+target repository's `scripts/remoteassetify.py`. Then run:
+
+```sh
+ruyipack check --directory prepared --check-output checks
+ruyipack task --plan packages.toml run --check-receipt checks/receipt.toml
+```
+
+The receipt requirement is saved per WORK. Later runs still check it when the
+option is omitted. A failed or stale result excludes that WORK from the validated
+selection. Correct it, run the directory check into a new output directory, then
+pass the new receipt with `run --retry`.
+
+Each WORK needs its own successful SPEC result; another package's failed check
+does not reject it. Incomplete execution rejects the receipt. SPEC bytes, the
+source script, the Compose file and the check driver must still match.
+This receipt covers RemoteAsset checks, not all upstream Action checks.

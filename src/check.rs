@@ -7,7 +7,7 @@
 //! Shared static SPEC checks, rule selection, and the check command boundary.
 
 pub(crate) mod build;
-mod directory;
+pub(crate) mod directory;
 pub(crate) mod license;
 pub(crate) mod materials;
 pub(crate) mod metadata;

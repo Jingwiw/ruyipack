@@ -1786,6 +1786,91 @@ fn repaired_plan_validates_and_reuses_a_completed_local_task() {
         fs::read(fixture.root.path().join("calls.jsonl")).unwrap(),
         calls
     );
+    check_directory_admission(&fixture, &root, &area);
+}
+
+fn check_directory_admission(fixture: &Fixture, root: &std::path::Path, area: &std::path::Path) {
+    use sha2::{Digest, Sha256};
+    let digest = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+    let directory = area.join("recipe");
+    fs::create_dir(directory.join("scripts")).unwrap();
+    let script = directory.join("scripts/remoteassetify.py");
+    fs::write(&script, "fixture checker").unwrap();
+    let config = root.join("check-compose.yaml");
+    fs::write(&config, "fixture environment").unwrap();
+    let input_hash = digest(&fs::read(directory.join("SPECS/ed/ed.spec")).unwrap());
+    let receipt = serde_json::json!({
+        "format_version": 1, "operation": "directory-check", "directory": directory,
+        "script": {"path": "scripts/remoteassetify.py", "sha256": digest(b"fixture checker")},
+        "inputs": [
+            {"path": "SPECS/ed/ed.spec", "sha256": input_hash},
+            {"path": "SPECS/other/other.spec", "sha256": "unrelated"}
+        ],
+        "config": config, "config_sha256": digest(b"fixture environment"),
+        "driver_sha256": digest(include_bytes!("../../src/check/runner.py")),
+        "execution": {"success": true}, "success": false,
+        "checks": [
+            {"path": "SPECS/ed/ed.spec", "exit_code": 0, "stdout": "0.log", "stderr": "0.err"},
+            {"path": "SPECS/other/other.spec", "exit_code": 1, "stdout": "1.log", "stderr": "1.err"}
+        ]
+    });
+    let path = root.join("check-receipt.toml");
+    fs::write(&path, toml::to_string(&receipt).unwrap()).unwrap();
+    let output = fixture
+        .command("default-context")
+        .current_dir(root)
+        .args([
+            "task",
+            "--plan",
+            "plan.toml",
+            "run",
+            "--check-receipt",
+            "check-receipt.toml",
+            "--format=toml",
+        ])
+        .output()
+        .unwrap();
+    support::success(&output);
+    assert_eq!(
+        support::machine_report(&output)["tasks"][0]["phase"].as_str(),
+        Some("validated")
+    );
+    let calls = fs::read(fixture.root.path().join("calls.jsonl")).unwrap();
+    for (changed, original) in [(script, "fixture checker"), (config, "fixture environment")] {
+        fs::write(&changed, "changed after validation").unwrap();
+        // Omission of the flag must not discard the saved requirement.
+        let output = fixture
+            .command("default-context")
+            .current_dir(root)
+            .args([
+                "task",
+                "--plan",
+                "plan.toml",
+                "run",
+                "--retry",
+                "--format=toml",
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let report = support::machine_report(&output);
+        assert!(
+            report["tasks"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("stale")
+        );
+        let plan: toml::Value = toml::from_str(
+            &fs::read_to_string(report["validated_plan"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert!(plan["packages"].as_array().unwrap().is_empty());
+        assert_eq!(
+            fs::read(fixture.root.path().join("calls.jsonl")).unwrap(),
+            calls
+        );
+        fs::write(changed, original).unwrap();
+    }
 }
 
 #[test]

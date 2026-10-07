@@ -6,6 +6,9 @@
 
 //! Run the prepared directory’s `RemoteAsset` check in a clean environment.
 
+mod evidence;
+pub(crate) use evidence::verify;
+
 use crate::{
     environment::{Backend, compose::Compose},
     output_cli::{ReportError, ReportFormat},
@@ -39,7 +42,7 @@ pub(crate) struct Options {
     timeout: u64,
 }
 
-#[derive(Serialize)]
+#[derive(serde::Deserialize, Serialize)]
 struct File {
     path: String,
     sha256: String,
@@ -53,6 +56,7 @@ struct Receipt {
     directory: PathBuf,
     script: File,
     inputs: Vec<File>,
+    config: PathBuf,
     config_sha256: String,
     driver_sha256: String,
     tool: crate::tool::Identity,
@@ -223,6 +227,7 @@ pub(crate) fn run(options: &Options, format: ReportFormat) -> Result<bool, Repor
         directory,
         script,
         inputs,
+        config,
         config_sha256,
         driver_sha256,
         tool: crate::tool::identity(),
