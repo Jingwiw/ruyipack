@@ -160,6 +160,29 @@ pub(super) fn directory(text: &str) -> Result<BTreeMap<String, String>, String> 
     }
     Ok(files)
 }
+// OBS can reformat XML and reorder project fields. Repository path order still matters.
+fn project_identity(node: roxmltree::Node<'_, '_>) -> String {
+    if node.is_text() {
+        return format!("{:?}", node.text().unwrap_or_default());
+    }
+    let mut attributes: Vec<_> = node
+        .attributes()
+        .map(|a| (a.namespace(), a.name(), a.value()))
+        .collect();
+    attributes.sort_unstable();
+    let mut children: Vec<_> = node
+        .children()
+        .filter(|n| {
+            n.is_element() || n.is_text() && !n.text().unwrap_or_default().trim().is_empty()
+        })
+        .map(project_identity)
+        .collect();
+    if node.has_tag_name("project") {
+        children.sort_unstable();
+    }
+    format!("{:?}{attributes:?}{children:?}", node.tag_name())
+}
+
 pub(super) fn project(client: &Client, user: &str, settings: &Settings) -> Result<(), String> {
     let project = settings.project.as_deref().ok_or("missing project")?;
     super::api::owned_project(project, user)?;
@@ -216,6 +239,9 @@ pub(super) fn project(client: &Client, user: &str, settings: &Settings) -> Resul
             return Err(
                 "existing project is not managed by RuyiPack; choose a new home subproject".into(),
             );
+        }
+        if project_identity(old.root_element()) == project_identity(parse(&meta)?.root_element()) {
+            return Ok(());
         }
         // Metadata changes are explicit configuration changes, not a reason to replace package sources.
     }
@@ -329,4 +355,28 @@ pub(super) fn submit(
         uploaded,
         removed,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse, project_identity};
+
+    #[test]
+    fn project_comparison_ignores_layout_but_preserves_configuration() {
+        let identity = |s: &str| project_identity(parse(s).unwrap().root_element());
+        let original = "<project name='p'><title>Title</title><repository name='r'><path project='base' repository='r'/><arch>x86_64</arch></repository></project>";
+        assert_eq!(
+            identity(original),
+            identity(
+                "<project name='p'>\n<repository name='r'><path repository='r' project='base'/><arch>x86_64</arch></repository><title>Title</title>\n</project>"
+            )
+        );
+        for changed in [
+            original.replace("x86_64", "riscv64"),
+            original.replace("base", "other"),
+            original.replace("Title", "Different"),
+        ] {
+            assert_ne!(identity(original), identity(&changed));
+        }
+    }
 }
