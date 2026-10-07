@@ -127,7 +127,7 @@ A created commit is reported even if saving the final WORK state fails.
 It removes the receipt-bound OBS package and owned build resources before WORK files.
 OBS projects and shared images remain. Another WORK binding keeps a shared OBS package.
 Changed remote files or missing ownership evidence block deletion; `--force` does not bypass these checks.
-Use `--only obs` or `--only build` to keep WORK files. `--dry-run` reads local records only.
+Use `clean WORK` for local builds or `clean WORK --remote` for OBS; both keep WORK files. `--dry-run` reads local records only.
 It does not remove Git commits or branches. `clean WORK` keeps authoring and recipe files.
 
 ## Common SPEC selection

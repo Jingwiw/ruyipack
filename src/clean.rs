@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Remove receipt-owned build resources, never a development recipe or authoring input.
+//! Remove retained resources, never a development recipe or authoring input.
 
 use crate::build::CleanReport;
 use serde::Serialize;
@@ -14,12 +14,15 @@ use std::{
 
 use clap::Args;
 
-use crate::output_cli::ReportFormat;
+use crate::output_cli::{HumanLevel, ReportFormat};
 
 #[derive(Args)]
 pub(crate) struct Options {
     #[command(flatten)]
     input: crate::build::history::Selection,
+    /// Remove the receipt-bound OBS package; retain WORK files and the OBS project.
+    #[arg(long, requires = "work", conflicts_with_all = ["history", "build_dir", "attempt", "context", "timeout"])]
+    remote: bool,
     /// Clean archived build attempts only; retain the current build and all authoring files.
     #[arg(long, requires = "work", conflicts_with_all = ["build_dir", "attempt"])]
     history: bool,
@@ -37,6 +40,12 @@ pub(crate) struct Options {
 }
 
 pub(crate) fn run(options: &Options) -> io::Result<bool> {
+    if options.remote {
+        return clean_remote(
+            options.input.work.as_deref().expect("remote requires WORK"),
+            options,
+        );
+    }
     let selected = options.input.resolve()?;
     let development = selected.development;
     let path = selected.path;
@@ -225,7 +234,7 @@ pub(crate) fn print_removed(report: &CleanReport) -> io::Result<()> {
     for (kind, names) in &report.removed {
         for name in names {
             out.message(
-                crate::output_cli::HumanLevel::Info,
+                HumanLevel::Info,
                 None,
                 format_args!("removed {kind}: {name}"),
             )?;
@@ -233,9 +242,83 @@ pub(crate) fn print_removed(report: &CleanReport) -> io::Result<()> {
     }
     for image in &report.retained_images {
         out.message(
-            crate::output_cli::HumanLevel::Info,
+            HumanLevel::Info,
             None,
             format_args!("retained shared image: {image}"),
+        )?;
+    }
+    Ok(())
+}
+
+fn clean_remote(work: &str, options: &Options) -> io::Result<bool> {
+    #[derive(Serialize)]
+    struct Report<'a> {
+        operation: &'static str,
+        work: &'a str,
+        success: bool,
+        obs: crate::remote_build::cleanup::Report,
+        error: Option<String>,
+    }
+    let mut obs = crate::remote_build::cleanup::Report::default();
+    let result = (|| {
+        let workspace = crate::workspace::discover()?;
+        let area = workspace.existing_development(work)?;
+        crate::output_cli::require_confirmation(options.format, options.force, "clean")?;
+        crate::output_cli::confirm_removal(
+            options.force,
+            "clean",
+            "Remove this WORK's OBS package?",
+        )?;
+        area.verify_binding()?;
+        crate::remote_build::cleanup::execute(&workspace, &area, false, &mut obs)
+            .map_err(io::Error::other)
+    })();
+    let report = Report {
+        operation: "clean",
+        work,
+        success: result.is_ok(),
+        obs,
+        error: result.err().map(|e: io::Error| e.to_string()),
+    };
+    match options.format {
+        ReportFormat::Toml => crate::report::write(&mut io::stdout().lock(), &report)?,
+        ReportFormat::Human => {
+            print_obs(work, &report.obs)?;
+            if let Some(error) = &report.error {
+                crate::output_cli::stderr().message(
+                    HumanLevel::Error,
+                    Some(Path::new(work)),
+                    format_args!("{error}"),
+                )?;
+            } else if report.obs.target.is_none() {
+                crate::output_cli::stderr().message(
+                    HumanLevel::Info,
+                    Some(Path::new(work)),
+                    format_args!("Nothing to clean"),
+                )?;
+            }
+        }
+    }
+    Ok(report.success)
+}
+
+pub(crate) fn print_obs(
+    work: &str,
+    report: &crate::remote_build::cleanup::Report,
+) -> io::Result<()> {
+    let mut out = crate::output_cli::stderr();
+    if let Some(target) = &report.target {
+        out.message(
+            HumanLevel::Info,
+            Some(Path::new(work)),
+            format_args!("OBS: {target}; removed={}", report.package_removed),
+        )?;
+    }
+    for reason in &report.retained {
+        out.message(
+            HumanLevel::Info,
+            Some(Path::new(work)),
+            format_args!("retained: {reason}"),
         )?;
     }
     Ok(())

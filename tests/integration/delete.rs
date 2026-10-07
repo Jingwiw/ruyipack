@@ -87,6 +87,19 @@ fn selective_cleanup_keeps_recipe_and_plan_deletion_reports_each_result() {
     let (root, area) = fixture();
     let build = area.join("build");
     fs::create_dir(&build).unwrap();
+    fs::write(build.join("receipt.json"), "invalid local build").unwrap();
+    let remote = run(
+        root.path(),
+        &["clean", "review", "--remote", "--force", "--format=toml"],
+    );
+    success(&remote);
+    assert!(remote.stderr.is_empty());
+    assert_eq!(machine_report(&remote)["success"].as_bool(), Some(true));
+    assert!(area.join("ed.toml").is_file());
+    assert_eq!(
+        fs::read_to_string(build.join("receipt.json")).unwrap(),
+        "invalid local build"
+    );
     fs::write(
         build.join("receipt.json"),
         r#"{"format_version":1,"backend":"compose","resources_retained":false}"#,
@@ -94,19 +107,13 @@ fn selective_cleanup_keeps_recipe_and_plan_deletion_reports_each_result() {
     .unwrap();
     success(&run(
         root.path(),
-        &[
-            "delete",
-            "review",
-            "--only=build",
-            "--force",
-            "--format=toml",
-        ],
+        &["clean", "review", "--force", "--format=toml"],
     ));
     assert!(!build.exists());
     assert!(area.join("ed.toml").exists());
     fs::write(
         root.path().join("plan.toml"),
-        "[[packages]]\nwork='review'\n[[packages]]\nwork='missing'\n",
+        "[[packages]]\nwork='missing'\n[[packages]]\nwork='review'\n",
     )
     .unwrap();
     let output = run(
@@ -122,8 +129,8 @@ fn selective_cleanup_keeps_recipe_and_plan_deletion_reports_each_result() {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stderr.is_empty());
     let report = machine_report(&output);
-    assert_eq!(report["tasks"][0]["success"].as_bool(), Some(true));
-    assert_eq!(report["tasks"][1]["success"].as_bool(), Some(false));
+    assert_eq!(report["tasks"][0]["success"].as_bool(), Some(false));
+    assert_eq!(report["tasks"][1]["success"].as_bool(), Some(true));
     assert!(!area.exists());
     assert!(root.path().join("openruyi/SPECS/ed/ed.spec").exists());
 }

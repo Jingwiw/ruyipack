@@ -55,7 +55,7 @@ pub(crate) enum Command {
     Inspect(crate::inspect::Options),
     /// Commit package changes to the configured Git repository.
     Commit(crate::workspace::commit::Options),
-    /// Remove build results; keep package changes.
+    /// Remove local or remote build resources; keep package changes.
     Clean(crate::clean::Options),
     /// Remove a development area.
     Delete(crate::workspace::delete::Options),

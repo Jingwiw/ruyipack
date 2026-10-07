@@ -1859,13 +1859,7 @@ fn delete_removes_exclusive_images_but_keeps_shared_tags_and_other_containers() 
     let output = fixture
         .command("owned-images")
         .current_dir(workspace.path())
-        .args([
-            "delete",
-            "review",
-            "--only=build",
-            "--force",
-            "--format=toml",
-        ])
+        .args(["delete", "review", "--force", "--format=toml"])
         .output()
         .unwrap();
     support::success(&output);
@@ -1876,7 +1870,7 @@ fn delete_removes_exclusive_images_but_keeps_shared_tags_and_other_containers() 
         Some(format!("sha256:{}", "1".repeat(64)).as_str())
     );
     assert_eq!(cleanup["retained_images"].as_array().unwrap().len(), 2);
-    assert!(area.exists());
+    assert!(!area.exists());
     assert!(!area.join("build").exists());
     let calls = fs::read_to_string(fixture.root.path().join("calls.jsonl")).unwrap();
     let image_removals: Vec<Vec<String>> = calls

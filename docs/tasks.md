@@ -98,7 +98,6 @@ ruyipack task --plan packages.toml delete --dry-run --format toml
 ruyipack task --plan packages.toml delete --force --format toml
 ```
 
-The plan selects WORKs; it does not change deletion ownership checks. Use
-`--only obs` or `--only build` to keep WORK files. Each WORK has a result.
+The plan selects WORKs; it does not change deletion ownership checks. Each WORK has a result.
 A failed deletion does not stop independent WORKs. Cancellation stops the batch
 and reports pending WORKs. OBS projects, shared images and the plan file remain.

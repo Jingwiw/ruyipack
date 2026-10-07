@@ -17,7 +17,7 @@ use std::{
 
 #[derive(Args)]
 #[command(
-    after_help = "Removes WORK files and its owned OBS package and build resources. Use --only obs or --only build to keep WORK.\nPreview with --dry-run. Ownership conflicts block deletion, even with --force. Recipe files are listed for explicit deletion. Git repositories and commits are not removed.\nTo keep package changes and only remove build results, use clean WORK."
+    after_help = "Shared OBS projects and images are retained. Use clean WORK to keep package files."
 )]
 pub(crate) struct Options {
     /// Existing development area to remove, including manifest, saved edits and downloaded sources.
@@ -28,9 +28,6 @@ pub(crate) struct Options {
 
 #[derive(Args)]
 pub(crate) struct Arguments {
-    /// Remove only these external resources; keep the WORK and its recipe.
-    #[arg(long, value_enum)]
-    only: Option<Scope>,
     /// Show the local deletion plan without contacting OBS or Docker.
     #[arg(long, conflicts_with = "force")]
     dry_run: bool,
@@ -47,20 +44,12 @@ pub(crate) struct Arguments {
     pub(crate) format: ReportFormat,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum Scope {
-    Obs,
-    Build,
-}
-
 #[derive(Serialize)]
 pub(crate) struct Report {
     format_version: u32,
     operation: &'static str,
     work: String,
     preview: bool,
-    only: Option<Scope>,
     obs: crate::remote_build::cleanup::Report,
     pub(crate) success: bool,
     directory: Option<PathBuf>,
@@ -82,7 +71,6 @@ pub(crate) fn execute(work: &str, options: &Arguments) -> Report {
         operation: "delete",
         work: work.to_owned(),
         preview: options.dry_run,
-        only: options.only,
         obs: crate::remote_build::cleanup::Report::default(),
         success: false,
         directory: None,
@@ -110,20 +98,7 @@ impl Report {
             ReportFormat::Toml => crate::report::write(&mut io::stdout().lock(), &report)?,
             ReportFormat::Human => {
                 let mut out = crate::output_cli::stderr();
-                if let Some(target) = &report.obs.target {
-                    out.message(
-                        HumanLevel::Info,
-                        Some(Path::new(&report.work)),
-                        format_args!("OBS: {target}; removed={}", report.obs.package_removed),
-                    )?;
-                }
-                for reason in &report.obs.retained {
-                    out.message(
-                        HumanLevel::Info,
-                        Some(Path::new(&report.work)),
-                        format_args!("retained: {reason}"),
-                    )?;
-                }
+                crate::clean::print_obs(&report.work, &report.obs)?;
                 for cleanup in &report.cleanup {
                     crate::clean::print_removed(cleanup)?;
                 }
@@ -148,8 +123,6 @@ impl Report {
                             "{}",
                             if report.preview {
                                 "deletion preview; nothing removed"
-                            } else if report.only.is_some() {
-                                "cleanup finished; WORK retained"
                             } else {
                                 "development area deleted"
                             }
@@ -178,8 +151,8 @@ fn perform(options: &Arguments, report: &mut Report) -> io::Result<()> {
         let entry = entry?;
         let path = entry.path();
         match entry.file_name().to_str() {
-            Some("build") if options.only != Some(Scope::Obs) => report.builds.push(path),
-            Some("build-history") if options.only != Some(Scope::Obs) => {
+            Some("build") => report.builds.push(path),
+            Some("build-history") => {
                 if !entry.file_type()?.is_dir() {
                     return Err(invalid(
                         "build-history must not be a symlink or non-directory",
@@ -189,8 +162,7 @@ fn perform(options: &Arguments, report: &mut Report) -> io::Result<()> {
                     report.builds.push(entry?.path());
                 }
             }
-            _ if options.only.is_none() => inventory(&path, &mut report.authoring_files)?,
-            _ => (),
+            _ => inventory(&path, &mut report.authoring_files)?,
         }
     }
     report.authoring_files.sort();
@@ -215,20 +187,16 @@ fn perform(options: &Arguments, report: &mut Report) -> io::Result<()> {
         );
     }
     if options.dry_run {
-        if options.only != Some(Scope::Build) {
-            crate::remote_build::cleanup::execute(&workspace, &area, true, &mut report.obs)
-                .map_err(io::Error::other)?;
-        }
+        crate::remote_build::cleanup::execute(&workspace, &area, true, &mut report.obs)
+            .map_err(io::Error::other)?;
         return Ok(());
     }
     crate::output_cli::confirm_removal(options.force, "delete", "Delete the selected resources?")?;
     // Recheck after confirmation and before each destructive phase. The WORK lock
     // protects cooperating commands; this is not a transaction against external writers.
     area.verify_binding()?;
-    if options.only != Some(Scope::Build) {
-        crate::remote_build::cleanup::execute(&workspace, &area, false, &mut report.obs)
-            .map_err(io::Error::other)?;
-    }
+    crate::remote_build::cleanup::execute(&workspace, &area, false, &mut report.obs)
+        .map_err(io::Error::other)?;
     let start = Instant::now();
     let timeout = Duration::from_secs(options.timeout);
     for path in &report.builds {
@@ -247,10 +215,8 @@ fn perform(options: &Arguments, report: &mut Report) -> io::Result<()> {
         report.completed.push(path.clone());
     }
     area.verify_binding()?;
-    if options.only.is_none() {
-        fs::remove_dir_all(root)?;
-        report.completed.push(root.to_owned());
-    }
+    fs::remove_dir_all(root)?;
+    report.completed.push(root.to_owned());
     Ok(())
 }
 

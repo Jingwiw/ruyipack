@@ -287,7 +287,7 @@ impl Development {
         Ok(())
     }
 
-    pub(super) fn verify_binding(&self) -> io::Result<()> {
+    pub(crate) fn verify_binding(&self) -> io::Result<()> {
         let lock = self.lock.as_ref().ok_or_else(|| {
             invalid("cannot update a development area without the operation lock")
         })?;

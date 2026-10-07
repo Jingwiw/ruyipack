@@ -153,6 +153,10 @@ A Docker connection is required even when no container remains. `clean` retains 
 `delete` also removes exclusively owned images; shared tags or other containers keep an image.
 Use only trusted local receipts. Save TOML stdout elsewhere if you need a cleanup record.
 
+Use `clean WORK --remote --force` to remove its receipt-bound OBS package instead
+of local build resources. The WORK, OBS project and packages bound to other WORKs remain.
+A stale remote source list blocks cleanup.
+
 ## Return to the build directory
 
 ```sh
