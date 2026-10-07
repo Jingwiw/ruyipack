@@ -605,3 +605,20 @@ fn task_commit_keeps_independent_commits_and_reports_partial_failure() {
     assert_eq!(git(&repo, &["rev-parse", "HEAD"]).stdout, head);
     assert!(git(&repo, &["status", "--porcelain"]).stdout.is_empty());
 }
+
+#[test]
+fn empty_task_selection_has_no_publication_or_environment_requirements() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("empty.toml"), "packages = []\n").unwrap();
+    for action in ["run", "remote-build", "status", "commit", "delete", "pr"] {
+        let output = run(
+            root.path(),
+            &["task", "--plan", "empty.toml", action, "--format", "toml"],
+        );
+        success(&output);
+        let report = machine_report(&output);
+        assert_eq!(report["selected"].as_integer(), Some(0));
+        assert_eq!(report["success"].as_bool(), Some(true));
+    }
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+}

@@ -176,6 +176,38 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
             .flat_map(|p| p.packages.iter().map(|t| t.work.as_str())),
     )
     .map_err(io::Error::other)?;
+    if plans.iter().all(|plan| plan.packages.is_empty()) {
+        #[derive(Serialize)]
+        struct EmptySelection {
+            operation: &'static str,
+            success: bool,
+            selected: usize,
+        }
+        let format = match &options.command {
+            Command::Run(args) => args.format,
+            Command::RemoteBuild(args) => args.format,
+            Command::Status { format } => *format,
+            Command::Commit(args) => args.format,
+            Command::Delete(args) => args.format,
+            Command::Pr(args) => args.format,
+        };
+        match format {
+            ReportFormat::Toml => crate::report::write(
+                &mut io::stdout().lock(),
+                &EmptySelection {
+                    operation: "task",
+                    success: true,
+                    selected: 0,
+                },
+            )?,
+            ReportFormat::Human => crate::output_cli::stderr().message(
+                HumanLevel::Info,
+                None,
+                format_args!("No WORK selected."),
+            )?,
+        }
+        return Ok(true);
+    }
     match &options.command {
         Command::RemoteBuild(args) => {
             let tasks = plans

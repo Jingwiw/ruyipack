@@ -37,6 +37,8 @@ Neither operation starts automatically after validation.
 OBS submission, status and commit accept repeated `--plan` inputs. Run and PR
 require one plan so that saved selections and PR settings have one source.
 Duplicate WORKs are rejected before execution.
+An empty package selection succeeds without reading credentials, contacting services
+or creating WORKs. It does not create commits or PRs.
 
 Each new task applies supported fixes, fetches materials, checks the candidate and
 builds changed packages. Add `--upgrade` to request supported upgrades.

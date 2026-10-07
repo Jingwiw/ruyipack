@@ -74,9 +74,6 @@ pub(crate) fn validate_works<'a>(works: impl IntoIterator<Item = &'a str>) -> Re
             return Err(format!("duplicate WORK: {work}"));
         }
     }
-    if seen.is_empty() {
-        return Err("plan contains no packages".into());
-    }
     Ok(())
 }
 

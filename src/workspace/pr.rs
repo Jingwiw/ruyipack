@@ -41,7 +41,7 @@ pub(crate) struct Options {
     #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..))]
     timeout: u64,
     #[arg(long, value_enum, default_value_t = ReportFormat::Human)]
-    format: ReportFormat,
+    pub(crate) format: ReportFormat,
 }
 
 fn package_note(value: &str) -> Result<(String, String), String> {
