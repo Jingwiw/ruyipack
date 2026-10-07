@@ -4,7 +4,7 @@
 
 //! Explicit cleanup of one receipt-bound project, never replaying stored commands.
 
-use super::super::{invalid, process::Runner, regular_file};
+use crate::environment::{invalid, process::Runner, regular_file};
 use fs_err as fs;
 use serde::Serialize;
 use serde_json::Value;
@@ -62,7 +62,7 @@ fn docker(
     stage: &str,
     args: &[&str],
 ) -> io::Result<String> {
-    let command = super::docker(context, args.iter().map(OsString::from));
+    let command = crate::environment::compose::docker(context, args.iter().map(OsString::from));
     runner
         .capture(&command, stage, timeout.saturating_sub(start.elapsed()))
         .map_err(io::Error::other)
@@ -294,7 +294,7 @@ fn perform(
     if !root.join("host").exists() {
         fs::create_dir(root.join("host"))?;
     }
-    let attempt = super::operation_id("clean");
+    let attempt = crate::environment::compose::operation_id("clean");
     let mut runner = Runner {
         cancellable: false,
         output: &root,
@@ -431,7 +431,7 @@ pub(crate) struct CleanReport {
     pub(crate) removed: BTreeMap<&'static str, Vec<String>>,
     retained_volumes: Vec<String>,
     pub(crate) retained_images: Vec<String>,
-    commands: Vec<super::super::CommandRecord>,
+    commands: Vec<crate::environment::CommandRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
 }

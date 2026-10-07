@@ -6,14 +6,13 @@
 
 //! Build orchestration: immutable input copies, independent engine and host, one receipt.
 
-mod compose;
+mod clean;
 pub(crate) mod evidence;
 pub(crate) mod history;
 mod mock;
-mod process;
 pub(crate) mod shell;
 
-pub(crate) use compose::clean::{
+pub(crate) use clean::{
     CleanReport, execute as clean_result, new_report as clean_report,
     preflight as preflight_cleanup,
 };
@@ -29,6 +28,7 @@ use clap::Args;
 use fs_err as fs;
 use serde::Serialize;
 
+use crate::environment::{Backend, Execution, compose, directory, invalid, regular_file};
 use crate::output_cli::ReportFormat;
 
 #[derive(Args)]
@@ -110,71 +110,6 @@ trait Engine {
     fn export_patch(&self) -> Vec<String>;
 }
 
-trait Backend {
-    fn name(&self) -> &'static str;
-    fn validate(&self) -> io::Result<()>;
-    fn shell(
-        &self,
-        output: &Path,
-        invocation: &[String],
-        resources: &serde_json::Value,
-        export: Option<&Path>,
-        timeout: Duration,
-    ) -> io::Result<bool>;
-    fn execute(
-        &self,
-        previous: Option<&serde_json::Value>,
-        invocation: &[String],
-        staged_input: &Path,
-        output: &Path,
-        timeout: Duration,
-    ) -> Execution;
-}
-
-#[derive(Serialize)]
-struct CommandRecord {
-    argv: Vec<String>,
-    started: bool,
-    exit_code: Option<i32>,
-    exit_status: Option<String>,
-    timed_out: bool,
-    interrupted: bool,
-    elapsed_ms: u128,
-    stdout: String,
-    stderr: String,
-    error: Option<String>,
-    termination: Option<crate::host_process::Termination>,
-}
-
-#[derive(Serialize, Default)]
-struct Execution {
-    success: bool,
-    details: serde_json::Value,
-    failure: Option<String>,
-    artifact_error: Option<String>,
-    cleanup_failure: Option<String>,
-    cleanup_skipped: bool,
-    recovery_commands: Vec<Vec<String>>,
-    commands: Vec<CommandRecord>,
-}
-
-impl Execution {
-    fn add_recovery_command(&mut self, argv: &[std::ffi::OsString]) {
-        self.recovery_commands.push(
-            argv.iter()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect(),
-        );
-    }
-
-    fn failed(message: String) -> Self {
-        Self {
-            failure: Some(message),
-            ..Self::default()
-        }
-    }
-}
-
 #[derive(serde::Deserialize, Serialize)]
 struct InputFile {
     // Display text only; file operations retain native paths.
@@ -206,30 +141,6 @@ struct Receipt<'a> {
     execution: Execution,
     engine_validation_error: Option<String>,
     success: bool,
-}
-
-fn invalid(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidInput, message.into())
-}
-
-fn regular_file(path: &Path) -> io::Result<()> {
-    if !fs::symlink_metadata(path)?.is_file() {
-        return Err(invalid(format!(
-            "{}: expected a regular file, not a symlink or special file",
-            path.display()
-        )));
-    }
-    Ok(())
-}
-
-fn directory(path: &Path) -> io::Result<PathBuf> {
-    if !fs::symlink_metadata(path)?.is_dir() {
-        return Err(invalid(format!(
-            "{}: expected a directory, not a symlink",
-            path.display()
-        )));
-    }
-    fs::canonicalize(path)
 }
 
 fn inventory(root: &Path, directory: &Path, files: &mut Vec<InputFile>) -> io::Result<()> {
@@ -357,10 +268,16 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
     let config = custom_config
         .clone()
         .unwrap_or_else(|| output.join(".config/compose.yaml"));
+    let probe = vec![
+        "python3".into(),
+        "-c".into(),
+        include_str!("build/probe.py").into(),
+    ];
     let backend = compose::Compose {
         context: options.context.as_deref(),
         config: &config,
         remove: options.remove,
+        probe: Some(&probe),
     };
     let engine = mock::Mock(options.stage);
     let staged_input = output.join("input");

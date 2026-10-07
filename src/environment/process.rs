@@ -3,7 +3,7 @@
 // SPDX-FileContributor: Jingwiw <wangjingwei@iscas.ac.cn>
 // SPDX-License-Identifier: MulanPSL-2.0
 
-//! Build command logs and receipts; process lifetime is shared with workspace Git.
+//! Command logs and outcomes; process lifetime is shared with workspace Git.
 
 use super::CommandRecord;
 use crate::host_process;
@@ -16,22 +16,22 @@ use std::{
     time::Duration,
 };
 
-pub(super) struct Runner<'a> {
-    pub(super) cancellable: bool,
-    pub(super) output: &'a Path,
-    pub(super) commands: Vec<CommandRecord>,
+pub(crate) struct Runner<'a> {
+    pub(crate) cancellable: bool,
+    pub(crate) output: &'a Path,
+    pub(crate) commands: Vec<CommandRecord>,
 }
 
 #[derive(Clone, Copy)]
 enum Display {
     Quiet,
-    Build,
+    Progress,
     Command,
 }
 
 impl Runner<'_> {
     /// Preserve the command's stdout/stderr while retaining both logs.
-    pub(super) fn command(
+    pub(crate) fn command(
         &mut self,
         argv: &[OsString],
         stage: &str,
@@ -41,13 +41,13 @@ impl Runner<'_> {
     }
 
     /// Durable logs are tailed to stderr; stdout remains reserved for reports.
-    pub(super) fn run(
+    pub(crate) fn run(
         &mut self,
         argv: &[OsString],
         stage: &str,
         budget: Duration,
     ) -> Result<usize, String> {
-        self.run_logged(argv, stage, budget, Display::Build)
+        self.run_logged(argv, stage, budget, Display::Progress)
     }
 
     fn run_logged(
@@ -156,7 +156,7 @@ impl Runner<'_> {
         failure.map_or(Ok(index), Err)
     }
 
-    pub(super) fn capture(
+    pub(crate) fn capture(
         &mut self,
         argv: &[OsString],
         stage: &str,

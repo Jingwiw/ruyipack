@@ -6,7 +6,6 @@
 
 //! Compose lifecycle and byte transfer. No RPM, Mock, or SPEC semantics live here.
 
-pub(super) mod clean;
 mod shell;
 
 use std::{
@@ -18,7 +17,7 @@ use std::{
 use super::{Backend, Execution, process::Runner};
 use fs_err as fs;
 
-pub(super) fn operation_id(prefix: &str) -> String {
+pub(crate) fn operation_id(prefix: &str) -> String {
     format!(
         "{prefix}-{}-{}",
         std::process::id(),
@@ -32,19 +31,24 @@ pub(super) fn operation_id(prefix: &str) -> String {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Resources {
     project: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     container_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     image_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     daemon_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     environment: Option<serde_json::Value>,
 }
 
-pub(super) struct Compose<'a> {
+pub(crate) struct Compose<'a> {
     pub context: Option<&'a str>,
     pub config: &'a Path,
     pub remove: bool,
+    pub probe: Option<&'a [String]>,
 }
 
-pub(super) fn docker(
+pub(crate) fn docker(
     context: Option<&str>,
     args: impl IntoIterator<Item = OsString>,
 ) -> Vec<OsString> {
@@ -130,9 +134,12 @@ impl Compose<'_> {
         let config: serde_json::Value = serde_json::from_str(&config).map_err(|e| e.to_string())?;
         resources.environment = Some(serde_json::json!({
             "daemon_arch": daemon["Architecture"],
-            "requested_platform": config["services"]["worker"]["platform"],
             "translator": "unknown",
         }));
+        if let Some(platform) = config["services"]["worker"]["platform"].as_str() {
+            resources.environment.as_mut().expect("daemon facts")["requested_platform"] =
+                platform.into();
+        }
         runner.run(
             &self.compose(&resources.project, &["create", "--build", "worker"]),
             "create",
@@ -317,7 +324,7 @@ impl Backend for Compose<'_> {
         };
         let start = Instant::now();
         let remaining = || timeout.saturating_sub(start.elapsed());
-        // Recovery has its own bound; the build deadline cannot prevent evidence retrieval.
+        // Recovery has its own bound; the execution deadline cannot prevent evidence retrieval.
         let recovery_timeout = timeout.min(Duration::from_secs(60));
         let mut verified = previous.is_none();
         let primary = (|| -> Result<(), String> {
@@ -342,39 +349,22 @@ impl Backend for Compose<'_> {
                 "start",
                 remaining(),
             )?;
-            let image_arch = resources
-                .environment
-                .as_ref()
-                .and_then(|facts| facts["image_arch"].as_str())
-                .ok_or("retained worker lacks platform evidence; clean and rebuild")?;
-            let probe = runner.capture(
-                &docker(
+            if let Some(invocation) = self.probe {
+                let image_arch = resources
+                    .environment
+                    .as_ref()
+                    .and_then(|facts| facts["image_arch"].as_str())
+                    .ok_or("retained worker lacks platform evidence")?;
+                let mut command = docker(
                     self.context,
-                    [
-                        "exec".into(),
-                        "--user".into(),
-                        "0".into(),
-                        id.into(),
-                        "python3".into(),
-                        "-c".into(),
-                        include_str!("probe.py").into(),
-                        image_arch.into(),
-                    ],
-                ),
-                "worker-capabilities",
-                remaining(),
-            )?;
-            let probe: serde_json::Value =
-                serde_json::from_str(&probe).map_err(|e| e.to_string())?;
-            eprintln!(
-                "build: target={} daemon={} image={} mount={} chroot={} translator=unknown",
-                probe["target_arch"],
-                resources.environment.as_ref().expect("worker facts")["daemon_arch"],
-                image_arch,
-                probe["mount"],
-                probe["chroot"]
-            );
-            resources.environment.as_mut().expect("worker facts")["probe"] = probe;
+                    ["exec".into(), "--user".into(), "0".into(), id.into()],
+                );
+                command.extend(invocation.iter().map(OsString::from));
+                command.push(image_arch.into());
+                let probe = runner.capture(&command, "worker-capabilities", remaining())?;
+                resources.environment.as_mut().expect("worker facts")["probe"] =
+                    serde_json::from_str(&probe).map_err(|error| error.to_string())?;
+            }
             if previous.is_some() {
                 runner.run(&docker(self.context, ["exec".into(), "--user".into(), "0".into(), id.into(), "python3".into(), "-c".into(),
                     "import shutil,pathlib; [(shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()) for root in ('/input','/output') for p in pathlib.Path(root).iterdir()]".into()]),

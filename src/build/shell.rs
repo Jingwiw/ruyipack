@@ -91,6 +91,7 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
             context,
             config: &receipt.config,
             remove: false,
+            probe: None,
         },
         _ => return Err(invalid("unsupported recorded build backend")),
     };
