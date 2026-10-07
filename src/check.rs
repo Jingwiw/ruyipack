@@ -20,7 +20,7 @@ use std::{
 
 use crate::{
     check_report::{CheckReport, Finding, IncompleteReason, SelectedRule, Severity},
-    output_cli::{ReportError, ReportFormat, report_input},
+    output_cli::{ReportError, ReportFormat},
     parser_diagnostic,
     spec::ParsedSpec,
     workspace::SpecOptions,
@@ -115,14 +115,17 @@ pub(crate) fn analyze(spec: &ParsedSpec<'_>, policy: Policy, defines: &[String])
 }
 
 #[derive(clap::Args)]
-#[command(group(clap::ArgGroup::new("check-input").args(["work", "spec", "manifest", "directory"]).required(true)))]
+#[command(group(clap::ArgGroup::new("check-work").args(["work", "plan"])), group(clap::ArgGroup::new("check-input").args(["work", "spec", "manifest", "directory", "plan"]).required(true)))]
 pub(crate) struct Options {
     #[command(flatten)]
     directory: directory::Options,
     #[command(flatten)]
     input: SpecOptions,
+    /// Check each WORK in a plan; repeat to combine package selections.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["work", "spec", "manifest", "directory", "pkgname", "source_dir", "repology_project"])]
+    plan: Vec<PathBuf>,
     /// Apply supported metadata, formatting and Source repairs in WORK.
-    #[arg(long, requires = "work", conflicts_with_all = ["manifest", "spec", "materials", "policy"])]
+    #[arg(long, requires = "check-work", conflicts_with_all = ["manifest", "spec", "materials", "policy"])]
     auto_fix: bool,
     /// Also report Repology versions; only --auto-fix applies simple, patch-free upgrades.
     #[arg(long, conflicts_with = "manifest")]
@@ -150,14 +153,169 @@ pub(crate) struct Options {
     format: ReportFormat,
 }
 
+enum Checked {
+    Spec {
+        path: PathBuf,
+        report: Box<CheckReport>,
+    },
+    Edit(Box<crate::edit::Operation>),
+    ManifestError {
+        path: PathBuf,
+        sha256: String,
+        error: crate::render::RenderError,
+    },
+}
+
+impl serde::Serialize for Checked {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Spec { path, report } => {
+                serde::Serialize::serialize(&report.structured(path), serializer)
+            }
+            Self::Edit(result) => serde::Serialize::serialize(result, serializer),
+            Self::ManifestError {
+                path,
+                sha256,
+                error,
+            } => serde::Serialize::serialize(
+                &crate::report::failed(
+                    crate::report::Input {
+                        display_path: path.to_string_lossy(),
+                        sha256: Some(sha256),
+                        revision: None,
+                    },
+                    crate::report::failure("invalid-manifest", error),
+                ),
+                serializer,
+            ),
+        }
+    }
+}
+
+impl Checked {
+    fn success(&self) -> bool {
+        match self {
+            Self::Spec { report, .. } => report.is_success(),
+            Self::Edit(result) => result.success(),
+            Self::ManifestError { .. } => false,
+        }
+    }
+    fn print(self, format: ReportFormat) -> Result<bool, ReportError> {
+        let success = self.success();
+        if matches!(self, Self::ManifestError { .. }) && matches!(format, ReportFormat::Toml) {
+            crate::report::write(&mut io::stdout().lock(), &self).map_err(ReportError::Stdout)?;
+            return Ok(false);
+        }
+        match self {
+            Self::ManifestError { error, .. } => return Err(ReportError::Manifest(error)),
+            Self::Spec { path, report } => write_report(&report, &path, format)?,
+            Self::Edit(result) => {
+                return result
+                    .print()
+                    .map_err(|e| ReportError::Projection(e.to_string()));
+            }
+        }
+        Ok(success)
+    }
+}
+
 pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
+    #[derive(serde::Serialize)]
+    struct Outcome {
+        work: String,
+        success: bool,
+        result: Option<Checked>,
+        error: Option<String>,
+    }
     if options.directory.directory.is_some() {
         return directory::run(&options.directory, options.format);
     }
+    if options.plan.is_empty() {
+        let display = options.manifest.as_ref().map_or_else(
+            || options.input.display(),
+            |p| p.to_string_lossy().into_owned(),
+        );
+        let Some(result) = crate::output_cli::report_input(
+            evaluate(options, &options.input),
+            &display,
+            options.format,
+        )?
+        else {
+            return Ok(false);
+        };
+        return result.print(options.format);
+    }
+    let Some(plans) =
+        crate::output_cli::report_input(crate::plan::load(&options.plan), "plan", options.format)?
+    else {
+        return Ok(false);
+    };
+    let works: Vec<_> = plans
+        .into_iter()
+        .flat_map(|p| p.packages.into_iter().map(|t| t.work))
+        .collect();
+    let report = crate::batch::run(
+        "check",
+        &works,
+        |work| {
+            let input = SpecOptions {
+                work: Some(work.clone()),
+                spec: None,
+                pkgname: None,
+            };
+            let result = evaluate(options, &input);
+            let outcome = match result {
+                Ok(result) => Outcome {
+                    work: work.clone(),
+                    success: result.success(),
+                    result: Some(result),
+                    error: None,
+                },
+                Err(error) => Outcome {
+                    work: work.clone(),
+                    success: false,
+                    result: None,
+                    error: Some(error.to_string()),
+                },
+            };
+            std::ops::ControlFlow::Continue(outcome)
+        },
+        |outcome| outcome.success,
+    );
+    match options.format {
+        ReportFormat::Toml => {
+            crate::report::write(&mut io::stdout().lock(), &report).map_err(ReportError::Stdout)?;
+        }
+        ReportFormat::Human => {
+            for outcome in report.results {
+                if let Some(result) = outcome.result {
+                    if let Err(error) = result.print(options.format) {
+                        if matches!(error, ReportError::Stdout(_) | ReportError::Stderr(_)) {
+                            return Err(error);
+                        }
+                        crate::output_cli::stderr().message(
+                            crate::output_cli::HumanLevel::Error,
+                            Some(Path::new(&outcome.work)),
+                            format_args!("{error}"),
+                        )?;
+                    }
+                } else if let Some(error) = outcome.error {
+                    crate::output_cli::stderr().message(
+                        crate::output_cli::HumanLevel::Error,
+                        Some(Path::new(&outcome.work)),
+                        format_args!("{error}"),
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(report.success)
+}
+
+fn evaluate(options: &Options, input: &SpecOptions) -> Result<Checked, ReportError> {
     if options.auto_fix {
         let upgrade = if options.upgrade {
-            let input = options
-                .input
+            let input = input
                 .resolve()
                 .map_err(|e| ReportError::Projection(e.to_string()))?;
             Some(upgrade::query(
@@ -172,40 +330,36 @@ pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
         {
             crate::output_cli::stderr().message(
                 crate::output_cli::HumanLevel::Warn,
-                Some(Path::new(&options.input.display())),
+                Some(Path::new(&input.display())),
                 format_args!("upgrade not applied: {reason}; continuing basic fixes"),
             )?;
         }
-        return crate::edit::run(crate::edit::Options {
-            works: vec![options.input.work.clone().expect("auto-fix requires WORK")],
-            pkgname: options.input.pkgname.clone(),
-            hash: true,
-            repair_missing: true,
-            set: upgrade
-                .as_ref()
-                .filter(|r| r.applies_candidate())
-                .and_then(|r| r.candidate.as_ref())
-                .map(|v| vec![("package.version".into(), v.clone())])
-                .unwrap_or_default(),
-            expect_sha256: upgrade.as_ref().map(|r| r.input_sha256.clone()),
-            upgrade: upgrade.map(Box::new),
+        return Ok(Checked::Edit(Box::new(crate::edit::evaluate(
+            crate::edit::Options {
+                works: vec![input.work.clone().expect("auto-fix requires WORK")],
+                pkgname: input.pkgname.clone(),
+                hash: true,
+                repair_missing: true,
+                set: upgrade
+                    .as_ref()
+                    .filter(|r| r.applies_candidate())
+                    .and_then(|r| r.candidate.as_ref())
+                    .map(|v| vec![("package.version".into(), v.clone())])
+                    .unwrap_or_default(),
+                expect_sha256: upgrade.as_ref().map(|r| r.input_sha256.clone()),
+                upgrade: upgrade.map(Box::new),
 
-            apply: true,
-            defines: options.defines.clone(),
-            format: Some(options.format),
-            ..Default::default()
-        })
-        .map_err(|error| ReportError::Projection(error.to_string()));
+                apply: true,
+                defines: options.defines.clone(),
+                format: Some(options.format),
+                ..Default::default()
+            },
+        ))));
     }
     let spec_input = if options.manifest.is_none() {
-        let Some(input) = report_input(
-            options.input.resolve(),
-            &options.input.display(),
-            options.format,
-        )?
-        else {
-            return Ok(false);
-        };
+        let input = input
+            .resolve()
+            .map_err(|e| ReportError::Projection(e.to_string()))?;
         Some(input)
     } else {
         None
@@ -215,14 +369,8 @@ pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
         (input.path.as_path(), input.source.as_str())
     } else {
         let path = options.manifest.as_ref().expect("SPEC or manifest input");
-        let Some(source) = report_input(
-            crate::utf8_file::read(path),
-            &path.to_string_lossy(),
-            options.format,
-        )?
-        else {
-            return Ok(false);
-        };
+        let source =
+            crate::utf8_file::read(path).map_err(|e| ReportError::Projection(e.to_string()))?;
         manifest_source = source;
         (path.as_path(), manifest_source.as_str())
     };
@@ -232,18 +380,11 @@ pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
         {
             Ok(parsed) => parsed,
             Err(error) => {
-                if matches!(options.format, ReportFormat::Toml) {
-                    crate::output_cli::write_failure(
-                        crate::report::Input {
-                            display_path: path.to_string_lossy(),
-                            sha256: Some(&crate::utf8_file::sha256(original)),
-                            revision: None,
-                        },
-                        crate::report::failure("invalid-manifest", &error),
-                    )?;
-                    return Ok(false);
-                }
-                return Err(ReportError::Manifest(error));
+                return Ok(Checked::ManifestError {
+                    path: path.to_owned(),
+                    sha256: crate::utf8_file::sha256(original),
+                    error,
+                });
             }
         }
     } else {
@@ -299,8 +440,10 @@ pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
         }
         report.materials = Some(inventory);
     }
-    write_report(&report, path, options.format)?;
-    Ok(report.is_success())
+    Ok(Checked::Spec {
+        path: path.to_owned(),
+        report: Box::new(report),
+    })
 }
 
 fn write_report(

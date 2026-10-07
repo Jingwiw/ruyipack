@@ -62,6 +62,25 @@ pub(crate) fn failure(code: &'static str, message: impl std::fmt::Display) -> Fa
     }
 }
 
+#[derive(Serialize)]
+pub(crate) struct FailureReport<'a> {
+    format_version: u32,
+    valid: bool,
+    tool: crate::tool::Identity,
+    input: Input<'a>,
+    error: Failure,
+}
+
+pub(crate) fn failed(input: Input<'_>, error: Failure) -> FailureReport<'_> {
+    FailureReport {
+        format_version: 2,
+        valid: false,
+        tool: crate::tool::identity(),
+        input,
+        error,
+    }
+}
+
 /// Serialize before writing so a malformed report cannot leave partial TOML.
 pub(crate) fn write(writer: &mut impl Write, report: &impl serde::Serialize) -> io::Result<()> {
     let document = toml::to_string_pretty(report).map_err(io::Error::other)?;

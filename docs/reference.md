@@ -465,6 +465,20 @@ Untouched bytes remain unchanged. Bare CR and NUL are rejected.
 - Use only trusted local drafts: hashes prove consistency, not authorship. The
   configured editor is a trusted executable, not a sandbox.
 
+## Check a package selection
+
+```sh
+ruyipack check --plan packages.toml --format toml
+ruyipack check --plan packages.toml --auto-fix --format toml
+ruyipack check --plan packages.toml --auto-fix --upgrade --format toml
+```
+
+Each `[[packages]]` entry selects one `work`. Repeated `--plan` combines selections;
+duplicate WORKs fail before execution. Each WORK uses the same checks and repairs
+as `check WORK`. One failure does not stop independent WORKs. The batch report
+retains per-WORK results, including changes already applied. It does not build,
+commit or publish. Use workspace mappings for per-package upgrade identities.
+
 ## Local build materials
 
 ```sh

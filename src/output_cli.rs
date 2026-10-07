@@ -233,23 +233,9 @@ pub(crate) fn write_failure(
     input: crate::report::Input<'_>,
     error: crate::report::Failure,
 ) -> Result<(), ReportError> {
-    #[derive(serde::Serialize)]
-    struct FailureReport<'a> {
-        format_version: u32,
-        valid: bool,
-        tool: crate::tool::Identity,
-        input: crate::report::Input<'a>,
-        error: crate::report::Failure,
-    }
     crate::report::write(
         &mut io::stdout().lock(),
-        &FailureReport {
-            format_version: 2,
-            valid: false,
-            tool: crate::tool::identity(),
-            input,
-            error,
-        },
+        &crate::report::failed(input, error),
     )
     .map_err(ReportError::Stdout)
 }

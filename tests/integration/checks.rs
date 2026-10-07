@@ -766,3 +766,68 @@ fn source_definitions_are_recorded_without_claiming_native_evaluation() {
             .is_some_and(toml::Value::is_str)
     );
 }
+
+#[test]
+fn plan_repairs_continue_after_a_failed_work_and_keep_one_report() {
+    let root = tempfile::tempdir().unwrap();
+    success(&run(root.path(), &["init", "."]));
+    let source = SPEC
+        .lines()
+        .filter(|line| !line.starts_with("#!RemoteAsset") && !line.starts_with("Source0:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let source = source.replace(
+        "A line-oriented text editor",
+        "A line-oriented text editor.",
+    );
+    fs::write(root.path().join("ed.spec"), &source).unwrap();
+    for work in ["first", "broken", "last"] {
+        success(&run(root.path(), &["new", work, "--from-spec", "ed.spec"]));
+    }
+    let broken = root.path().join("work/broken/recipe/SPECS/ed/ed.spec");
+    let invalid = format!("{source}\n%if\n");
+    fs::write(&broken, &invalid).unwrap();
+    fs::write(
+        root.path().join("plan.toml"),
+        "[[packages]]\nwork='first'\n[[packages]]\nwork='broken'\n[[packages]]\nwork='last'\n",
+    )
+    .unwrap();
+    let output = run(
+        root.path(),
+        &[
+            "check",
+            "--plan",
+            "plan.toml",
+            "--auto-fix",
+            "--format",
+            "toml",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let report = super::support::machine_report(&output);
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(results.len(), 3);
+    for (result, (work, passed)) in
+        results
+            .iter()
+            .zip([("first", true), ("broken", false), ("last", true)])
+    {
+        assert_eq!(result["work"].as_str(), Some(work));
+        assert_eq!(result["success"].as_bool(), Some(passed));
+        let path = root
+            .path()
+            .join(format!("work/{work}/recipe/SPECS/ed/ed.spec"));
+        if passed {
+            assert_eq!(
+                fs::read_to_string(path).unwrap(),
+                source.replace(
+                    "A line-oriented text editor.",
+                    "A line-oriented text editor"
+                )
+            );
+        }
+    }
+    assert_file(broken, &invalid);
+    assert!(report["pending"].as_array().unwrap().is_empty());
+}

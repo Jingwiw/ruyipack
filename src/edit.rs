@@ -186,43 +186,71 @@ impl Edit {
     }
 }
 
-pub(crate) fn run(mut options: Options) -> Result<bool, EditError> {
-    let result = execute(&mut options);
-    if !matches!(options.format, Some(ReportFormat::Toml)) {
-        return result.and_then(|result| {
-            let success = result.success_for(&options);
-            result.publication.map(|_| success)
-        });
+pub(crate) struct Operation {
+    options: Options,
+    result: Result<EditResult, EditError>,
+}
+
+impl serde::Serialize for Operation {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(&report::envelope(&self.result, &self.options), serializer)
     }
-    let success = result
-        .as_ref()
-        .is_ok_and(|result| result.success_for(&options));
-    let envelope = report::envelope(&result, &options);
-    crate::report::write(&mut io::stdout().lock(), &envelope).map_err(|error| {
-        let mut message = format!("failed to write output to stdout: {error}");
-        let written = match &result {
-            Ok(result) => match &result.publication {
-                Ok(outcomes) => outcomes
-                    .iter()
-                    .filter_map(|outcome| match outcome {
-                        file_output::EditOutcome::Written(path) => Some(path),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>(),
-                Err(error) => error.written_paths().iter().collect(),
-            },
-            Err(error) => error.written_paths().iter().collect(),
-        };
-        if !written.is_empty() {
-            write!(
-                message,
-                "\nFiles already written: {written:?}; publication was not rolled back."
-            )
-            .expect("String formatting cannot fail");
+}
+
+pub(crate) fn evaluate(mut options: Options) -> Operation {
+    let result = execute(&mut options);
+    Operation { options, result }
+}
+
+pub(crate) fn run(options: Options) -> Result<bool, EditError> {
+    evaluate(options).print()
+}
+
+impl Operation {
+    pub(crate) fn success(&self) -> bool {
+        self.result
+            .as_ref()
+            .is_ok_and(|result| result.success_for(&self.options))
+    }
+
+    pub(crate) fn print(self) -> Result<bool, EditError> {
+        let Self { options, result } = self;
+        if !matches!(options.format, Some(ReportFormat::Toml)) {
+            return result.and_then(|result| {
+                let success = result.success_for(&options);
+                result.publication.map(|_| success)
+            });
         }
-        EditError::from(message)
-    })?;
-    Ok(success)
+        let success = result
+            .as_ref()
+            .is_ok_and(|result| result.success_for(&options));
+        let envelope = report::envelope(&result, &options);
+        crate::report::write(&mut io::stdout().lock(), &envelope).map_err(|error| {
+            let mut message = format!("failed to write output to stdout: {error}");
+            let written = match &result {
+                Ok(result) => match &result.publication {
+                    Ok(outcomes) => outcomes
+                        .iter()
+                        .filter_map(|outcome| match outcome {
+                            file_output::EditOutcome::Written(path) => Some(path),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
+                    Err(error) => error.written_paths().iter().collect(),
+                },
+                Err(error) => error.written_paths().iter().collect(),
+            };
+            if !written.is_empty() {
+                write!(
+                    message,
+                    "\nFiles already written: {written:?}; publication was not rolled back."
+                )
+                .expect("String formatting cannot fail");
+            }
+            EditError::from(message)
+        })?;
+        Ok(success)
+    }
 }
 
 fn input(

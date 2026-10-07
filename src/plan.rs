@@ -65,6 +65,30 @@ pub(crate) struct Publication {
     pub template: Option<std::path::PathBuf>,
 }
 
+/// Resolve plan-owned paths and reject duplicate WORKs before any action runs.
+pub(crate) fn load(paths: &[std::path::PathBuf]) -> std::io::Result<Vec<Plan>> {
+    let plans = paths
+        .iter()
+        .map(|path| {
+            let mut plan: Plan = crate::workspace::baseline::load(path)?;
+            if let Some(template) = plan.pr.as_mut().and_then(|p| p.template.as_mut()) {
+                *template = std::fs::canonicalize(path)?
+                    .parent()
+                    .expect("plan parent")
+                    .join(&*template);
+            }
+            Ok(plan)
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
+    validate_works(
+        plans
+            .iter()
+            .flat_map(|p| p.packages.iter().map(|t| t.work.as_str())),
+    )
+    .map_err(std::io::Error::other)?;
+    Ok(plans)
+}
+
 /// Validate the whole batch before any consumer prepares WORKs or contacts a service.
 pub(crate) fn validate_works<'a>(works: impl IntoIterator<Item = &'a str>) -> Result<(), String> {
     let mut seen = std::collections::BTreeSet::new();
