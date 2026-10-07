@@ -134,6 +134,7 @@ fn perform(options: &Options, plan: &crate::plan::Plan, report: &mut Report) -> 
         .ok_or_else(|| invalid("plan requires [pr] title and base"))?;
     template::line(&settings.title)?;
     let repo = fs_err::canonicalize(options.repo.as_deref().unwrap_or(workspace.recipes()))?;
+    git::require_personal_origin(&repo)?;
     require_clean(&repo)?;
     let origin = github::repository(&git::line(&repo, &["remote", "get-url", "origin"])?)?;
     report.target = settings

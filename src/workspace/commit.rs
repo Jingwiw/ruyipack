@@ -236,6 +236,7 @@ fn perform(options: &Arguments, report: &mut Report) -> io::Result<()> {
     if fs::canonicalize(root)? != repository {
         return Err(invalid("--repo must name the Git repository root"));
     }
+    git::require_personal_origin(&repository)?;
     let branch = git::line(&repository, &["symbolic-ref", "--quiet", "HEAD"])?;
     let parent = git::line(&repository, &["rev-parse", "HEAD^{commit}"])?;
     let common = git::line(

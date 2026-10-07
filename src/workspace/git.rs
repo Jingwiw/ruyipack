@@ -19,6 +19,43 @@ pub(super) fn line(repo: &Path, args: &[&str]) -> io::Result<String> {
     Ok(output.strip_suffix('\n').unwrap_or(&output).to_owned())
 }
 
+/// Delivery must use a fork; the project repository is a read/PR-base source only.
+pub(super) fn require_personal_origin(repo: &Path) -> io::Result<()> {
+    if !line(repo, &["remote"])?
+        .lines()
+        .any(|name| name == "origin")
+    {
+        return Ok(()); // Local commits need no remote.
+    }
+    for args in [
+        vec!["remote", "get-url", "--all", "origin"],
+        vec!["remote", "get-url", "--push", "--all", "origin"],
+    ] {
+        for address in line(repo, &args)?.lines() {
+            let address = address.to_ascii_lowercase();
+            let normalized = address
+                .strip_prefix("git@github.com:")
+                .map(|path| format!("https://github.com/{path}"))
+                .unwrap_or_else(|| address.to_owned());
+            if let Ok(url) = url::Url::parse(&normalized)
+                && url
+                    .host_str()
+                    .is_some_and(|host| host.eq_ignore_ascii_case("github.com"))
+                && url
+                    .path()
+                    .trim_matches('/')
+                    .trim_end_matches(".git")
+                    .eq_ignore_ascii_case("openRuyi-Project/openRuyi")
+            {
+                return Err(invalid(
+                    "delivery origin must be a personal fork, not the openRuyi project repository; use the project repository only as the PR base",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn text(path: &Path) -> io::Result<&str> {
     path.to_str().ok_or_else(|| {
         invalid(format!(
