@@ -52,6 +52,7 @@ struct ResultRow {
     removed: Vec<String>,
     builds: Vec<Build>,
     error: Option<String>,
+    record_error: Option<String>,
 }
 #[derive(Serialize)]
 struct Build {
@@ -186,6 +187,7 @@ pub(crate) fn submit(
             removed: vec![],
             builds: vec![],
             error: None,
+            record_error: None,
         };
         if let Err(error) = execute(
             workspace,
@@ -198,7 +200,10 @@ pub(crate) fn submit(
             row.error = Some(error);
         }
         if let Ok(area) = workspace.existing_development(&work) {
-            config::save(&area.directory().join("remote-result.toml"), &row)?;
+            let path = area.directory().join("remote-result.toml");
+            row.record_error = config::save(&path, &row)
+                .err()
+                .map(|error| format!("{}: {error}", path.display()));
         }
         rows.push(row);
     }
@@ -206,7 +211,9 @@ pub(crate) fn submit(
         format_version: 1,
         operation: "remote-build",
         scope: "obs-submission",
-        success: rows.iter().all(|r| r.error.is_none()),
+        success: rows
+            .iter()
+            .all(|r| r.error.is_none() && r.record_error.is_none()),
         tasks: rows,
     })
 }
@@ -216,7 +223,7 @@ impl Report {
         for row in &self.tasks {
             let work = &row.work;
             if matches!(format, ReportFormat::Human) {
-                let level = if row.error.is_some() {
+                let level = if row.error.is_some() || row.record_error.is_some() {
                     crate::output_cli::HumanLevel::Error
                 } else {
                     crate::output_cli::HumanLevel::Info
@@ -237,6 +244,15 @@ impl Report {
                         ),
                     )
                     .map_err(|e| e.to_string())?;
+                if let Some(error) = &row.record_error {
+                    crate::output_cli::stderr()
+                        .message(
+                            crate::output_cli::HumanLevel::Error,
+                            Some(std::path::Path::new(work)),
+                            format_args!("save remote result: {error}"),
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
                 for b in &row.builds {
                     println!(
                         "{work}: {}/{} {}{}",
@@ -444,6 +460,5 @@ fn execute(
             });
         }
     }
-    config::save(&area.directory().join("remote-result.toml"), row)?;
     Ok(())
 }
