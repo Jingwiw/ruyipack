@@ -539,3 +539,50 @@ fn required_build_checks_stage_result_and_declared_inputs() {
         candidate.as_bytes()
     );
 }
+
+#[test]
+fn task_commit_keeps_independent_commits_and_reports_partial_failure() {
+    let (root, repo, _) = fixture();
+    recipe_workspace(
+        root.path(),
+        "second",
+        "other",
+        &SPEC.replace("Name:           ed", "Name:           other"),
+    );
+    success(&run(
+        root.path(),
+        &["edit", "second", "--set=package.version=1.22.6", "--apply"],
+    ));
+    fs::write(
+        root.path().join("plan.toml"),
+        "[[packages]]\nwork='review'\n[[packages]]\nwork='missing'\n[[packages]]\nwork='second'\n",
+    )
+    .unwrap();
+    let before = String::from_utf8(git(&repo, &["rev-parse", "HEAD"]).stdout).unwrap();
+    let args = ["task", "--plan", "plan.toml", "commit", "--format=toml"];
+    let result = run(root.path(), &args);
+    assert_eq!(result.status.code(), Some(1));
+    assert!(result.stderr.is_empty());
+    let report = machine_report(&result);
+    let tasks = report["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 3);
+    for index in [0, 2] {
+        assert_eq!(tasks[index]["success"].as_bool(), Some(true));
+        assert!(tasks[index]["commit"].as_str().is_some());
+    }
+    assert_eq!(tasks[1]["success"].as_bool(), Some(false));
+    assert!(tasks[1]["error"].as_str().unwrap().contains("missing"));
+    assert_eq!(
+        git(
+            &repo,
+            &["rev-list", "--count", &format!("{}..HEAD", before.trim())]
+        )
+        .stdout,
+        b"2\n"
+    );
+    let head = git(&repo, &["rev-parse", "HEAD"]).stdout;
+    let repeat = run(root.path(), &args);
+    assert_eq!(repeat.status.code(), Some(1));
+    assert_eq!(git(&repo, &["rev-parse", "HEAD"]).stdout, head);
+    assert!(git(&repo, &["status", "--porcelain"]).stdout.is_empty());
+}

@@ -1668,7 +1668,7 @@ fn task_repairs_validates_and_reuses_a_completed_local_task() {
         fixture
             .command("default-context")
             .current_dir(&root)
-            .args(["task", "--plan", "plan.toml", "--format=toml"])
+            .args(["task", "--plan", "plan.toml", "run", "--format=toml"])
             .output()
             .unwrap()
     };
@@ -1722,7 +1722,14 @@ fn task_repairs_validates_and_reuses_a_completed_local_task() {
     let refreshed = fixture
         .command("default-context")
         .current_dir(&root)
-        .args(["task", "--plan", "plan.toml", "--refresh", "--format=toml"])
+        .args([
+            "task",
+            "--plan",
+            "plan.toml",
+            "run",
+            "--refresh",
+            "--format=toml",
+        ])
         .output()
         .unwrap();
     support::success(&refreshed);
@@ -1778,9 +1785,13 @@ fn task_noop_and_failure_stop_without_implicit_rebuilds() {
         fs::write(root.join("plan.toml"), "[[packages]]\nwork='ed'\n").unwrap();
         let run = |mode: &str, retry: bool| {
             let mut command = fixture.command(mode);
-            command
-                .current_dir(&root)
-                .args(["task", "--plan", "plan.toml", "--format=toml"]);
+            command.current_dir(&root).args([
+                "task",
+                "--plan",
+                "plan.toml",
+                "run",
+                "--format=toml",
+            ]);
             if retry {
                 command.arg("--retry");
             }

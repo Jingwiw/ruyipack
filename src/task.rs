@@ -11,7 +11,7 @@ use crate::{
     remote_build::status::{self, State},
     workspace::{self, baseline, commit::validation},
 };
-use clap::Args;
+use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::{
     io,
@@ -20,9 +20,32 @@ use std::{
 
 #[derive(Args)]
 pub(crate) struct Options {
-    /// Package selection and remote settings.
-    #[arg(long)]
-    plan: PathBuf,
+    /// Package plan. Repeat for OBS submission, status or commit.
+    #[arg(long, required = true, value_name = "PATH")]
+    plan: Vec<PathBuf>,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Apply fixes, validate changed packages and resume pending builds.
+    Run(RunOptions),
+    /// Submit selected packages and reconcile their shared OBS projects.
+    RemoteBuild(crate::remote_build::SubmitOptions),
+    /// Observe retained OBS submissions without uploading.
+    Status {
+        #[arg(long, value_enum, default_value_t = ReportFormat::Human)]
+        format: ReportFormat,
+    },
+    /// Commit each selected WORK separately; retain partial results.
+    Commit(workspace::commit::Arguments),
+    /// Preview, publish or close a PR for the selected committed packages.
+    Pr(crate::workspace::pr::Options),
+}
+
+#[derive(Args)]
+struct RunOptions {
     /// Include supported upgrades when discovering changes.
     #[arg(long)]
     upgrade: bool,
@@ -84,7 +107,7 @@ struct Task {
     failed_step: Option<Phase>,
 }
 impl Task {
-    fn new(work: String, options: &Options) -> Self {
+    fn new(work: String, options: &RunOptions) -> Self {
         Self {
             work,
             upgrade: options.upgrade,
@@ -131,10 +154,91 @@ fn claim(root: &Path, work: &str) -> io::Result<(PathBuf, FileLock)> {
 }
 
 pub(crate) fn run(options: &Options) -> io::Result<bool> {
+    let plans = options
+        .plan
+        .iter()
+        .map(|path| {
+            let mut plan: plan::Plan = baseline::load(path)?;
+            if let Some(template) = plan.pr.as_mut().and_then(|p| p.template.as_mut()) {
+                *template = std::fs::canonicalize(path)?
+                    .parent()
+                    .expect("plan parent")
+                    .join(&*template);
+            }
+            Ok(plan)
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    plan::validate_works(
+        plans
+            .iter()
+            .flat_map(|p| p.packages.iter().map(|t| t.work.as_str())),
+    )
+    .map_err(io::Error::other)?;
+    match &options.command {
+        Command::RemoteBuild(args) => {
+            let tasks = plans
+                .into_iter()
+                .flat_map(|p| {
+                    p.packages
+                        .into_iter()
+                        .map(move |t| (t.work, Some(t.settings.inherit(&p.defaults))))
+                })
+                .collect();
+            let report = crate::remote_build::submit(&workspace::discover()?, tasks, args)
+                .map_err(io::Error::other)?;
+            report.print(args.format).map_err(io::Error::other)
+        }
+        Command::Status { format } => {
+            let works = plans
+                .into_iter()
+                .flat_map(|p| p.packages.into_iter().map(|t| t.work))
+                .collect::<Vec<_>>();
+            status::run(&workspace::discover()?, &works, *format).map_err(io::Error::other)
+        }
+        Command::Commit(args) => {
+            let tasks = plans
+                .into_iter()
+                .flat_map(|p| p.packages)
+                .map(|task| workspace::commit::execute(&task.work, args))
+                .collect::<Vec<_>>();
+            let success = tasks.iter().all(|task| task.success);
+            if matches!(args.format, ReportFormat::Human) {
+                for task in tasks {
+                    task.print(args.format)?;
+                }
+            } else {
+                #[derive(Serialize)]
+                struct Commits {
+                    operation: &'static str,
+                    success: bool,
+                    tasks: Vec<workspace::commit::Report>,
+                }
+                crate::report::write(
+                    &mut io::stdout().lock(),
+                    &Commits {
+                        operation: "commit",
+                        success,
+                        tasks,
+                    },
+                )?;
+            }
+            Ok(success)
+        }
+        Command::Run(_) | Command::Pr(_) => {
+            let [plan]: [plan::Plan; 1] = plans.try_into().map_err(|_| {
+                io::Error::other("run and pr require one plan; select its package scope first")
+            })?;
+            match &options.command {
+                Command::Run(args) => advance_plan(args, plan),
+                Command::Pr(args) => workspace::pr::run(args, &plan),
+                _ => unreachable!("single-plan commands"),
+            }
+        }
+    }
+}
+
+fn advance_plan(options: &RunOptions, plan: plan::Plan) -> io::Result<bool> {
     let workspace = workspace::discover()?;
-    let plan: plan::Plan = baseline::load(&options.plan)?;
-    plan::validate_works(plan.packages.iter().map(|task| task.work.as_str()))
-        .map_err(io::Error::other)?;
     let root = workspace::directory(&workspace.configuration(), Path::new("tasks"), false)?;
     std::fs::create_dir_all(&root)?;
     // Observe pending work before new local builds can delay it.
@@ -301,7 +405,7 @@ fn validation_key(
 
 fn prepare(
     workspace: &workspace::Workspace,
-    options: &Options,
+    options: &RunOptions,
     settings: &plan::Settings,
     task: &mut Task,
 ) -> io::Result<()> {
@@ -365,7 +469,7 @@ fn prepare(
 fn advance(
     workspace: &workspace::Workspace,
     executable: &Path,
-    options: &Options,
+    options: &RunOptions,
     root: &Path,
     settings: &plan::Settings,
     task: &mut Task,
@@ -426,9 +530,10 @@ fn advance(
                     },
                 )?;
                 vec![
-                    "remote-build".into(),
+                    "task".into(),
                     "--plan".into(),
                     path.to_string_lossy().into_owned(),
+                    "remote-build".into(),
                     "--fresh".into(),
                 ]
             }
@@ -504,7 +609,7 @@ fn advance(
 
 fn poll(
     workspace: &workspace::Workspace,
-    options: &Options,
+    options: &RunOptions,
     root: &Path,
     plan: &plan::Plan,
 ) -> io::Result<()> {

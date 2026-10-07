@@ -55,8 +55,6 @@ pub(crate) enum Command {
     Inspect(crate::inspect::Options),
     /// Commit package changes to the configured Git repository.
     Commit(crate::workspace::commit::Options),
-    /// Preview or publish a PR for committed packages in a plan.
-    Pr(crate::workspace::pr::Options),
     /// Remove build results; keep package changes.
     Clean(crate::clean::Options),
     /// Remove a development area.

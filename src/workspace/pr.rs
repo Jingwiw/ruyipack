@@ -22,9 +22,6 @@ use std::{
     after_help = "Default: preview only, without network access. Commit package changes first. --publish pushes the current branch without force, then creates a draft PR or updates its open PR. Closed PRs are not reopened. Uses Git and authenticated GitHub CLI (gh)."
 )]
 pub(crate) struct Options {
-    /// Package selection and [pr] title, base and optional target/template.
-    #[arg(long)]
-    plan: PathBuf,
     /// Recipe repository; defaults to the workspace configuration.
     #[arg(long)]
     repo: Option<PathBuf>,
@@ -81,12 +78,12 @@ struct Report {
     error: Option<String>,
 }
 
-pub(crate) fn run(options: &Options) -> io::Result<bool> {
+pub(crate) fn run(options: &Options, plan: &crate::plan::Plan) -> io::Result<bool> {
     let mut report = Report {
         stage: "prepare",
         ..Report::default()
     };
-    match perform(options, &mut report) {
+    match perform(options, plan, &mut report) {
         Ok(()) => report.success = true,
         Err(error) => report.error = Some(error.to_string()),
     }
@@ -129,11 +126,8 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
     Ok(report.success)
 }
 
-fn perform(options: &Options, report: &mut Report) -> io::Result<()> {
+fn perform(options: &Options, plan: &crate::plan::Plan, report: &mut Report) -> io::Result<()> {
     let workspace = super::discover()?;
-    let plan: crate::plan::Plan = baseline::load(&options.plan)?;
-    crate::plan::validate_works(plan.packages.iter().map(|task| task.work.as_str()))
-        .map_err(invalid)?;
     let settings = plan
         .pr
         .as_ref()
@@ -286,12 +280,8 @@ fn perform(options: &Options, report: &mut Report) -> io::Result<()> {
     }
     report.works = plan.packages.iter().map(|task| task.work.clone()).collect();
     report.title.clone_from(&settings.title);
-    let configured = settings
-        .template
-        .as_ref()
-        .map(|path| options.plan.parent().unwrap_or(Path::new(".")).join(path));
     let text = template::load(
-        options.template.as_deref().or(configured.as_deref()),
+        options.template.as_deref().or(settings.template.as_deref()),
         &workspace.configuration().join("pr.md"),
         areas.iter().map(|area| area.directory().join("pr.md")),
     )?;

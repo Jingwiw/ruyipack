@@ -7,7 +7,6 @@ mod config;
 mod delivery;
 pub(crate) mod status;
 use crate::output_cli::ReportFormat;
-use crate::plan::Task;
 use clap::Args;
 use config::Settings;
 use serde::Serialize;
@@ -18,27 +17,29 @@ use std::{
 };
 
 #[derive(Args)]
-#[command(group(clap::ArgGroup::new("remote-input").args(["work","plan"]).required(true)))]
 pub(crate) struct Options {
     /// Package development area.
-    work: Option<String>,
-    /// Read tasks and defaults from a plan; repeat to combine plans.
-    #[arg(long, value_name = "PATH")]
-    plan: Vec<PathBuf>,
-    /// Parent repositories to enable; overrides plan and saved WORK settings.
-    #[arg(long, value_delimiter = ',', value_name = "REPOSITORY")]
-    repositories: Vec<String>,
+    work: String,
     /// Import settings from another WORK's remote.toml.
-    #[arg(long, requires = "work", value_name = "PATH")]
+    #[arg(long, value_name = "PATH")]
     from_config: Option<PathBuf>,
-    /// Submit changed materials and refresh remote services; otherwise show retained results.
-    #[arg(long)]
-    fresh: bool,
-    /// Read retained submissions without uploading or changing OBS settings.
+    /// Read retained submission results without changing OBS.
     #[arg(long, conflicts_with_all = ["fresh", "repositories", "from_config"])]
     status: bool,
-    #[arg(long,value_enum,default_value_t=ReportFormat::Human)]
-    format: ReportFormat,
+    #[command(flatten)]
+    submit: SubmitOptions,
+}
+
+#[derive(Args)]
+pub(crate) struct SubmitOptions {
+    /// Parent repositories to enable; overrides supplied and saved settings.
+    #[arg(long, value_delimiter = ',', value_name = "REPOSITORY")]
+    repositories: Vec<String>,
+    /// Submit changed materials and refresh remote services.
+    #[arg(long)]
+    fresh: bool,
+    #[arg(long, value_enum, default_value_t = ReportFormat::Human)]
+    pub(crate) format: ReportFormat,
 }
 #[derive(Serialize)]
 struct ResultRow {
@@ -60,7 +61,7 @@ struct Build {
     details: Option<String>,
 }
 #[derive(Serialize)]
-struct Report {
+pub(crate) struct Report {
     format_version: u32,
     operation: &'static str,
     scope: &'static str,
@@ -71,34 +72,35 @@ struct Report {
 pub(crate) fn run(options: &Options) -> Result<bool, String> {
     let workspace = crate::workspace::discover().map_err(|e| e.to_string())?;
     if options.status {
-        return status::run(&workspace, options);
+        return status::run(
+            &workspace,
+            std::slice::from_ref(&options.work),
+            options.submit.format,
+        );
     }
+    let settings = options
+        .from_config
+        .as_ref()
+        .map(|p| config::read(p))
+        .transpose()?;
+    let report = submit(
+        &workspace,
+        vec![(options.work.clone(), settings)],
+        &options.submit,
+    )?;
+    report.print(options.submit.format)
+}
+
+/// Reconcile shared OBS projects before uploading packages. Selection belongs to the caller.
+pub(crate) fn submit(
+    workspace: &crate::workspace::Workspace,
+    tasks: Vec<(String, Option<Settings>)>,
+    options: &SubmitOptions,
+) -> Result<Report, String> {
+    crate::plan::validate_works(tasks.iter().map(|(work, _)| work.as_str()))?;
     let interactive = matches!(options.format, ReportFormat::Human)
         && io::stdin().is_terminal()
         && io::stderr().is_terminal();
-    let mut tasks = Vec::new();
-    if options.plan.is_empty() {
-        let settings: Settings = options
-            .from_config
-            .as_ref()
-            .map(|p| config::read(p))
-            .transpose()?
-            .unwrap_or_default();
-        tasks.push(Task {
-            work: options.work.clone().expect("WORK or plan"),
-            settings,
-        });
-    } else {
-        for path in &options.plan {
-            let plan: config::Plan = config::read(path)?;
-            let defaults = plan.defaults;
-            tasks.extend(plan.packages.into_iter().map(|task| Task {
-                work: task.work,
-                settings: task.settings.inherit(&defaults),
-            }));
-        }
-    }
-    crate::plan::validate_works(tasks.iter().map(|task| task.work.as_str()))?;
     let (global, auth) = config::load(&workspace.configuration(), interactive)?;
     let client = api::Client::new(&global.api, &auth.user, &auth.password)?;
     // Authentication is checked before any remote mutation.
@@ -107,23 +109,26 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         .ok_or("OBS account not found")?;
     let mut projects = BTreeMap::new();
     let mut prepared = Vec::new();
-    for task in tasks {
-        let mut settings = task.settings.inherit(&global.defaults);
+    for (work, supplied) in tasks {
+        let mut settings = supplied
+            .as_ref()
+            .unwrap_or(&Settings::default())
+            .inherit(&global.defaults);
         let mut area = workspace
-            .development(&task.work, None, false)
+            .development(&work, None, false)
             .map_err(|e| e.to_string())?;
         area.create().map_err(|e| e.to_string())?;
         let path = area.directory().join("remote.toml");
-        if path.exists() && options.plan.is_empty() && options.from_config.is_none() {
+        if path.exists() && supplied.is_none() {
             settings = config::read(&path)?;
-        } else if options.plan.is_empty() && options.from_config.is_none() {
+        } else if supplied.is_none() {
             if !interactive {
                 return Err(
-                    "first remote-build needs an interactive terminal, --from-config, or --plan"
+                    "first remote-build needs an interactive terminal or --from-config; use task for a plan"
                         .into(),
                 );
             }
-            configure(&client, &task.work, &auth.user, &mut settings)?;
+            configure(&client, &work, &auth.user, &mut settings)?;
         }
         if !options.repositories.is_empty() {
             settings.repositories = Some(
@@ -138,7 +143,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         }
         settings
             .project
-            .get_or_insert_with(|| format!("home:{}:ruyipack-{}", auth.user, task.work));
+            .get_or_insert_with(|| format!("home:{}:ruyipack-{}", auth.user, work));
         normalize_parent(&global.api, &mut settings)?;
         api::owned_project(
             settings.project.as_deref().ok_or("missing project")?,
@@ -160,7 +165,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
             return Err("tasks sharing an OBS project must use the same project settings".into());
         }
         config::save(&path, &settings)?;
-        prepared.push((task.work, settings));
+        prepared.push((work, settings));
     }
     // Project configuration is independent of package uploads and --fresh.
     let mut configured = std::collections::BTreeSet::new();
@@ -183,7 +188,7 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
             error: None,
         };
         if let Err(error) = execute(
-            &workspace,
+            workspace,
             &client,
             &work,
             &settings,
@@ -195,54 +200,63 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
         if let Ok(area) = workspace.existing_development(&work) {
             config::save(&area.directory().join("remote-result.toml"), &row)?;
         }
-        if matches!(options.format, ReportFormat::Human) {
-            let level = if row.error.is_some() {
-                crate::output_cli::HumanLevel::Error
-            } else {
-                crate::output_cli::HumanLevel::Info
-            };
-            crate::output_cli::stderr()
-                .message(
-                    level,
-                    Some(std::path::Path::new(&work)),
-                    format_args!(
-                        "remote-build: {}; project={}; uploaded={}; removed={}{}",
-                        row.action,
-                        row.project.as_deref().unwrap_or(""),
-                        row.uploaded.len(),
-                        row.removed.len(),
-                        row.error
-                            .as_ref()
-                            .map_or(String::new(), |e| format!("; {e}"))
-                    ),
-                )
-                .map_err(|e| e.to_string())?;
-            for b in &row.builds {
-                println!(
-                    "{work}: {}/{} {}{}",
-                    b.repository,
-                    b.architecture,
-                    b.status,
-                    b.details
-                        .as_ref()
-                        .map_or(String::new(), |d| format!(": {d}"))
-                );
-            }
-        }
         rows.push(row);
     }
-    let report = Report {
+    Ok(Report {
         format_version: 1,
         operation: "remote-build",
         scope: "obs-submission",
         success: rows.iter().all(|r| r.error.is_none()),
         tasks: rows,
-    };
-    if matches!(options.format, ReportFormat::Toml) {
-        crate::report::write(&mut io::stdout().lock(), &report).map_err(|e| e.to_string())?;
-    }
-    Ok(report.success)
+    })
 }
+
+impl Report {
+    pub(crate) fn print(&self, format: ReportFormat) -> Result<bool, String> {
+        for row in &self.tasks {
+            let work = &row.work;
+            if matches!(format, ReportFormat::Human) {
+                let level = if row.error.is_some() {
+                    crate::output_cli::HumanLevel::Error
+                } else {
+                    crate::output_cli::HumanLevel::Info
+                };
+                crate::output_cli::stderr()
+                    .message(
+                        level,
+                        Some(std::path::Path::new(&work)),
+                        format_args!(
+                            "remote-build: {}; project={}; uploaded={}; removed={}{}",
+                            row.action,
+                            row.project.as_deref().unwrap_or(""),
+                            row.uploaded.len(),
+                            row.removed.len(),
+                            row.error
+                                .as_ref()
+                                .map_or(String::new(), |e| format!("; {e}"))
+                        ),
+                    )
+                    .map_err(|e| e.to_string())?;
+                for b in &row.builds {
+                    println!(
+                        "{work}: {}/{} {}{}",
+                        b.repository,
+                        b.architecture,
+                        b.status,
+                        b.details
+                            .as_ref()
+                            .map_or(String::new(), |d| format!(": {d}"))
+                    );
+                }
+            }
+        }
+        if matches!(format, ReportFormat::Toml) {
+            crate::report::write(&mut io::stdout().lock(), self).map_err(|e| e.to_string())?;
+        }
+        Ok(self.success)
+    }
+}
+
 fn normalize_parent(api: &str, settings: &mut Settings) -> Result<(), String> {
     let parent = settings.parent.get_or_insert_with(|| "openruyi".into());
     if parent.contains("://") {

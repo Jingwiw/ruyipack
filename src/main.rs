@@ -62,7 +62,6 @@ fn main() -> ExitCode {
         Command::Build(options) => exit_for(build::run(&options)),
         Command::Shell(options) => exit_for(build::shell::run(&options)),
         Command::Schema(options) => exit_for(schema::run(&options)),
-        Command::Pr(options) => exit_for(workspace::pr::run(&options)),
         Command::Commit(options) => exit_for(workspace::commit::run(&options)),
         Command::Clean(options) => exit_for(clean::run(&options)),
         Command::Delete(options) => exit_for(workspace::delete::run(&options)),

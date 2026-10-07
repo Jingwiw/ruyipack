@@ -5,7 +5,7 @@ SPDX-License-Identifier: MulanPSL-2.0
 
 # Run a package task plan
 
-Run from an initialized workspace. Use the package plan accepted by `remote-build`:
+Run from an initialized workspace. Define the package selection in a plan:
 
 ```toml
 [[packages]]
@@ -16,20 +16,39 @@ work = "inih"
 ```
 
 ```sh
-ruyipack task --plan packages.toml
+ruyipack task --plan packages.toml run
 ```
+
+The `task` command owns plan inputs. Single-package commands still take WORK.
+
+```sh
+ruyipack task --plan packages.toml remote-build --fresh
+ruyipack task --plan packages.toml status
+ruyipack task --plan packages.toml commit --dry-run
+ruyipack task --plan packages.toml commit --require-build
+ruyipack task --plan packages.toml pr
+```
+
+`commit` creates one commit per changed WORK. It reports each result and returns
+failure if any WORK fails. Successful commits remain; retry does not duplicate
+them. `pr` collects the selected commits into one PR without squashing them.
+Neither operation starts automatically after validation.
+
+OBS submission, status and commit accept repeated `--plan` inputs. Run and PR
+require one plan so that saved selections and PR settings have one source.
+Duplicate WORKs are rejected before execution.
 
 Each new task applies supported fixes, fetches materials, checks the candidate and
 builds changed packages. Add `--upgrade` to request supported upgrades.
 Candidate checks do not require a clean Git repository. Commit checks still apply
 when you commit.
 
-Failures retain the WORK and logs. Other tasks continue. This command does not
+Failures retain the WORK and logs. Other tasks continue. `task run` does not
 commit, push, open a PR, delete a WORK or repair a failed build.
 
 ## Resume or start another round
 
-Repeat the command to resume. Unchanged tasks do not repeat fixes or builds.
+Repeat `task --plan packages.toml run` to resume. Unchanged tasks do not repeat fixes or builds.
 Changed inputs invalidate previous validation. Use `--refresh` to check for new
 fixes or upgrades. Use `--retry` after you inspect and correct a stopped task.
 Retry starts with material preparation, not auto-fix.
@@ -44,7 +63,7 @@ another discovery round.
 Configure OBS authentication and project defaults first. Tasks do not prompt.
 
 ```sh
-ruyipack task --plan packages.toml --validation remote --format toml
+ruyipack task --plan packages.toml run --validation remote --format toml
 ```
 
 Each invocation observes due results before it starts new builds. Invoke it from

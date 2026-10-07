@@ -6,7 +6,7 @@ use std::{fs, path::Path, process::Output};
 
 fn run(root: &Path) -> Output {
     isolated_command(env!("CARGO_BIN_EXE_ruyipack"), root)
-        .args(["pr", "--plan", "plan.toml", "--format=toml"])
+        .args(["task", "--plan", "plans/plan.toml", "pr", "--format=toml"])
         .output()
         .unwrap()
 }
@@ -44,13 +44,14 @@ fn pr_preview_binds_plan_to_commits_and_does_not_publish() {
             "SPECS: ed: Update to 1.22.6\n\nAction: Update to 1.22.6",
         ],
     );
+    fs::create_dir(root.path().join("plans")).unwrap();
     fs::write(
-        root.path().join("body.md"),
+        root.path().join("plans/body.md"),
         "## Summary\n{{summary}}\n{{obs_links}}\n",
     )
     .unwrap();
     fs::write(
-        root.path().join("plan.toml"),
+        root.path().join("plans/plan.toml"),
         "[[packages]]\nwork='review'\n[pr]\ntitle='Update ed'\nbase='main'\ntemplate='body.md'\n",
     )
     .unwrap();
@@ -79,7 +80,14 @@ fn pr_preview_binds_plan_to_commits_and_does_not_publish() {
         ("ed:", 2),
     ] {
         let output = isolated_command(env!("CARGO_BIN_EXE_ruyipack"), root.path())
-            .args(["pr", "--plan=plan.toml", "--format=toml", "--note", note])
+            .args([
+                "task",
+                "--plan=plans/plan.toml",
+                "pr",
+                "--format=toml",
+                "--note",
+                note,
+            ])
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(expected));

@@ -52,9 +52,9 @@ work = "atf"
 ```
 
 ```sh
-ruyipack remote-build --plan plan.toml --format toml
-ruyipack remote-build --plan plan.toml --fresh --format toml
-ruyipack remote-build --plan basic.plan.toml --plan upgrade.plan.toml \
+ruyipack task --plan plan.toml remote-build --format toml
+ruyipack task --plan plan.toml remote-build --fresh --format toml
+ruyipack task --plan basic.plan.toml --plan upgrade.plan.toml remote-build \
   --repositories x86_64,riscv64,rva20
 ```
 
@@ -65,7 +65,7 @@ Omitted values inherit workspace defaults; `parent = "default"` explicitly selec
 ## Observe submitted builds
 
 ```sh
-ruyipack remote-build --plan plan.toml --status --format toml
+ruyipack task --plan plan.toml status --format toml
 ```
 
 `--status` reads existing WORK settings and submission receipts. It does not create
@@ -113,7 +113,7 @@ separate reviewed removal. A refresh does not silently remove remote constraints
 Add package reminders when publishing a PR:
 
 ```sh
-ruyipack pr --plan packages.toml --note 'mypackage: Tests need ICMP socket permission.' --publish
+ruyipack task --plan packages.toml pr --note 'mypackage: Tests need ICMP socket permission.' --publish
 ```
 
 Repeat `--note 'PACKAGE: TEXT'` for more reminders. Each reminder must be one

@@ -9,7 +9,7 @@ use std::{
 
 pub(super) const SERVICE: &str =
     "<services>\n  <service name=\"download_assets\" mode=\"trylocal\"/>\n</services>\n";
-pub(super) use crate::plan::{Plan, Settings};
+pub(super) use crate::plan::Settings;
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Global {
@@ -137,28 +137,4 @@ pub(super) fn load_existing(root: &Path) -> Result<(Global, Auth), String> {
         return Err("OBS password is empty".into());
     }
     Ok((global, auth))
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn plan_overrides_inherit_without_copying_credentials() {
-        let plan: super::Plan = toml::from_str(
-            "project = 'home:alice:test'\nparent = 'default'\n[[packages]]\nwork = 'ed'\n",
-        )
-        .unwrap();
-        let global = super::Settings {
-            parent: Some("openruyi".into()),
-            repositories: Some(vec!["x86_64".into()]),
-            publish: Some(false),
-            ..Default::default()
-        };
-        let settings = plan.packages[0]
-            .settings
-            .inherit(&plan.defaults.inherit(&global));
-        assert_eq!(settings.project.as_deref(), Some("home:alice:test"));
-        assert_eq!(settings.parent.as_deref(), Some("openruyi"));
-        assert_eq!(settings.publish, Some(false));
-        assert!(toml::from_str::<super::Plan>("password='secret'\npackages=[]").is_err());
-    }
 }

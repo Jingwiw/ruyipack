@@ -3,7 +3,7 @@
 
 //! One read-only OBS observation. Submission success is not build success.
 
-use super::{Options, api, config, delivery};
+use super::{api, config, delivery};
 use crate::{output_cli::ReportFormat, workspace::Workspace};
 use serde::Serialize;
 use std::{
@@ -55,17 +55,13 @@ pub(crate) struct Report {
     pub(crate) tasks: Vec<Observation>,
 }
 
-pub(super) fn run(workspace: &Workspace, options: &Options) -> Result<bool, String> {
-    let mut works = Vec::new();
-    if let Some(work) = &options.work {
-        works.push(work.clone());
-    }
-    for path in &options.plan {
-        let plan: config::Plan = config::read(path)?;
-        works.extend(plan.packages.into_iter().map(|task| task.work));
-    }
-    let report = collect(workspace, &works)?;
-    if matches!(options.format, ReportFormat::Human) {
+pub(crate) fn run(
+    workspace: &Workspace,
+    works: &[String],
+    format: ReportFormat,
+) -> Result<bool, String> {
+    let report = collect(workspace, works)?;
+    if matches!(format, ReportFormat::Human) {
         for row in &report.tasks {
             crate::output_cli::stderr()
                 .message(
@@ -86,7 +82,7 @@ pub(super) fn run(workspace: &Workspace, options: &Options) -> Result<bool, Stri
                 .map_err(|e| e.to_string())?;
         }
     }
-    if matches!(options.format, ReportFormat::Toml) {
+    if matches!(format, ReportFormat::Toml) {
         crate::report::write(&mut io::stdout().lock(), &report).map_err(|e| e.to_string())?;
     }
     Ok(report.success)

@@ -763,9 +763,9 @@ build checks passed; run those checks on the resulting files.
 
 ## Pull requests
 
-Commit package changes before you run `pr`. Each commit must change one package.
+Commit package changes before you run `task pr`. Each commit must change one package.
 A plan can group many package commits into one PR without squashing them.
-The same plan can be used by `remote-build`; `[pr]` does not change build settings.
+The same plan can be used by `task remote-build`; `[pr]` does not change build settings.
 
 ```toml
 [[packages]]
@@ -779,9 +779,9 @@ base = "main"
 ```
 
 ```sh
-ruyipack pr --plan packages.toml
-ruyipack pr --plan packages.toml --template body.md --format toml
-ruyipack pr --plan packages.toml --publish
+ruyipack task --plan packages.toml pr
+ruyipack task --plan packages.toml pr --template body.md --format toml
+ruyipack task --plan packages.toml pr --publish
 ```
 
 Preview is offline. It checks a clean topic branch, every commit's package scope,
@@ -855,7 +855,7 @@ An empty fragment receives the text without a leading blank line. Repeating
 `--set` and `--add` for the same field. Conditional or duplicate configure fragments are not
 silently merged. Scripts execute during the build, not during editing.
 
-`pr --plan packages.toml --close` closes the matching PR and cancels its unfinished
+`task --plan packages.toml pr --close` closes the matching PR and cancels its unfinished
 Actions runs. It does not delete branches. The report separates PR closure,
 cancellation requests, and confirmed finished runs. Other PRs' runs are not cancelled.
 Run `--publish` after closure to create a replacement draft PR.

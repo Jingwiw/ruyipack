@@ -27,6 +27,12 @@ use std::{
 pub(crate) struct Options {
     /// Development area containing the package changes.
     work: String,
+    #[command(flatten)]
+    arguments: Arguments,
+}
+
+#[derive(Args)]
+pub(crate) struct Arguments {
     /// Override the recipe repository configured by init.
     #[arg(long, value_name = "PATH")]
     repo: Option<PathBuf>,
@@ -49,15 +55,15 @@ pub(crate) struct Options {
     #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..))]
     timeout: u64,
     #[arg(long, value_enum, default_value_t = ReportFormat::Human)]
-    format: ReportFormat,
+    pub(crate) format: ReportFormat,
 }
 
 #[derive(Serialize)]
-struct Report {
+pub(crate) struct Report {
     operation: &'static str,
     work: String,
     preview: bool,
-    success: bool,
+    pub(crate) success: bool,
     repository: Option<PathBuf>,
     branch: Option<String>,
     message: Option<String>,
@@ -86,9 +92,14 @@ struct Pending {
 }
 
 pub(crate) fn run(options: &Options) -> io::Result<bool> {
+    execute(&options.work, &options.arguments).print(options.arguments.format)
+}
+
+/// Commit one WORK and retain its exact result, including partial publication.
+pub(crate) fn execute(work: &str, options: &Arguments) -> Report {
     let mut report = Report {
         operation: "commit",
-        work: options.work.clone(),
+        work: work.to_owned(),
         preview: options.dry_run,
         success: false,
         repository: None,
@@ -106,113 +117,119 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
         Ok(()) => report.success = true,
         Err(error) => report.error = Some(error.to_string()),
     }
-    match options.format {
-        ReportFormat::Toml => crate::report::write(&mut io::stdout().lock(), &report)?,
-        ReportFormat::Human => {
-            let mut out = crate::output_cli::stderr();
-            if let Some(branch) = &report.branch {
-                out.message(
-                    HumanLevel::Info,
-                    Some(Path::new(&options.work)),
-                    format_args!("branch={branch}; files={}", report.changes.len()),
-                )?;
-            }
-            if options.dry_run
-                && let Some(error) = report.admission.as_ref().and_then(|a| a.error.as_ref())
-            {
-                out.message(
-                    HumanLevel::Warn,
-                    Some(Path::new(&options.work)),
-                    format_args!("submit: {error}"),
-                )?;
-            }
-            if let Some(warning) = report
-                .admission
-                .as_ref()
-                .and_then(|a| a.name_warning.as_ref())
-            {
-                out.message(
-                    HumanLevel::Warn,
-                    Some(Path::new(&options.work)),
-                    format_args!(
-                        "directory={}; SPEC Name={}",
-                        warning.directory,
-                        warning
-                            .literal
-                            .as_deref()
-                            .unwrap_or("not statically determined")
-                    ),
-                )?;
-            }
-            if let Some(spec) = report
-                .admission
-                .as_ref()
-                .and_then(|a| a.spec_fallback.as_ref())
-            {
-                out.message(
-                    HumanLevel::Warn,
-                    Some(Path::new(&options.work)),
-                    format_args!("selected SPEC={spec}; unique-file fallback"),
-                )?;
-            }
-            if let Some(build) = &report.build {
-                out.message(
-                    if matches!(build.status, "failed" | "stale" | "unavailable") {
-                        HumanLevel::Warn
-                    } else {
-                        HumanLevel::Info
-                    },
-                    Some(Path::new(&options.work)),
-                    format_args!("build={}; stage={}", build.status, build.stage_name()),
-                )?;
-            }
-            if options.dry_run {
-                use std::io::Write;
-                io::stdout().lock().write_all(report.diff.as_bytes())?;
-            }
-            if report.error.is_some()
-                && let Some(id) = &report.commit
-            {
-                out.message(
-                    HumanLevel::Info,
-                    Some(Path::new(&options.work)),
-                    format_args!(
-                        "commit created: {id}; completion failed; recovery state retained"
-                    ),
-                )?;
-            }
-            let text = report.error.as_deref().map_or_else(
-                || {
-                    report.commit.as_ref().map_or_else(
-                        || {
-                            if options.dry_run {
-                                "preview; repository unchanged".into()
-                            } else {
-                                "no changes to commit".into()
-                            }
-                        },
-                        |id| format!("committed {id}"),
-                    )
-                },
-                str::to_owned,
-            );
-            out.message(
-                if report.success {
-                    HumanLevel::Info
-                } else {
-                    HumanLevel::Error
-                },
-                Some(Path::new(&options.work)),
-                format_args!("{text}"),
-            )?;
-        }
-    }
-    Ok(report.success)
+    report
 }
 
-fn perform(options: &Options, report: &mut Report) -> io::Result<()> {
+impl Report {
+    pub(crate) fn print(&self, format: ReportFormat) -> io::Result<bool> {
+        match format {
+            ReportFormat::Toml => crate::report::write(&mut io::stdout().lock(), self)?,
+            ReportFormat::Human => {
+                let mut out = crate::output_cli::stderr();
+                if let Some(branch) = &self.branch {
+                    out.message(
+                        HumanLevel::Info,
+                        Some(Path::new(&self.work)),
+                        format_args!("branch={branch}; files={}", self.changes.len()),
+                    )?;
+                }
+                if self.preview
+                    && let Some(error) = self.admission.as_ref().and_then(|a| a.error.as_ref())
+                {
+                    out.message(
+                        HumanLevel::Warn,
+                        Some(Path::new(&self.work)),
+                        format_args!("submit: {error}"),
+                    )?;
+                }
+                if let Some(warning) = self
+                    .admission
+                    .as_ref()
+                    .and_then(|a| a.name_warning.as_ref())
+                {
+                    out.message(
+                        HumanLevel::Warn,
+                        Some(Path::new(&self.work)),
+                        format_args!(
+                            "directory={}; SPEC Name={}",
+                            warning.directory,
+                            warning
+                                .literal
+                                .as_deref()
+                                .unwrap_or("not statically determined")
+                        ),
+                    )?;
+                }
+                if let Some(spec) = self
+                    .admission
+                    .as_ref()
+                    .and_then(|a| a.spec_fallback.as_ref())
+                {
+                    out.message(
+                        HumanLevel::Warn,
+                        Some(Path::new(&self.work)),
+                        format_args!("selected SPEC={spec}; unique-file fallback"),
+                    )?;
+                }
+                if let Some(build) = &self.build {
+                    out.message(
+                        if matches!(build.status, "failed" | "stale" | "unavailable") {
+                            HumanLevel::Warn
+                        } else {
+                            HumanLevel::Info
+                        },
+                        Some(Path::new(&self.work)),
+                        format_args!("build={}; stage={}", build.status, build.stage_name()),
+                    )?;
+                }
+                if self.preview {
+                    use std::io::Write;
+                    io::stdout().lock().write_all(self.diff.as_bytes())?;
+                }
+                if self.error.is_some()
+                    && let Some(id) = &self.commit
+                {
+                    out.message(
+                        HumanLevel::Info,
+                        Some(Path::new(&self.work)),
+                        format_args!(
+                            "commit created: {id}; completion failed; recovery state retained"
+                        ),
+                    )?;
+                }
+                let text = self.error.as_deref().map_or_else(
+                    || {
+                        self.commit.as_ref().map_or_else(
+                            || {
+                                if self.preview {
+                                    "preview; repository unchanged".into()
+                                } else {
+                                    "no changes to commit".into()
+                                }
+                            },
+                            |id| format!("committed {id}"),
+                        )
+                    },
+                    str::to_owned,
+                );
+                out.message(
+                    if self.success {
+                        HumanLevel::Info
+                    } else {
+                        HumanLevel::Error
+                    },
+                    Some(Path::new(&self.work)),
+                    format_args!("{text}"),
+                )?;
+            }
+        }
+        Ok(self.success)
+    }
+}
+
+fn perform(options: &Arguments, report: &mut Report) -> io::Result<()> {
     let workspace = super::discover()?;
-    let area = workspace.existing_development(&options.work)?;
+    let area = workspace.existing_development(&report.work)?;
     area.verify_binding()?;
     let repository = fs::canonicalize(options.repo.as_deref().unwrap_or(&workspace.recipes))?;
     let root = git::line(&repository, &["rev-parse", "--show-toplevel"])?;
@@ -370,7 +387,7 @@ fn plan(
     package: &str,
     base: &baseline::Baseline,
     current: &Files,
-    options: &Options,
+    options: &Arguments,
     mut pending: Pending,
 ) -> io::Result<Pending> {
     pending.after = pending.before.clone();
