@@ -1660,7 +1660,7 @@ fn imported_local_recipe_builds_rebuilds_and_enters_the_same_retained_environmen
 }
 
 #[test]
-fn task_repairs_validates_and_reuses_a_completed_local_task() {
+fn repaired_plan_validates_and_reuses_a_completed_local_task() {
     let fixture = Fixture::new();
     let root = fixture.root.path().join("maintenance");
     fs::create_dir(&root).unwrap();
@@ -1680,13 +1680,15 @@ fn task_repairs_validates_and_reuses_a_completed_local_task() {
     git(&repo, &["config", "user.name", "Fixture Author"]);
     git(&repo, &["config", "user.email", "fixture@example.org"]);
     fs::write(root.join("plan.toml"), "[[packages]]\nwork='ed'\n").unwrap();
-    let run = || {
-        fixture
-            .command("default-context")
+    let run = |retry: bool| {
+        let mut command = fixture.command("default-context");
+        command
             .current_dir(&root)
-            .args(["task", "--plan", "plan.toml", "run", "--format=toml"])
-            .output()
-            .unwrap()
+            .args(["task", "--plan", "plan.toml", "run", "--format=toml"]);
+        if retry {
+            command.arg("--retry");
+        }
+        command.output().unwrap()
     };
     fs::write(repo.join("uncommitted-note"), "unrelated work\n").unwrap();
     support::success(
@@ -1698,7 +1700,32 @@ fn task_repairs_validates_and_reuses_a_completed_local_task() {
             .unwrap(),
     );
     fs::rename(repo.join(".git"), repo.join("saved-git")).unwrap();
-    let first = run();
+    let unchanged = run(false);
+    assert!(!unchanged.status.success());
+    assert_eq!(
+        support::machine_report(&unchanged)["tasks"][0]["failed_step"].as_str(),
+        Some("check")
+    );
+    assert_eq!(
+        fs::read_to_string(area.join("recipe/SPECS/ed/ed.spec")).unwrap(),
+        source
+    );
+    let repair = || {
+        fixture
+            .command("default-context")
+            .current_dir(&root)
+            .args([
+                "check",
+                "--plan",
+                "plan.toml",
+                "--auto-fix",
+                "--format=toml",
+            ])
+            .output()
+            .unwrap()
+    };
+    support::success(&repair());
+    let first = run(true);
     assert!(
         first.status.success(),
         "{first:?}\n{}\n{}",
@@ -1725,7 +1752,7 @@ fn task_repairs_validates_and_reuses_a_completed_local_task() {
             .unwrap();
     assert_eq!(ready["packages"][0]["work"].as_str(), Some("ed"));
     let calls = fs::read(fixture.root.path().join("calls.jsonl")).unwrap();
-    let second = run();
+    let second = run(false);
     support::success(&second);
     assert_eq!(
         support::machine_report(&second)["tasks"][0]["attempt"],
@@ -1735,32 +1762,19 @@ fn task_repairs_validates_and_reuses_a_completed_local_task() {
         fs::read(fixture.root.path().join("calls.jsonl")).unwrap(),
         calls
     );
-    let refreshed = fixture
-        .command("default-context")
-        .current_dir(&root)
-        .args([
-            "task",
-            "--plan",
-            "plan.toml",
-            "run",
-            "--refresh",
-            "--format=toml",
-        ])
-        .output()
-        .unwrap();
-    support::success(&refreshed);
-    assert!(
-        support::machine_report(&refreshed)["tasks"][0]["attempt"]
-            .as_integer()
-            .unwrap()
-            > report["tasks"][0]["attempt"].as_integer().unwrap()
+    support::success(&repair());
+    let repeated = run(false);
+    support::success(&repeated);
+    assert_eq!(
+        support::machine_report(&repeated)["tasks"][0]["attempt"],
+        report["tasks"][0]["attempt"]
     );
     assert_eq!(
         fs::read(fixture.root.path().join("calls.jsonl")).unwrap(),
         calls
     );
     fs::write(area.join("recipe/SPECS/ed/README"), "manual change\n").unwrap();
-    let stale = run();
+    let stale = run(false);
     support::success(&stale);
     let stale = support::machine_report(&stale);
     assert_eq!(stale["tasks"][0]["phase"].as_str(), Some("validated"));
@@ -1786,15 +1800,22 @@ fn task_noop_and_failure_stop_without_implicit_rebuilds() {
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
-        let source = if change {
-            source.replace(
-                "Summary:        A line-oriented text editor",
-                "Summary:        A line-oriented text editor.",
-            )
-        } else {
-            source
-        };
         let area = support::recipe_workspace(&root, "ed", "ed", &source);
+        if change {
+            support::success(
+                &fixture
+                    .command("default-context")
+                    .current_dir(&root)
+                    .args(["source", "fetch", "ed"])
+                    .output()
+                    .unwrap(),
+            );
+            fs::write(
+                area.join("recipe/SPECS/ed/ed.spec"),
+                source.replace("1.22.5", "1.22.6"),
+            )
+            .unwrap();
+        }
         let repo = root.join("openruyi");
         git(&repo, &["config", "user.name", "Fixture Author"]);
         git(&repo, &["config", "user.email", "fixture@example.org"]);

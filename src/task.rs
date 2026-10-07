@@ -29,7 +29,7 @@ pub(crate) struct Options {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Apply fixes, validate changed packages and resume pending builds.
+    /// Validate changed packages and resume pending builds.
     Run(RunOptions),
     /// Submit selected packages and reconcile their shared OBS projects.
     RemoteBuild(crate::remote_build::SubmitOptions),
@@ -48,16 +48,10 @@ enum Command {
 
 #[derive(Args)]
 struct RunOptions {
-    /// Include supported upgrades when discovering changes.
-    #[arg(long)]
-    upgrade: bool,
     /// Validation target. Defaults to the saved target, or local for a new task.
     #[arg(long, value_enum)]
     validation: Option<Validation>,
-    /// Start a new discovery round on the same WORK. Does not replace pending remote work.
-    #[arg(long, conflicts_with = "retry")]
-    refresh: bool,
-    /// Resume stopped work after inspection; do not repeat automatic repairs.
+    /// Resume stopped validation after inspecting and correcting the WORK.
     #[arg(long)]
     retry: bool,
     /// Observe remote results before the next scheduled poll.
@@ -79,7 +73,6 @@ enum Validation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum Phase {
-    Fix,
     Materials,
     Check,
     Build,
@@ -95,7 +88,6 @@ enum Phase {
 #[serde(deny_unknown_fields)]
 struct Task {
     work: String,
-    upgrade: bool,
     remote: bool,
     phase: Phase,
     running: bool,
@@ -112,9 +104,8 @@ impl Task {
     fn new(work: String, options: &RunOptions) -> Self {
         Self {
             work,
-            upgrade: options.upgrade,
             remote: options.validation == Some(Validation::Remote),
-            phase: Phase::Fix,
+            phase: Phase::Materials,
             running: false,
             attempt: 0,
             next_poll: 0,
@@ -156,26 +147,7 @@ fn claim(root: &Path, work: &str) -> io::Result<(PathBuf, FileLock)> {
 }
 
 pub(crate) fn run(options: &Options) -> io::Result<bool> {
-    let plans = options
-        .plan
-        .iter()
-        .map(|path| {
-            let mut plan: plan::Plan = baseline::load(path)?;
-            if let Some(template) = plan.pr.as_mut().and_then(|p| p.template.as_mut()) {
-                *template = std::fs::canonicalize(path)?
-                    .parent()
-                    .expect("plan parent")
-                    .join(&*template);
-            }
-            Ok(plan)
-        })
-        .collect::<io::Result<Vec<_>>>()?;
-    plan::validate_works(
-        plans
-            .iter()
-            .flat_map(|p| p.packages.iter().map(|t| t.work.as_str())),
-    )
-    .map_err(io::Error::other)?;
+    let plans = plan::load(&options.plan)?;
     if plans.iter().all(|plan| plan.packages.is_empty()) {
         #[derive(Serialize)]
         struct EmptySelection {
@@ -481,8 +453,7 @@ fn prepare(
     let remote = options
         .validation
         .map_or(task.remote, |v| v == Validation::Remote);
-    let discovery = options.refresh || options.upgrade && !task.upgrade;
-    if task.phase == Phase::Waiting && (discovery || remote != task.remote) {
+    if task.phase == Phase::Waiting && remote != task.remote {
         task.error =
             Some("The OBS build is pending. Repeat this request after it finishes.".into());
         return Ok(());
@@ -493,19 +464,11 @@ fn prepare(
     };
     let key_changed = task.candidate.is_some()
         && task.validation_key != validation_key(workspace, &task.work, remote, settings)?;
-    if discovery
-        || changed
+    if changed
         || key_changed
         || options.retry && matches!(task.phase, Phase::Failed | Phase::Paused)
     {
-        task.phase = if discovery {
-            Phase::Fix
-        } else {
-            Phase::Materials
-        };
-        if discovery {
-            task.upgrade = options.upgrade;
-        }
+        task.phase = Phase::Materials;
         task.remote = remote;
         task.polls = 0;
         task.query_errors = 0;
@@ -535,7 +498,7 @@ fn advance(
 ) -> io::Result<()> {
     while matches!(
         task.phase,
-        Phase::Fix | Phase::Materials | Phase::Check | Phase::Build | Phase::Submit
+        Phase::Materials | Phase::Check | Phase::Build | Phase::Submit
     ) {
         let phase = task.phase;
         if matches!(options.format, ReportFormat::Human) {
@@ -566,8 +529,7 @@ fn advance(
             baseline::save(&root.join("task.toml"), task)?;
             continue;
         }
-        let mut args = match phase {
-            Phase::Fix => vec!["check".into(), task.work.clone(), "--auto-fix".into()],
+        let args = match phase {
             Phase::Materials => vec!["source".into(), "fetch".into(), task.work.clone()],
             Phase::Build => vec![
                 "build".into(),
@@ -598,9 +560,6 @@ fn advance(
             }
             _ => unreachable!("only executable phases reach command dispatch"),
         };
-        if phase == Phase::Fix && task.upgrade {
-            args.push("--upgrade".into());
-        }
         let build_key = if phase == Phase::Build {
             Some(validation_key(workspace, &task.work, false, settings)?)
         } else {
@@ -638,7 +597,6 @@ fn advance(
         }
         task.candidate = Some(after);
         task.phase = match phase {
-            Phase::Fix => Phase::Materials,
             Phase::Materials => Phase::Check,
             Phase::Build => {
                 let area = workspace.existing_development(&task.work)?;

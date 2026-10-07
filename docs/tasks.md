@@ -19,7 +19,14 @@ work = "inih"
 ruyipack task --plan packages.toml run
 ```
 
-The `task` command owns plan inputs. Single-package commands still take WORK.
+Use `check --plan packages.toml` to check a batch without running the maintenance chain.
+Add `--auto-fix` to apply supported repairs, or `--auto-fix --upgrade` to include
+supported upgrades. Failed WORKs do not stop independent WORKs. The TOML report
+contains each result; any failure makes the batch fail. Duplicate WORKs are
+rejected before changes. An empty plan succeeds without creating WORKs.
+
+Single-package checks still take WORK. Task retains the existing delivery and
+remote-operation batch entries:
 
 ```sh
 ruyipack task --plan packages.toml remote-build --fresh
@@ -40,8 +47,10 @@ Duplicate WORKs are rejected before execution.
 An empty package selection succeeds without reading credentials, contacting services
 or creating WORKs. It does not create commits or PRs.
 
-Each new task applies supported fixes, fetches materials, checks the candidate and
-builds changed packages. Add `--upgrade` to request supported upgrades.
+Each new task fetches materials, checks existing edits and builds changed packages.
+Apply repairs with `check --plan packages.toml --auto-fix` first.
+Add `--upgrade` to that check for supported upgrades. Task validates the resulting
+WORK files; it does not select or apply repairs.
 Candidate checks do not require a clean Git repository. Commit checks still apply
 when you commit.
 
@@ -50,15 +59,15 @@ commit, push, open a PR, delete a WORK or repair a failed build.
 
 ## Resume or start another round
 
-Repeat `task --plan packages.toml run` to resume. Unchanged tasks do not repeat fixes or builds.
-Changed inputs invalidate previous validation. Use `--refresh` to check for new
-fixes or upgrades. Use `--retry` after you inspect and correct a stopped task.
-Retry starts with material preparation, not auto-fix.
+Repeat `task --plan packages.toml run` to resume. Unchanged tasks do not repeat builds.
+Changed inputs invalidate previous validation. After you repair a failed WORK,
+use `run --retry` to resume from material preparation. A stopped task does not
+resume merely because another command changed its files.
 
 Use `--validation local` or `--validation remote` to select the build target.
 An existing task retains its target if you omit this option. Both targets use the
 same WORK. Wait for a pending OBS build before changing its target or requesting
-another discovery round.
+a new validation round.
 
 ## Observe OBS builds
 
