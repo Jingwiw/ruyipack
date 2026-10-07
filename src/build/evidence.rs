@@ -35,6 +35,7 @@ struct Receipt {
     stage: Stage,
     success: bool,
     inputs: Vec<InputFile>,
+    configuration_files: Vec<InputFile>,
     execution: serde_json::Value,
 }
 
@@ -124,6 +125,18 @@ fn inspect(
         }
     }
     if receipt.success && result.differences.is_empty() {
+        if receipt.configuration_files.is_empty() {
+            return Err(invalid("build configuration identity is missing"));
+        }
+        for input in &receipt.configuration_files {
+            let path = directory.join(&input.path);
+            if crate::file_digest::read(&path).map_err(io::Error::other)? != input.content
+                || crate::file_digest::executable(&fs_err::symlink_metadata(&path)?)
+                    != input.executable
+            {
+                return Err(invalid("build configuration changed"));
+            }
+        }
         verify_environment(directory, &receipt.execution, &engine, result)?;
         super::mock::Mock(receipt.stage).verify_result(&directory.join("engine"))?;
     }
@@ -214,7 +227,7 @@ mod tests {
         let content = crate::file_digest::read(&input).unwrap();
         let mut expected = Inputs::from([("SPECS/ed.spec".into(), (content.sha256.clone(), None))]);
         assert_eq!(compare(root.path(), "ed", &expected).status, "not-run");
-        let mut receipt = serde_json::json!({"format_version":1,"package":"ed","engine":"mock","stage":"build","success":true,"execution":{"success":true,"details":{"image_id":"sha256:fixture"}},"inputs":[{"path":"SPECS/ed.spec","executable":false,"size":content.size,"sha256":content.sha256}]});
+        let mut receipt = serde_json::json!({"format_version":1,"package":"ed","engine":"mock","stage":"build","success":true,"execution":{"success":true,"details":{"image_id":"sha256:fixture"}},"configuration_files":[],"inputs":[{"path":"SPECS/ed.spec","executable":false,"size":content.size,"sha256":content.sha256}]});
         let path = root.path().join("receipt.json");
         let save = |value: &serde_json::Value| {
             fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
@@ -239,6 +252,10 @@ mod tests {
             fs::write(engine.join("receipt.json"), value.to_string()).unwrap();
         };
         save_native(&native);
+        receipt["configuration_files"] = serde_json::json!([
+            {"path":"engine/mock.cfg","executable":false,"size":7,"sha256":digest}
+        ]);
+        save(&receipt);
         assert_eq!(compare(root.path(), "ed", &expected).status, "passed");
         for field in [
             "installed_packages",

@@ -517,7 +517,7 @@ fn required_build_checks_stage_result_and_declared_inputs() {
     ] {
         fs::write(&spec, if changed { &original } else { &candidate }).unwrap();
         let receipt = serde_json::json!({"format_version":1,"package":"ed",
-            "engine":"mock","stage":stage,"success":passed,"execution":{"success":passed,"details":{"image_id":"sha256:fixture"}},"inputs":inputs});
+            "engine":"mock","stage":stage,"success":passed,"execution":{"success":passed,"details":{"image_id":"sha256:fixture"}},"configuration_files":[{"path":"engine/mock.cfg","executable":false,"size":7,"sha256":digest}],"inputs":inputs});
         fs::write(
             build.join("receipt.json"),
             serde_json::to_vec(&receipt).unwrap(),
