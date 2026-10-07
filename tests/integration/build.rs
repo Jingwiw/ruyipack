@@ -53,7 +53,16 @@ elif args[0] == 'compose':
     if operation == 'ps': print('abcdef0123456789')
     if operation == 'down' and mode in ('cleanup-failure', 'engine-cleanup-failure', 'bad-hash-cleanup'): sys.exit(19)
 elif args[0] == 'info': print(json.dumps({'ID': 'fixture-daemon', 'OSType': 'windows' if mode == 'windows-daemon' else 'linux', 'ServerVersion': 'fixture', 'Architecture': 'x86_64', 'KernelVersion': 'fixture-kernel'}))
-elif args[:2] == ['image', 'inspect']: print(json.dumps([{'Architecture': 'amd64'}]))
+elif args[:2] == ['image', 'ls']:
+    if mode == 'owned-images': print('\n'.join('sha256:' + x * 64 for x in '123'))
+elif args[:2] == ['image', 'rm']:
+    assert mode == 'owned-images' and args[2] == 'sha256:' + '1' * 64, args
+elif args[:2] == ['image', 'inspect']:
+    if mode == 'owned-images' and args[2] != 'sha256:fixture-image':
+        project = (state / 'project').read_text()
+        tags = ['ruyipack/mock-openruyi:local'] if args[2].endswith('2') else [project + '-worker:latest']
+        print(json.dumps([{'Config': {'Labels': {'com.docker.compose.project': project}}, 'RepoTags': tags}]))
+    else: print(json.dumps([{'Architecture': 'amd64'}]))
 elif args[0] == 'inspect': print(json.dumps([{'Image': 'sha256:fixture-image', 'Config': {'Env': [], 'Labels': {'com.docker.compose.project': 'other' if mode == 'wrong-label' else (state / 'project').read_text()}}, 'State': {'Running': mode == 'running-worker'}, 'HostConfig': {'Privileged': True}, 'Mounts': []}]))
 elif args[0] == 'cp':
     if args[1].startswith('abcdef0123456789:'):
@@ -93,7 +102,9 @@ elif args[0] == 'exec':
     if mode in ('engine-failure', 'engine-cleanup-failure'): sys.exit(23)
 elif args[0] in ('container', 'network', 'volume'):
     kind, operation = args[:2]
-    if operation == 'ls': print({'container':'abcdef0123456789','network':'fedcba9876543210','volume':'owned-volume\nshared-volume'}[kind])
+    if operation == 'ls':
+        if mode == 'owned-images' and any(x.startswith('ancestor=') and x.endswith('3') for x in args): print('1111111111111111')
+        else: print({'container':'abcdef0123456789','network':'fedcba9876543210','volume':'owned-volume\nshared-volume'}[kind])
     elif operation == 'inspect':
         labels = {'com.docker.compose.project': 'different-project' if mode == 'wrong-label' else (state / 'project').read_text()}
         if kind == 'volume' and args[2] == 'owned-volume': labels['com.docker.compose.volume'] = 'data'
@@ -1831,4 +1842,48 @@ fn task_noop_and_failure_stop_without_implicit_rebuilds() {
             source
         );
     }
+}
+
+#[test]
+fn delete_removes_exclusive_images_but_keeps_shared_tags_and_other_containers() {
+    let fixture = Fixture::new();
+    support::success(&fixture.run("default-retain", 30));
+    let workspace = tempfile::tempdir().unwrap();
+    let area = support::recipe_workspace(
+        workspace.path(),
+        "review",
+        "ed",
+        include_str!("../fixtures/ed.spec"),
+    );
+    fs::rename(&fixture.output, area.join("build")).unwrap();
+    let output = fixture
+        .command("owned-images")
+        .current_dir(workspace.path())
+        .args([
+            "delete",
+            "review",
+            "--only=build",
+            "--force",
+            "--format=toml",
+        ])
+        .output()
+        .unwrap();
+    support::success(&output);
+    let report = support::machine_report(&output);
+    let cleanup = &report["cleanup"][0];
+    assert_eq!(
+        cleanup["removed"]["image"][0].as_str(),
+        Some(format!("sha256:{}", "1".repeat(64)).as_str())
+    );
+    assert_eq!(cleanup["retained_images"].as_array().unwrap().len(), 2);
+    assert!(area.exists());
+    assert!(!area.join("build").exists());
+    let calls = fs::read_to_string(fixture.root.path().join("calls.jsonl")).unwrap();
+    let image_removals: Vec<Vec<String>> = calls
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|args: &Vec<String>| args.windows(2).any(|pair| pair == ["image", "rm"]))
+        .collect();
+    assert_eq!(image_removals.len(), 1);
+    assert!(!image_removals[0].iter().any(|arg| arg == "--force"));
 }

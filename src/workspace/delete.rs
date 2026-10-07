@@ -17,12 +17,21 @@ use std::{
 
 #[derive(Args)]
 #[command(
-    after_help = "Removes recipe files, authoring TOML, saved edits, downloads and owned build results.\nPreview with --dry-run. Ownership conflicts block deletion, even with --force. Recipe files are listed for explicit deletion. Git repositories and commits are not removed.\nTo keep package changes and only remove build results, use clean WORK."
+    after_help = "Removes WORK files and its owned OBS package and build resources. Use --only obs or --only build to keep WORK.\nPreview with --dry-run. Ownership conflicts block deletion, even with --force. Recipe files are listed for explicit deletion. Git repositories and commits are not removed.\nTo keep package changes and only remove build results, use clean WORK."
 )]
 pub(crate) struct Options {
     /// Existing development area to remove, including manifest, saved edits and downloaded sources.
     work: String,
-    /// Show the local deletion plan without contacting Docker or removing anything.
+    #[command(flatten)]
+    arguments: Arguments,
+}
+
+#[derive(Args)]
+pub(crate) struct Arguments {
+    /// Remove only these external resources; keep the WORK and its recipe.
+    #[arg(long, value_enum)]
+    only: Option<Scope>,
+    /// Show the local deletion plan without contacting OBS or Docker.
     #[arg(long, conflicts_with = "force")]
     dry_run: bool,
     /// Skip confirmation; ownership checks still block deletion.
@@ -31,35 +40,50 @@ pub(crate) struct Options {
     /// Override Docker's connection; every recorded daemon must still match.
     #[arg(long)]
     context: Option<String>,
-    /// Total build-resource cleanup deadline; Git operations retain their own bounded execution.
+    /// Build-resource cleanup deadline; OBS requests use their own network deadline.
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
     timeout: u64,
     #[arg(long, value_enum, default_value_t = ReportFormat::Human)]
-    format: ReportFormat,
+    pub(crate) format: ReportFormat,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum Scope {
+    Obs,
+    Build,
 }
 
 #[derive(Serialize)]
-struct Report {
+pub(crate) struct Report {
     format_version: u32,
     operation: &'static str,
     work: String,
     preview: bool,
-    success: bool,
+    only: Option<Scope>,
+    obs: crate::remote_build::cleanup::Report,
+    pub(crate) success: bool,
     directory: Option<PathBuf>,
     authoring_files: Vec<PathBuf>,
     builds: Vec<PathBuf>,
     completed: Vec<PathBuf>,
     cleanup: Vec<crate::build::CleanReport>,
-    cancelled: bool,
+    pub(crate) cancelled: bool,
     error: Option<String>,
 }
 
 pub(crate) fn run(options: &Options) -> io::Result<bool> {
+    execute(&options.work, &options.arguments).print(options.arguments.format)
+}
+
+pub(crate) fn execute(work: &str, options: &Arguments) -> Report {
     let mut report = Report {
         format_version: 1,
         operation: "delete",
-        work: options.work.clone(),
+        work: work.to_owned(),
         preview: options.dry_run,
+        only: options.only,
+        obs: crate::remote_build::cleanup::Report::default(),
         success: false,
         directory: None,
         authoring_files: Vec::new(),
@@ -76,48 +100,71 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
             report.error = Some(error.to_string());
         }
     }
-    match options.format {
-        ReportFormat::Toml => crate::report::write(&mut io::stdout().lock(), &report)?,
-        ReportFormat::Human => {
-            let mut out = crate::output_cli::stderr();
-            if let Some(error) = &report.error {
-                out.message(
-                    HumanLevel::Error,
-                    Some(Path::new(&options.work)),
-                    format_args!("{error}"),
-                )?;
+    report
+}
+
+impl Report {
+    pub(crate) fn print(&self, format: ReportFormat) -> io::Result<bool> {
+        let report = self;
+        match format {
+            ReportFormat::Toml => crate::report::write(&mut io::stdout().lock(), &report)?,
+            ReportFormat::Human => {
+                let mut out = crate::output_cli::stderr();
+                if let Some(target) = &report.obs.target {
+                    out.message(
+                        HumanLevel::Info,
+                        Some(Path::new(&report.work)),
+                        format_args!("OBS: {target}; removed={}", report.obs.package_removed),
+                    )?;
+                }
+                for reason in &report.obs.retained {
+                    out.message(
+                        HumanLevel::Info,
+                        Some(Path::new(&report.work)),
+                        format_args!("retained: {reason}"),
+                    )?;
+                }
                 for cleanup in &report.cleanup {
                     crate::clean::print_removed(cleanup)?;
                 }
-                for path in &report.completed {
+                if let Some(error) = &report.error {
+                    out.message(
+                        HumanLevel::Error,
+                        Some(Path::new(&report.work)),
+                        format_args!("{error}"),
+                    )?;
+                    for path in &report.completed {
+                        out.message(
+                            HumanLevel::Info,
+                            None,
+                            format_args!("removed: {}", human_path(path).display()),
+                        )?;
+                    }
+                } else {
                     out.message(
                         HumanLevel::Info,
-                        None,
-                        format_args!("removed: {}", human_path(path).display()),
+                        Some(Path::new(&report.work)),
+                        format_args!(
+                            "{}",
+                            if report.preview {
+                                "deletion preview; nothing removed"
+                            } else if report.only.is_some() {
+                                "cleanup finished; WORK retained"
+                            } else {
+                                "development area deleted"
+                            }
+                        ),
                     )?;
                 }
-            } else {
-                out.message(
-                    HumanLevel::Info,
-                    Some(Path::new(&options.work)),
-                    format_args!(
-                        "{}",
-                        if options.dry_run {
-                            "deletion preview; nothing removed"
-                        } else {
-                            "development area deleted"
-                        }
-                    ),
-                )?;
             }
         }
+        Ok(report.success)
     }
-    Ok(report.success)
 }
 
-fn perform(options: &Options, report: &mut Report) -> io::Result<()> {
+fn perform(options: &Arguments, report: &mut Report) -> io::Result<()> {
     let workspace = super::discover()?;
-    let area = workspace.existing_development(&options.work)?;
+    let area = workspace.existing_development(&report.work)?;
     let root = area.directory();
     if fs::canonicalize(std::env::current_dir()?)?.starts_with(root)
         || std::env::var_os("HOME").is_some_and(|home| Path::new(&home).starts_with(root))
@@ -131,8 +178,8 @@ fn perform(options: &Options, report: &mut Report) -> io::Result<()> {
         let entry = entry?;
         let path = entry.path();
         match entry.file_name().to_str() {
-            Some("build") => report.builds.push(path),
-            Some("build-history") => {
+            Some("build") if options.only != Some(Scope::Obs) => report.builds.push(path),
+            Some("build-history") if options.only != Some(Scope::Obs) => {
                 if !entry.file_type()?.is_dir() {
                     return Err(invalid(
                         "build-history must not be a symlink or non-directory",
@@ -142,7 +189,8 @@ fn perform(options: &Options, report: &mut Report) -> io::Result<()> {
                     report.builds.push(entry?.path());
                 }
             }
-            _ => inventory(&path, &mut report.authoring_files)?,
+            _ if options.only.is_none() => inventory(&path, &mut report.authoring_files)?,
+            _ => (),
         }
     }
     report.authoring_files.sort();
@@ -156,23 +204,31 @@ fn perform(options: &Options, report: &mut Report) -> io::Result<()> {
     if matches!(options.format, ReportFormat::Human) {
         eprintln!(
             "Delete WORK {}: {}",
-            options.work,
+            report.work,
             human_path(root).display()
         );
         for path in &report.authoring_files {
             eprintln!("  {}", human_path(path).display());
         }
         eprintln!(
-            "Recipe and the listed TOML and source files will be removed. Shared recipe repository and images are retained."
+            "Selected resources will be removed. Shared resources and the recipe repository are retained."
         );
     }
     if options.dry_run {
+        if options.only != Some(Scope::Build) {
+            crate::remote_build::cleanup::execute(&workspace, &area, true, &mut report.obs)
+                .map_err(io::Error::other)?;
+        }
         return Ok(());
     }
-    crate::output_cli::confirm_removal(options.force, "delete", "Delete this development area?")?;
+    crate::output_cli::confirm_removal(options.force, "delete", "Delete the selected resources?")?;
     // Recheck after confirmation and before each destructive phase. The WORK lock
     // protects cooperating commands; this is not a transaction against external writers.
     area.verify_binding()?;
+    if options.only != Some(Scope::Build) {
+        crate::remote_build::cleanup::execute(&workspace, &area, false, &mut report.obs)
+            .map_err(io::Error::other)?;
+    }
     let start = Instant::now();
     let timeout = Duration::from_secs(options.timeout);
     for path in &report.builds {
@@ -181,6 +237,7 @@ fn perform(options: &Options, report: &mut Report) -> io::Result<()> {
             options.context.as_deref(),
             timeout.saturating_sub(start.elapsed()),
             &mut |_| Ok(()),
+            true,
         );
         let error = result.error.clone();
         report.cleanup.push(result);
@@ -190,8 +247,10 @@ fn perform(options: &Options, report: &mut Report) -> io::Result<()> {
         report.completed.push(path.clone());
     }
     area.verify_binding()?;
-    fs::remove_dir_all(root)?;
-    report.completed.push(root.to_owned());
+    if options.only.is_none() {
+        fs::remove_dir_all(root)?;
+        report.completed.push(root.to_owned());
+    }
     Ok(())
 }
 

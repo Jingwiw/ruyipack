@@ -37,6 +37,20 @@ pub(super) fn save<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     file.persist(path).map_err(|e| e.to_string())?;
     Ok(())
 }
+/// Serialize writes from this workspace, including deletion of shared package bindings.
+pub(super) fn lock(root: &Path) -> Result<crate::file_lock::FileLock, String> {
+    let path = root.join("obs.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    crate::file_lock::FileLock::try_lock(file)
+        .map_err(|e| format!("another OBS operation owns this workspace: {e}"))
+}
+
 pub(super) fn load(root: &Path, interactive: bool) -> Result<(Global, Auth), String> {
     let path = root.join("obs.toml");
     if !path.exists() {

@@ -150,6 +150,81 @@ fn collect_resources(
     Ok(())
 }
 
+fn collect_images(
+    runner: &mut Runner<'_>,
+    context: Option<&str>,
+    start: Instant,
+    timeout: Duration,
+    project: &str,
+    report: &mut CleanReport,
+) -> io::Result<()> {
+    let filter = format!("label=com.docker.compose.project={project}");
+    let listed = docker(
+        runner,
+        context,
+        start,
+        timeout,
+        "list-images",
+        &["image", "ls", "--quiet", "--no-trunc", "--filter", &filter],
+    )?;
+    let mut images = std::collections::BTreeSet::new();
+    for id in listed.lines().map(str::trim).filter(|id| !id.is_empty()) {
+        let digest = id
+            .strip_prefix("sha256:")
+            .ok_or_else(|| invalid("invalid image digest"))?;
+        if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(invalid("invalid image digest"));
+        }
+        let info = docker(
+            runner,
+            context,
+            start,
+            timeout,
+            "inspect-image",
+            &["image", "inspect", id],
+        )?;
+        let info: Value = serde_json::from_str(&info).map_err(io::Error::other)?;
+        if info[0]["Config"]["Labels"]["com.docker.compose.project"].as_str() != Some(project) {
+            return Err(invalid("image ownership changed during cleanup"));
+        }
+        let tags = info[0]["RepoTags"].as_array();
+        let shared_tag = tags.is_none_or(|tags| {
+            tags.iter().any(|tag| {
+                tag.as_str()
+                    .is_none_or(|tag| !tag.starts_with(&format!("{project}-")))
+            })
+        });
+        let users = docker(
+            runner,
+            context,
+            start,
+            timeout,
+            "image-users",
+            &[
+                "container",
+                "ls",
+                "--all",
+                "--quiet",
+                "--no-trunc",
+                "--filter",
+                &format!("ancestor={id}"),
+            ],
+        )?;
+        let shared_container = users.lines().any(|user| {
+            !report.scope["container"]
+                .iter()
+                .any(|owned| owned == user.trim())
+        });
+        if shared_tag || shared_container {
+            report.retained_images.push(id.to_owned());
+        } else {
+            images.insert(id.to_owned());
+        }
+    }
+    report.scope.insert("image", images.into_iter().collect());
+    Ok(())
+}
+
 fn receipt_identity<'a>(
     receipt: &'a Value,
     context: Option<&'a str>,
@@ -191,6 +266,7 @@ fn perform(
     context: Option<&str>,
     timeout: Duration,
     report: &mut CleanReport,
+    images: bool,
 ) -> io::Result<()> {
     let root = target(path)?;
     let receipt_path = root.join("receipt.json");
@@ -249,6 +325,9 @@ fn perform(
             project,
             report,
         )?;
+        if images {
+            collect_images(&mut runner, context, start, timeout, project, report)?;
+        }
         authorize(report)?;
         for (&kind, names) in &report.scope {
             for name in names {
@@ -295,9 +374,10 @@ pub(crate) fn execute(
     context: Option<&str>,
     timeout: Duration,
     authorize: &mut dyn FnMut(&CleanReport) -> io::Result<()>,
+    images: bool,
 ) -> CleanReport {
     let mut report = new_report(path, context);
-    match perform(path, authorize, context, timeout, &mut report) {
+    match perform(path, authorize, context, timeout, &mut report, images) {
         Ok(()) => report.success = true,
         Err(error) => {
             report.cancelled = error.kind() == io::ErrorKind::Interrupted;
@@ -325,6 +405,7 @@ pub(crate) fn new_report(path: &Path, context: Option<&str>) -> CleanReport {
             .map(|kind| (kind, Vec::new()))
             .collect(),
         retained_volumes: Vec::new(),
+        retained_images: Vec::new(),
         commands: Vec::new(),
         error: None,
     }
@@ -349,6 +430,7 @@ pub(crate) struct CleanReport {
     pub(crate) scope: BTreeMap<&'static str, Vec<String>>,
     pub(crate) removed: BTreeMap<&'static str, Vec<String>>,
     retained_volumes: Vec<String>,
+    pub(crate) retained_images: Vec<String>,
     commands: Vec<super::super::CommandRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,

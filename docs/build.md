@@ -149,7 +149,8 @@ Failed attempts remain available for retry, and each failure is reported.
 For an explicit archived path, use `clean --build-dir PATH --force`.
 A historical receipt that relinquished its worker removes logs only, never the current worker.
 Cleanup uses recorded project labels, not executable commands from a receipt or changed Compose file.
-A Docker connection is required even when no container remains. Shared images are retained.
+A Docker connection is required even when no container remains. `clean` retains images.
+`delete` also removes exclusively owned images; shared tags or other containers keep an image.
 Use only trusted local receipts. Save TOML stdout elsewhere if you need a cleanup record.
 
 ## Return to the build directory

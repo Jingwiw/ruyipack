@@ -20,7 +20,7 @@ use std::{
 
 #[derive(Args)]
 pub(crate) struct Options {
-    /// Package plan. Repeat for OBS submission, status or commit.
+    /// Package plan. Repeat for OBS submission, status, commit or delete.
     #[arg(long, required = true, value_name = "PATH")]
     plan: Vec<PathBuf>,
     #[command(subcommand)]
@@ -40,6 +40,8 @@ enum Command {
     },
     /// Commit each selected WORK separately; retain partial results.
     Commit(workspace::commit::Arguments),
+    /// Delete selected WORKs and their owned resources; retain partial results.
+    Delete(workspace::delete::Arguments),
     /// Preview, publish or close a PR for the selected committed packages.
     Pr(crate::workspace::pr::Options),
 }
@@ -219,6 +221,45 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
                         operation: "commit",
                         success,
                         tasks,
+                    },
+                )?;
+            }
+            Ok(success)
+        }
+        Command::Delete(args) => {
+            let works: Vec<_> = plans
+                .into_iter()
+                .flat_map(|p| p.packages.into_iter().map(|t| t.work))
+                .collect();
+            let mut tasks = Vec::new();
+            for work in &works {
+                let result = workspace::delete::execute(work, args);
+                let cancelled = result.cancelled;
+                if matches!(args.format, ReportFormat::Human) {
+                    result.print(args.format)?;
+                }
+                tasks.push(result);
+                if cancelled {
+                    break;
+                }
+            }
+            let pending = &works[tasks.len()..];
+            let success = pending.is_empty() && tasks.iter().all(|r| r.success);
+            if matches!(args.format, ReportFormat::Toml) {
+                #[derive(Serialize)]
+                struct Deletions<'a> {
+                    operation: &'static str,
+                    success: bool,
+                    tasks: Vec<workspace::delete::Report>,
+                    pending: &'a [String],
+                }
+                crate::report::write(
+                    &mut io::stdout().lock(),
+                    &Deletions {
+                        operation: "delete",
+                        success,
+                        tasks,
+                        pending,
                     },
                 )?;
             }

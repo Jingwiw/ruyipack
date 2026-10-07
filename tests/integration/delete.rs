@@ -81,3 +81,49 @@ fn failed_build_preflight_preserves_all_work_and_manual_recipe_removal_is_safe()
     success(&run(root.path(), &["delete", "review", "--force"]));
     assert!(!area.exists());
 }
+
+#[test]
+fn selective_cleanup_keeps_recipe_and_plan_deletion_reports_each_result() {
+    let (root, area) = fixture();
+    let build = area.join("build");
+    fs::create_dir(&build).unwrap();
+    fs::write(
+        build.join("receipt.json"),
+        r#"{"format_version":1,"backend":"compose","resources_retained":false}"#,
+    )
+    .unwrap();
+    success(&run(
+        root.path(),
+        &[
+            "delete",
+            "review",
+            "--only=build",
+            "--force",
+            "--format=toml",
+        ],
+    ));
+    assert!(!build.exists());
+    assert!(area.join("ed.toml").exists());
+    fs::write(
+        root.path().join("plan.toml"),
+        "[[packages]]\nwork='review'\n[[packages]]\nwork='missing'\n",
+    )
+    .unwrap();
+    let output = run(
+        root.path(),
+        &[
+            "task",
+            "--plan=plan.toml",
+            "delete",
+            "--force",
+            "--format=toml",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stderr.is_empty());
+    let report = machine_report(&output);
+    assert_eq!(report["tasks"][0]["success"].as_bool(), Some(true));
+    assert_eq!(report["tasks"][1]["success"].as_bool(), Some(false));
+    assert!(!area.exists());
+    assert!(root.path().join("openruyi/SPECS/ed/ed.spec").exists());
+}

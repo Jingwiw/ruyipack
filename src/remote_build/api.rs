@@ -115,6 +115,19 @@ impl Client {
             .map_err(|e| format!("OBS upload {}: {e}", path.join("/")))?;
         Ok(())
     }
+    pub(super) fn delete(&self, path: &[&str]) -> Result<(), String> {
+        let url = self.url(path, &[])?;
+        match self
+            .agent
+            .delete(url.as_str())
+            .header("Authorization", &self.auth)
+            .call()
+        {
+            Ok(_) | Err(ureq::Error::StatusCode(404)) => Ok(()),
+            Err(error) => Err(format!("OBS DELETE {}: {error}", path.join("/"))),
+        }
+    }
+
     pub(super) fn post(
         &self,
         path: &[&str],

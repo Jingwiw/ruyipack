@@ -191,27 +191,33 @@ fn execute(
         report.error = Some(error.to_string());
         return report;
     }
-    crate::build::clean_result(path, context, timeout, &mut |report| {
-        if matches!(format, ReportFormat::Human) {
-            writeln!(
-                io::stderr().lock(),
-                "Clean results: {}",
-                crate::output_cli::human_path(path).display()
-            )?;
-            if let (Some(project), Some(daemon)) = (&report.project, &report.daemon_id) {
+    crate::build::clean_result(
+        path,
+        context,
+        timeout,
+        &mut |report| {
+            if matches!(format, ReportFormat::Human) {
                 writeln!(
                     io::stderr().lock(),
-                    "Docker project: {project}\nDocker daemon: {daemon}\nOwned resources: {:?}\nImages and volumes without Compose ownership labels are retained.",
-                    report.scope
+                    "Clean results: {}",
+                    crate::output_cli::human_path(path).display()
                 )?;
+                if let (Some(project), Some(daemon)) = (&report.project, &report.daemon_id) {
+                    writeln!(
+                        io::stderr().lock(),
+                        "Docker project: {project}\nDocker daemon: {daemon}\nOwned resources: {:?}\nImages and volumes without Compose ownership labels are retained.",
+                        report.scope
+                    )?;
+                }
             }
-        }
-        crate::output_cli::confirm_removal(
-            force,
-            "clean",
-            "Delete these resources and the result directory?",
-        )
-    })
+            crate::output_cli::confirm_removal(
+                force,
+                "clean",
+                "Delete these resources and the result directory?",
+            )
+        },
+        false,
+    )
 }
 
 pub(crate) fn print_removed(report: &CleanReport) -> io::Result<()> {
@@ -224,6 +230,13 @@ pub(crate) fn print_removed(report: &CleanReport) -> io::Result<()> {
                 format_args!("removed {kind}: {name}"),
             )?;
         }
+    }
+    for image in &report.retained_images {
+        out.message(
+            crate::output_cli::HumanLevel::Info,
+            None,
+            format_args!("retained shared image: {image}"),
+        )?;
     }
     Ok(())
 }

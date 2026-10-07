@@ -3,6 +3,7 @@
 
 //! Submit immutable local package inputs to an owned OBS home project.
 mod api;
+pub(crate) mod cleanup;
 mod config;
 mod delivery;
 pub(crate) mod status;
@@ -102,6 +103,7 @@ pub(crate) fn submit(
     let interactive = matches!(options.format, ReportFormat::Human)
         && io::stdin().is_terminal()
         && io::stderr().is_terminal();
+    let _lock = config::lock(&workspace.configuration())?;
     let (global, auth) = config::load(&workspace.configuration(), interactive)?;
     let client = api::Client::new(&global.api, &auth.user, &auth.password)?;
     // Authentication is checked before any remote mutation.

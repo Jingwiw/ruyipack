@@ -90,3 +90,15 @@ A saved selection is a historical result, not current approval.
 Commit and PR commands still check their own inputs and ownership. This task
 chain does not cover all upstream Action checks or guarantee reproducible OBS
 dependencies. Remote success is not a local build receipt.
+
+## Delete a plan's WORKs
+
+```sh
+ruyipack task --plan packages.toml delete --dry-run --format toml
+ruyipack task --plan packages.toml delete --force --format toml
+```
+
+The plan selects WORKs; it does not change deletion ownership checks. Use
+`--only obs` or `--only build` to keep WORK files. Each WORK has a result.
+A failed deletion does not stop independent WORKs. Cancellation stops the batch
+and reports pending WORKs. OBS projects, shared images and the plan file remain.
