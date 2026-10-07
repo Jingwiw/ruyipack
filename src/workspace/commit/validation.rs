@@ -99,20 +99,38 @@ fn inputs(
         }
     }
 
-    let literal = super::field(&parsed, "name");
+    package_inputs(
+        area,
+        &pending.after,
+        &spec,
+        &identity.sha256,
+        &parsed,
+        warning,
+    )
+}
+
+fn package_inputs(
+    area: &Development,
+    files: &baseline::Files,
+    spec: &str,
+    hash: &str,
+    parsed: &crate::spec::ParsedSpec<'_>,
+    warning: &mut Option<NameWarning>,
+) -> Result<Inputs, String> {
+    let literal = super::field(parsed, "name");
     if literal.as_deref() != Some(area.package()) {
         *warning = Some(NameWarning {
             directory: area.package().to_owned(),
             literal,
         });
     }
-    if !crate::check::analyze(&parsed, crate::check::Policy::Submit, &[]).is_success() {
-        return Err("SPEC failed submit checks; run check WORK --policy submit. Repository files were not changed by this attempt".into());
+    if !crate::check::analyze(parsed, crate::check::Policy::Submit, &[]).is_success() {
+        return Err("SPEC failed submit checks; run check WORK --policy submit".into());
     }
-    let mut inputs = Inputs::from([(format!("SPECS/{spec}"), (identity.sha256.clone(), None))]);
-    for material in crate::check::materials::requirements(&parsed)? {
+    let mut inputs = Inputs::from([(format!("SPECS/{spec}"), (hash.to_owned(), None))]);
+    for material in crate::check::materials::requirements(parsed)? {
         baseline::relative(&material.name).map_err(|e| e.to_string())?;
-        let file = pending.after.get(&material.name);
+        let file = files.get(&material.name);
         if file.is_none() && !material.remote {
             return Err(format!(
                 "{}: {} is missing from the delivery; include the material or change the SPEC",
@@ -149,4 +167,43 @@ fn inputs(
         }
     }
     Ok(inputs)
+}
+
+/// Inspect the current package and retained build without preparing a Git commit.
+pub(crate) fn work(
+    workspace: &crate::workspace::Workspace,
+    area: &Development,
+) -> Result<(bool, Evidence), String> {
+    area.verify_binding().map_err(|e| e.to_string())?;
+    let mut files = baseline::read(area.package_directory()).map_err(|e| e.to_string())?;
+    let mut base: baseline::Baseline =
+        baseline::load(&area.directory().join("baseline.toml")).map_err(|e| e.to_string())?;
+    let exclusions =
+        super::super::commit_scope::Exclusions::load(workspace).map_err(|e| e.to_string())?;
+    exclusions.filter(&mut files);
+    exclusions.filter(&mut base.files);
+    let path = area.spec().map_err(|e| e.to_string())?;
+    let spec = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("SPEC filename is not UTF-8")?;
+    let identity = files
+        .get(spec)
+        .ok_or("package does not contain the bound SPEC")?;
+    let text = crate::utf8_file::read(&path).map_err(|e| e.to_string())?;
+    if crate::utf8_file::sha256(&text) != identity.sha256 {
+        return Err("SPEC changed during validation".into());
+    }
+    let inputs = package_inputs(
+        area,
+        &files,
+        spec,
+        &identity.sha256,
+        &crate::spec::ParsedSpec::parse(&text),
+        &mut None,
+    )?;
+    Ok((
+        base.allow_create || base.files != files,
+        evidence::compare(&area.directory().join("build"), area.package(), &inputs),
+    ))
 }

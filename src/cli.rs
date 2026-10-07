@@ -44,8 +44,8 @@ pub(crate) enum Command {
     Build(crate::build::Options),
     /// Submit local package materials to an OBS home project.
     RemoteBuild(crate::remote_build::Options),
-    /// Advance a maintenance plan; retain failed work and poll pending builds.
-    Maintain(crate::maintain::Options),
+    /// Advance package tasks and collect validation results.
+    Task(crate::task::Options),
     /// Enter the retained build environment.
     Shell(crate::build::shell::Options),
     /// Download sources or verify their checksums.

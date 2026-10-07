@@ -5,7 +5,7 @@
 mod api;
 mod config;
 mod delivery;
-mod status;
+pub(crate) mod status;
 use crate::output_cli::ReportFormat;
 use crate::plan::Task;
 use clap::Args;

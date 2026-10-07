@@ -4,7 +4,7 @@
 //! Deliver a package delta into a clean repository's current branch.
 
 mod publication;
-mod validation;
+pub(crate) mod validation;
 
 use super::{
     baseline::{self, Files},

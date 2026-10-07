@@ -25,35 +25,7 @@ pub(super) fn run(
     root: &Path,
     attempt: u64,
     timeout: u64,
-) -> io::Result<toml::Value> {
-    let (success, report) = invoke(executable, args, root, attempt, timeout)?;
-    if !success {
-        return Err(io::Error::other(format!(
-            "{} failed; see {}/{attempt}.stderr.log and {attempt}.stdout.toml",
-            args[0],
-            root.display()
-        )));
-    }
-    Ok(report)
-}
-
-pub(super) fn observe(
-    executable: &Path,
-    args: &[String],
-    root: &Path,
-    attempt: u64,
-    timeout: u64,
-) -> io::Result<toml::Value> {
-    invoke(executable, args, root, attempt, timeout).map(|(_, report)| report)
-}
-
-fn invoke(
-    executable: &Path,
-    args: &[String],
-    root: &Path,
-    attempt: u64,
-    timeout: u64,
-) -> io::Result<(bool, toml::Value)> {
+) -> io::Result<()> {
     let stdout = root.join(format!("{attempt}.stdout.toml"));
     let stderr = root.join(format!("{attempt}.stderr.log"));
     let mut command = Command::new(executable);
@@ -87,6 +59,13 @@ fn invoke(
     let status = outcome
         .status
         .ok_or_else(|| io::Error::other("command has no exit status"))?;
-    let report = crate::workspace::baseline::load(&stdout)?;
-    Ok((status.success(), report))
+    if !status.success() {
+        return Err(io::Error::other(format!(
+            "{} failed; see {} and {}",
+            args[0],
+            stdout.display(),
+            stderr.display()
+        )));
+    }
+    Ok(())
 }

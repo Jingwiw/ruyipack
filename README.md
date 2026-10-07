@@ -73,7 +73,7 @@ Fill the unknown package facts in TOML before running `gen`.
 Generation downloads Sources with missing digests unless you select `--offline`.
 `gen --diff` leaves the recipe unchanged. `gen --apply` checks and writes the SPEC.
 
-See [maintenance plans](docs/maintenance.md) to apply fixes, validate packages and collect a successful subset.
+See [task plans](docs/tasks.md) to apply fixes, validate packages and collect a successful subset.
 
 ## Choose the operation
 

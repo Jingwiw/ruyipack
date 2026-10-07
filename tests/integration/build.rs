@@ -1644,7 +1644,7 @@ fn imported_local_recipe_builds_rebuilds_and_enters_the_same_retained_environmen
 }
 
 #[test]
-fn maintenance_repairs_validates_and_reuses_a_completed_local_task() {
+fn task_repairs_validates_and_reuses_a_completed_local_task() {
     let fixture = Fixture::new();
     let root = fixture.root.path().join("maintenance");
     fs::create_dir(&root).unwrap();
@@ -1668,14 +1668,30 @@ fn maintenance_repairs_validates_and_reuses_a_completed_local_task() {
         fixture
             .command("default-context")
             .current_dir(&root)
-            .args(["maintain", "--plan", "plan.toml", "--format=toml"])
+            .args(["task", "--plan", "plan.toml", "--format=toml"])
             .output()
             .unwrap()
     };
+    fs::write(repo.join("uncommitted-note"), "unrelated work\n").unwrap();
+    support::success(
+        &fixture
+            .command("default-context")
+            .current_dir(&root)
+            .args(["source", "fetch", "ed"])
+            .output()
+            .unwrap(),
+    );
+    fs::rename(repo.join(".git"), repo.join("saved-git")).unwrap();
     let first = run();
-    support::success(&first);
+    assert!(
+        first.status.success(),
+        "{first:?}\n{}\n{}",
+        fs::read_to_string(root.join(".ruyiconfig/tasks/ed/1.stdout.toml")).unwrap_or_default(),
+        fs::read_to_string(root.join(".ruyiconfig/tasks/ed/1.stderr.log")).unwrap_or_default()
+    );
+
     let report = support::machine_report(&first);
-    assert_eq!(report["tasks"][0]["phase"].as_str(), Some("ready"));
+    assert_eq!(report["tasks"][0]["phase"].as_str(), Some("validated"));
     let changed = fs::read_to_string(area.join("recipe/SPECS/ed/ed.spec")).unwrap();
     assert!(
         !changed
@@ -1689,7 +1705,7 @@ fn maintenance_repairs_validates_and_reuses_a_completed_local_task() {
         source
     );
     let ready: toml::Value =
-        toml::from_str(&fs::read_to_string(report["ready_plan"].as_str().unwrap()).unwrap())
+        toml::from_str(&fs::read_to_string(report["validated_plan"].as_str().unwrap()).unwrap())
             .unwrap();
     assert_eq!(ready["packages"][0]["work"].as_str(), Some("ed"));
     let calls = fs::read(fixture.root.path().join("calls.jsonl")).unwrap();
@@ -1703,15 +1719,32 @@ fn maintenance_repairs_validates_and_reuses_a_completed_local_task() {
         fs::read(fixture.root.path().join("calls.jsonl")).unwrap(),
         calls
     );
+    let refreshed = fixture
+        .command("default-context")
+        .current_dir(&root)
+        .args(["task", "--plan", "plan.toml", "--refresh", "--format=toml"])
+        .output()
+        .unwrap();
+    support::success(&refreshed);
+    assert!(
+        support::machine_report(&refreshed)["tasks"][0]["attempt"]
+            .as_integer()
+            .unwrap()
+            > report["tasks"][0]["attempt"].as_integer().unwrap()
+    );
+    assert_eq!(
+        fs::read(fixture.root.path().join("calls.jsonl")).unwrap(),
+        calls
+    );
     fs::write(area.join("recipe/SPECS/ed/README"), "manual change\n").unwrap();
     let stale = run();
-    assert!(!stale.status.success());
+    support::success(&stale);
     let stale = support::machine_report(&stale);
-    assert_eq!(stale["tasks"][0]["phase"].as_str(), Some("failed"));
+    assert_eq!(stale["tasks"][0]["phase"].as_str(), Some("validated"));
     let ready: toml::Value =
-        toml::from_str(&fs::read_to_string(stale["ready_plan"].as_str().unwrap()).unwrap())
+        toml::from_str(&fs::read_to_string(stale["validated_plan"].as_str().unwrap()).unwrap())
             .unwrap();
-    assert!(ready["packages"].as_array().unwrap().is_empty());
+    assert_eq!(ready["packages"][0]["work"].as_str(), Some("ed"));
     assert_eq!(
         fs::read(fixture.root.path().join("calls.jsonl")).unwrap(),
         calls
@@ -1719,7 +1752,7 @@ fn maintenance_repairs_validates_and_reuses_a_completed_local_task() {
 }
 
 #[test]
-fn maintenance_noop_and_failure_stop_without_implicit_rebuilds() {
+fn task_noop_and_failure_stop_without_implicit_rebuilds() {
     for change in [false, true] {
         let fixture = Fixture::new();
         let root = fixture.root.path().join("maintenance");
@@ -1747,9 +1780,9 @@ fn maintenance_noop_and_failure_stop_without_implicit_rebuilds() {
             let mut command = fixture.command(mode);
             command
                 .current_dir(&root)
-                .args(["maintain", "--plan", "plan.toml", "--format=toml"]);
+                .args(["task", "--plan", "plan.toml", "--format=toml"]);
             if retry {
-                command.arg("--retry-failed");
+                command.arg("--retry");
             }
             command.output().unwrap()
         };
@@ -1773,7 +1806,7 @@ fn maintenance_noop_and_failure_stop_without_implicit_rebuilds() {
             support::success(&retried);
             assert_eq!(
                 support::machine_report(&retried)["tasks"][0]["phase"].as_str(),
-                Some("ready")
+                Some("validated")
             );
             assert_eq!(
                 fs::read(area.join("recipe/SPECS/ed/ed.spec")).unwrap(),

@@ -13,7 +13,7 @@ use std::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-enum State {
+pub(crate) enum State {
     Passed,
     Waiting,
     Failed,
@@ -26,38 +26,36 @@ struct Target {
     repository: String,
     architecture: String,
     code: String,
-    state: State,
+    pub(crate) state: State,
     revision: Option<String>,
     source_md5: Option<String>,
 }
 
 #[derive(Serialize)]
-struct Observation {
-    work: String,
+pub(crate) struct Observation {
+    pub(crate) work: String,
     project: Option<String>,
     package: Option<String>,
     revision: Option<String>,
-    state: State,
+    pub(crate) state: State,
     source_md5: Option<String>,
     service_md5: Option<String>,
     targets: Vec<Target>,
-    error: Option<String>,
+    pub(crate) error: Option<String>,
 }
 
 #[derive(Serialize)]
-struct Report {
+pub(crate) struct Report {
     format_version: u32,
     operation: &'static str,
     scope: &'static str,
     observed_at: i64,
     read_requests: usize,
     success: bool,
-    tasks: Vec<Observation>,
+    pub(crate) tasks: Vec<Observation>,
 }
 
 pub(super) fn run(workspace: &Workspace, options: &Options) -> Result<bool, String> {
-    let (global, auth) = config::load_existing(&workspace.configuration())?;
-    let client = api::Client::new(&global.api, &auth.user, &auth.password)?;
     let mut works = Vec::new();
     if let Some(work) = &options.work {
         works.push(work.clone());
@@ -66,6 +64,37 @@ pub(super) fn run(workspace: &Workspace, options: &Options) -> Result<bool, Stri
         let plan: config::Plan = config::read(path)?;
         works.extend(plan.packages.into_iter().map(|task| task.work));
     }
+    let report = collect(workspace, &works)?;
+    if matches!(options.format, ReportFormat::Human) {
+        for row in &report.tasks {
+            crate::output_cli::stderr()
+                .message(
+                    if row.state == State::Passed {
+                        crate::output_cli::HumanLevel::Info
+                    } else {
+                        crate::output_cli::HumanLevel::Warn
+                    },
+                    Some(std::path::Path::new(&row.work)),
+                    format_args!(
+                        "remote-build={:?}{}",
+                        row.state,
+                        row.error
+                            .as_ref()
+                            .map_or(String::new(), |e| format!("; {e}"))
+                    ),
+                )
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    if matches!(options.format, ReportFormat::Toml) {
+        crate::report::write(&mut io::stdout().lock(), &report).map_err(|e| e.to_string())?;
+    }
+    Ok(report.success)
+}
+
+pub(crate) fn collect(workspace: &Workspace, works: &[String]) -> Result<Report, String> {
+    let (global, auth) = config::load_existing(&workspace.configuration())?;
+    let client = api::Client::new(&global.api, &auth.user, &auth.password)?;
     let mut seen = BTreeSet::new();
     if works.is_empty() || works.iter().any(|work| !seen.insert(work.clone())) {
         return Err("status requires a nonempty plan without duplicate WORKs".into());
@@ -89,30 +118,11 @@ pub(super) fn run(workspace: &Workspace, options: &Options) -> Result<bool, Stri
             workspace,
             &client,
             &auth.user,
-            &work,
+            work,
             &mut projects,
             &mut row,
         ) {
             row.error = Some(error);
-        }
-        if matches!(options.format, ReportFormat::Human) {
-            crate::output_cli::stderr()
-                .message(
-                    if row.state == State::Passed {
-                        crate::output_cli::HumanLevel::Info
-                    } else {
-                        crate::output_cli::HumanLevel::Warn
-                    },
-                    Some(std::path::Path::new(&work)),
-                    format_args!(
-                        "remote-build={:?}{}",
-                        row.state,
-                        row.error
-                            .as_ref()
-                            .map_or(String::new(), |e| format!("; {e}"))
-                    ),
-                )
-                .map_err(|e| e.to_string())?;
         }
         tasks.push(row);
     }
@@ -125,10 +135,7 @@ pub(super) fn run(workspace: &Workspace, options: &Options) -> Result<bool, Stri
         success: tasks.iter().all(|row| row.state == State::Passed),
         tasks,
     };
-    if matches!(options.format, ReportFormat::Toml) {
-        crate::report::write(&mut io::stdout().lock(), &report).map_err(|e| e.to_string())?;
-    }
-    Ok(report.success)
+    Ok(report)
 }
 
 fn observe(
