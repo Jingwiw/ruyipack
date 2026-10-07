@@ -20,7 +20,7 @@ use std::{io, path::PathBuf, time::Duration};
 #[derive(clap::Args)]
 #[group(id = "directory-options", multiple = true)]
 pub(crate) struct Options {
-    /// Run scripts/remoteassetify.py for SPECs in this prepared directory.
+    /// Run the prepared directory’s pre-commit and `RemoteAsset` checks.
     #[arg(long, value_name="DIR", requires="check_output",
         conflicts_with_all=["work", "spec", "manifest", "pkgname", "auto_fix", "upgrade", "materials", "policy", "defines"])]
     pub(crate) directory: Option<PathBuf>,
@@ -75,7 +75,7 @@ fn complete(inputs: &crate::workspace::baseline::Files, checks: &[Check]) -> boo
     checks
         .iter()
         .map(|check| check.path.as_str())
-        .eq(specs(inputs))
+        .eq(std::iter::once(".pre-commit-config.yaml").chain(specs(inputs)))
 }
 
 #[derive(serde::Deserialize)]
@@ -89,8 +89,11 @@ pub(crate) fn run(options: &Options, format: ReportFormat) -> Result<bool, Repor
     let output = options.check_output.as_ref().expect("Clap output");
     fs::create_dir(output)?;
     let output = fs::canonicalize(output)?;
-    if output.starts_with(directory.join("SPECS")) {
-        return Err(io::Error::other("check output must be outside SPECS").into());
+    if ["SPECS", "scripts"]
+        .iter()
+        .any(|name| output.starts_with(directory.join(name)))
+    {
+        return Err(io::Error::other("check output must be outside SPECS and scripts").into());
     }
     let input = output.join("input");
     fs::create_dir(&input)?;
@@ -105,10 +108,15 @@ pub(crate) fn run(options: &Options, format: ReportFormat) -> Result<bool, Repor
     }
     let source = scripts.join("remoteassetify.py");
     crate::file_digest::read(&source).map_err(io::Error::other)?;
-    fs::create_dir(input.join("scripts"))?;
-    fs::copy(source, input.join("scripts/remoteassetify.py"))?;
+    crate::file_tree::copy(&scripts, &input.join("scripts"))?;
+    crate::file_digest::read(&directory.join(".pre-commit-config.yaml"))
+        .map_err(io::Error::other)?;
+    fs::copy(
+        directory.join(".pre-commit-config.yaml"),
+        input.join(".pre-commit-config.yaml"),
+    )?;
     let inputs = crate::workspace::baseline::read(&input)?;
-    let spec_count = specs(&inputs).count();
+    let selected = inputs.keys().any(|name| name.starts_with("SPECS/"));
     crate::report::write(
         &mut fs::File::create(input.join("selection.toml"))?,
         &inputs,
@@ -143,7 +151,7 @@ pub(crate) fn run(options: &Options, format: ReportFormat) -> Result<bool, Repor
     };
     backend.validate()?;
     let invocation = vec!["python3".into(), "/input/run.py".into()];
-    let execution = if spec_count == 0 {
+    let execution = if !selected {
         crate::environment::Execution {
             success: true,
             ..Default::default()
@@ -157,7 +165,7 @@ pub(crate) fn run(options: &Options, format: ReportFormat) -> Result<bool, Repor
             Duration::from_secs(options.timeout),
         )
     };
-    let result = if spec_count == 0 {
+    let result = if !selected {
         Ok(Results { checks: Vec::new() })
     } else {
         fs::read_to_string(output.join("engine/results.toml"))
@@ -167,7 +175,7 @@ pub(crate) fn run(options: &Options, format: ReportFormat) -> Result<bool, Repor
         Ok(results) => (results.checks, None),
         Err(error) => (Vec::new(), Some(error.to_string())),
     };
-    if result_error.is_none() && !complete(&inputs, &checks) {
+    if selected && result_error.is_none() && !complete(&inputs, &checks) {
         result_error = Some("check results do not match all selected candidate files".into());
     }
     if crate::file_digest::read(&config)
@@ -183,7 +191,7 @@ pub(crate) fn run(options: &Options, format: ReportFormat) -> Result<bool, Repor
     let receipt = Receipt {
         format_version: 1,
         operation: "directory-check",
-        coverage: "remoteasset: prepared directory SPECs; not full Action parity",
+        coverage: "pre-commit: prepared package files; remoteasset: prepared SPECs",
         directory,
         inputs,
         config,
@@ -212,9 +220,9 @@ pub(crate) fn run(options: &Options, format: ReportFormat) -> Result<bool, Repor
             },
             None,
             format_args!(
-                "RemoteAsset: {}/{} checks passed; receipt {}",
+                "Checks: {}/{} passed; receipt {}",
                 receipt.checks.iter().filter(|c| c.exit_code == 0).count(),
-                spec_count,
+                receipt.checks.len(),
                 crate::output_cli::human_path(&output.join("receipt.toml")).display()
             ),
         )?,

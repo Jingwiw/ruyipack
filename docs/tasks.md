@@ -121,7 +121,7 @@ A failed result does not imply that its earlier actions were rolled back.
 ## Require a directory check
 
 Prepare a directory with the selected WORK SPECs under `SPECS/PKG/` and the
-target repository's `scripts/remoteassetify.py`. Then run:
+target repository's `scripts/` and `.pre-commit-config.yaml`. Then run:
 
 ```sh
 ruyipack check --directory prepared --check-output checks
@@ -133,7 +133,13 @@ option is omitted. A failed or stale result excludes that WORK from the validate
 selection. Correct it, run the directory check into a new output directory, then
 pass the new receipt with `run --retry`.
 
-Each WORK needs its own successful SPEC result; another package's failed check
-does not reject it. Incomplete execution rejects the receipt. SPEC bytes, the
-source script, the Compose file and the check driver must still match.
-This receipt covers RemoteAsset checks, not all upstream Action checks.
+Pre-commit runs once for all prepared package files, in a disposable Git index.
+It does not need a publication repository. A pre-commit failure blocks the
+selection; hook edits stay in the disposable copy. Logs and a diff are retained.
+After it passes, each WORK needs its own successful RemoteAsset result.
+Another package's RemoteAsset failure does not reject it.
+
+Incomplete execution rejects the receipt. Package files, hook scripts, pre-commit
+configuration, the Compose file and the driver must still match. Hooks that depend
+on repository history can behave differently in the disposable index. This does
+not claim complete GitHub runner parity.

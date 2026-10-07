@@ -1798,6 +1798,7 @@ fn check_directory_admission(fixture: &Fixture, root: &std::path::Path, area: &s
     fs::write(&script, "fixture checker").unwrap();
     let config = root.join("check-compose.yaml");
     fs::write(&config, "fixture environment").unwrap();
+    fs::write(directory.join(".pre-commit-config.yaml"), "fixture policy").unwrap();
     let mut inputs = serde_json::Map::new();
     for entry in fs::read_dir(directory.join("SPECS/ed")).unwrap() {
         let path = entry.unwrap().path();
@@ -1814,6 +1815,10 @@ fn check_directory_admission(fixture: &Fixture, root: &std::path::Path, area: &s
         "SPECS/other/other.spec".into(),
         serde_json::json!({"sha256": "unrelated", "executable": false}),
     );
+    inputs.insert(
+        ".pre-commit-config.yaml".into(),
+        serde_json::json!({"sha256": digest(b"fixture policy"), "executable": false}),
+    );
     let receipt = serde_json::json!({
         "format_version": 1, "operation": "directory-check", "directory": directory,
         "inputs": inputs,
@@ -1821,6 +1826,7 @@ fn check_directory_admission(fixture: &Fixture, root: &std::path::Path, area: &s
         "driver_sha256": digest(include_bytes!("../../src/check/runner.py")),
         "execution": {"success": true}, "success": false,
         "checks": [
+            {"path": ".pre-commit-config.yaml", "exit_code": 0, "stdout": "pre.log", "stderr": "pre.err"},
             {"path": "SPECS/ed/ed.spec", "exit_code": 0, "stdout": "0.log", "stderr": "0.err"},
             {"path": "SPECS/other/other.spec", "exit_code": 1, "stdout": "1.log", "stderr": "1.err"}
         ]
@@ -1886,6 +1892,33 @@ fn check_directory_admission(fixture: &Fixture, root: &std::path::Path, area: &s
         );
         fs::write(changed, original).unwrap();
     }
+    let mut failed = receipt;
+    failed["checks"][0]["exit_code"] = serde_json::json!(1);
+    fs::write(&path, toml::to_string(&failed).unwrap()).unwrap();
+    let output = fixture
+        .command("default-context")
+        .current_dir(root)
+        .args([
+            "task",
+            "--plan",
+            "plan.toml",
+            "run",
+            "--retry",
+            "--format=toml",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        support::machine_report(&output)["tasks"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("pre-commit checks failed")
+    );
+    assert_eq!(
+        fs::read(fixture.root.path().join("calls.jsonl")).unwrap(),
+        calls
+    );
 }
 
 #[test]

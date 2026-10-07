@@ -47,6 +47,7 @@ pub(crate) fn verify(path: &Path, area: &crate::workspace::Development) -> io::R
         || !receipt.execution.success
         || receipt.result_error.is_some()
         || !receipt.inputs.contains_key("scripts/remoteassetify.py")
+        || !receipt.inputs.contains_key(".pre-commit-config.yaml")
         || receipt.driver_sha256 != crate::utf8_file::sha256(include_str!("../runner.py"))
         || !super::complete(&receipt.inputs, &receipt.checks)
     {
@@ -54,9 +55,19 @@ pub(crate) fn verify(path: &Path, area: &crate::workspace::Development) -> io::R
             "Directory check is incomplete or incompatible.",
         ));
     }
+    if receipt.checks[0].exit_code != 0 {
+        return Err(io::Error::other(
+            "Prepared-directory pre-commit checks failed.",
+        ));
+    }
     matches(
-        &receipt.directory.join("scripts/remoteassetify.py"),
-        &receipt.inputs["scripts/remoteassetify.py"].sha256,
+        &receipt.directory.join(".pre-commit-config.yaml"),
+        &receipt.inputs[".pre-commit-config.yaml"].sha256,
+    )?;
+    match_tree(
+        &receipt.directory.join("scripts"),
+        "scripts/",
+        &receipt.inputs,
     )?;
     matches(&receipt.config, &receipt.config_sha256)?;
     let spec = area.spec()?;
@@ -75,19 +86,28 @@ pub(crate) fn verify(path: &Path, area: &crate::workspace::Development) -> io::R
         )));
     }
     let prefix = format!("SPECS/{}/", area.package());
-    let expected: crate::workspace::baseline::Files = receipt
-        .inputs
+    match_tree(area.package_directory(), &prefix, &receipt.inputs)?;
+    match_tree(
+        &receipt.directory.join("SPECS").join(area.package()),
+        &prefix,
+        &receipt.inputs,
+    )
+}
+
+fn match_tree(
+    root: &Path,
+    prefix: &str,
+    inputs: &crate::workspace::baseline::Files,
+) -> io::Result<()> {
+    let expected: crate::workspace::baseline::Files = inputs
         .iter()
         .filter_map(|(name, file)| {
-            name.strip_prefix(&prefix)
+            name.strip_prefix(prefix)
                 .map(|name| (name.to_owned(), file.clone()))
         })
         .collect();
-    if crate::workspace::baseline::read(area.package_directory())? != expected
-        || crate::workspace::baseline::read(&receipt.directory.join("SPECS").join(area.package()))?
-            != expected
-    {
-        return Err(io::Error::other("Package check evidence is stale."));
+    if crate::workspace::baseline::read(root)? != expected {
+        return Err(io::Error::other("Check input evidence is stale."));
     }
     Ok(())
 }
