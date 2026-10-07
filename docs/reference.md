@@ -901,17 +901,23 @@ Without this option, manual commits retain their existing static and material ch
 ruyipack check --directory /path/to/prepared --check-output /path/to/new-result --format toml
 ```
 
-The directory supplies `scripts/remoteassetify.py` and `SPECS/`. All SPEC files
-under `SPECS/` are checked, including uncommitted files. Prepare only the package
-scope you want to check. No Git repository, commit or remote address is required.
-Review the script before running it. Inputs are copied before execution.
+Supply complete selected package directories under `SPECS/`, plus the target
+repository's `scripts/` and `.pre-commit-config.yaml`. Inputs include uncommitted
+files. Review the scripts and hooks before execution. No publication repository
+is required. Checks run on copies and never publish hook edits.
+
+Pre-commit runs once for the selection. Any hook failure blocks that selection.
+RemoteAsset then checks each SPEC and retains independent results.
+To exclude a failed package, prepare a smaller selection and run a new check.
+Do not infer package approval from a failed pre-commit result.
 
 This check downloads materials. It does not build packages or run all GitHub
 Actions checks. Ordinary `check WORK` remains offline.
 
 The embedded Fedora environment uses the Docker daemon's native platform and
 runs without Mock. Use `--check-config FILE` for a Compose environment with
-service `worker`, Python 3.11 or newer, rpm, curl and enosys. The worker reads
+service `worker`, Python 3.11 or newer, rpm, curl, enosys, Git and pre-commit.
+Provide a writable cache for pre-commit and its hook dependencies. The worker reads
 `/input` and writes `/output`. `--context` selects the Docker connection;
 `--timeout` limits execution time.
 
@@ -919,4 +925,6 @@ A new result directory stores `receipt.toml`, input and script hashes, image
 identity, commands, and check results. Backend logs are in `host/`; check logs
 are in `engine/`. Incomplete checks fail. Completed results are retained.
 The worker is removed after collection. Empty input does not start Docker.
+Hooks that use Git history can behave differently in the disposable index.
 Fedora results do not establish Ubuntu runner equivalence.
+See [task admission](tasks.md#require-a-directory-check) to consume the receipt.

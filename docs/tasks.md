@@ -120,26 +120,16 @@ A failed result does not imply that its earlier actions were rolled back.
 
 ## Require a directory check
 
-Prepare a directory with the selected WORK SPECs under `SPECS/PKG/` and the
-target repository's `scripts/` and `.pre-commit-config.yaml`. Then run:
+[Prepare and check complete package directories](reference.md#check-a-prepared-directory), then run:
 
 ```sh
-ruyipack check --directory prepared --check-output checks
 ruyipack task --plan packages.toml run --check-receipt checks/receipt.toml
 ```
 
-The receipt requirement is saved per WORK. Later runs still check it when the
-option is omitted. A failed or stale result excludes that WORK from the validated
-selection. Correct it, run the directory check into a new output directory, then
-pass the new receipt with `run --retry`.
+Each WORK retains the receipt requirement. Later runs still enforce it without
+this option. Failed, incomplete or stale evidence excludes WORK from the validated plan.
+Package files, scripts, check configuration and driver identity must still match.
 
-Pre-commit runs once for all prepared package files, in a disposable Git index.
-It does not need a publication repository. A pre-commit failure blocks the
-selection; hook edits stay in the disposable copy. Logs and a diff are retained.
-After it passes, each WORK needs its own successful RemoteAsset result.
-Another package's RemoteAsset failure does not reject it.
-
-Incomplete execution rejects the receipt. Package files, hook scripts, pre-commit
-configuration, the Compose file and the driver must still match. Hooks that depend
-on repository history can behave differently in the disposable index. This does
-not claim complete GitHub runner parity.
+After a failure, repair the input or select fewer packages. Run the directory
+check into a new output directory. Pass the new receipt with `run --retry`.
+Use a plan that selects only the packages covered by the new receipt.
