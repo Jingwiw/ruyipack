@@ -14,7 +14,6 @@ use crate::{
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
     io,
     path::{Path, PathBuf},
 };
@@ -134,18 +133,8 @@ fn claim(root: &Path, work: &str) -> io::Result<(PathBuf, FileLock)> {
 pub(crate) fn run(options: &Options) -> io::Result<bool> {
     let workspace = workspace::discover()?;
     let plan: plan::Plan = baseline::load(&options.plan)?;
-    let mut seen = BTreeSet::new();
-    if plan.packages.is_empty() {
-        return Err(io::Error::other("task plan is empty"));
-    }
-    for task in &plan.packages {
-        crate::check::metadata::Field::Name
-            .validate_at(&task.work, "WORK")
-            .map_err(io::Error::other)?;
-        if !seen.insert(&task.work) {
-            return Err(io::Error::other(format!("duplicate WORK: {}", task.work)));
-        }
-    }
+    plan::validate_works(plan.packages.iter().map(|task| task.work.as_str()))
+        .map_err(io::Error::other)?;
     let root = workspace::directory(&workspace.configuration(), Path::new("tasks"), false)?;
     std::fs::create_dir_all(&root)?;
     // Observe pending work before new local builds can delay it.

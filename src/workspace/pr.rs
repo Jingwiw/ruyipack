@@ -132,6 +132,8 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
 fn perform(options: &Options, report: &mut Report) -> io::Result<()> {
     let workspace = super::discover()?;
     let plan: crate::plan::Plan = baseline::load(&options.plan)?;
+    crate::plan::validate_works(plan.packages.iter().map(|task| task.work.as_str()))
+        .map_err(invalid)?;
     let settings = plan
         .pr
         .as_ref()
@@ -188,13 +190,9 @@ fn perform(options: &Options, report: &mut Report) -> io::Result<()> {
     }
     let exclusions = super::commit_scope::Exclusions::load(&workspace)?;
     let mut packages = BTreeSet::new();
-    let mut works = BTreeSet::new();
     // Retain the WORK locks until preparation/publication has finished.
     let mut areas = Vec::new();
     for task in &plan.packages {
-        if !works.insert(task.work.clone()) {
-            return Err(invalid(format!("duplicate WORK: {}", task.work)));
-        }
         let area = workspace.existing_development(&task.work)?;
         area.verify_binding()?;
         let package = workspace.specs.join(area.package());

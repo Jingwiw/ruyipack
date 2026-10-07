@@ -26,7 +26,7 @@ struct Target {
     repository: String,
     architecture: String,
     code: String,
-    pub(crate) state: State,
+    state: State,
     revision: Option<String>,
     source_md5: Option<String>,
 }
@@ -93,12 +93,9 @@ pub(super) fn run(workspace: &Workspace, options: &Options) -> Result<bool, Stri
 }
 
 pub(crate) fn collect(workspace: &Workspace, works: &[String]) -> Result<Report, String> {
+    crate::plan::validate_works(works.iter().map(String::as_str))?;
     let (global, auth) = config::load_existing(&workspace.configuration())?;
     let client = api::Client::new(&global.api, &auth.user, &auth.password)?;
-    let mut seen = BTreeSet::new();
-    if works.is_empty() || works.iter().any(|work| !seen.insert(work.clone())) {
-        return Err("status requires a nonempty plan without duplicate WORKs".into());
-    }
     // Include failures in the cache: an unavailable project is queried once per round.
     let mut projects: BTreeMap<String, Result<(String, String), String>> = BTreeMap::new();
     let mut tasks = Vec::new();

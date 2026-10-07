@@ -64,3 +64,18 @@ pub(crate) struct Publication {
     pub target: Option<String>,
     pub template: Option<std::path::PathBuf>,
 }
+
+/// Validate the whole batch before any consumer prepares WORKs or contacts a service.
+pub(crate) fn validate_works<'a>(works: impl IntoIterator<Item = &'a str>) -> Result<(), String> {
+    let mut seen = std::collections::BTreeSet::new();
+    for work in works {
+        crate::check::metadata::Field::Name.validate_at(work, "WORK")?;
+        if !seen.insert(work) {
+            return Err(format!("duplicate WORK: {work}"));
+        }
+    }
+    if seen.is_empty() {
+        return Err("plan contains no packages".into());
+    }
+    Ok(())
+}

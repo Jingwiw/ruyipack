@@ -76,12 +76,6 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
     let interactive = matches!(options.format, ReportFormat::Human)
         && io::stdin().is_terminal()
         && io::stderr().is_terminal();
-    let (global, auth) = config::load(&workspace.configuration(), interactive)?;
-    let client = api::Client::new(&global.api, &auth.user, &auth.password)?;
-    // Authentication is checked before any remote mutation.
-    client
-        .get(&["person", &auth.user])?
-        .ok_or("OBS account not found")?;
     let mut tasks = Vec::new();
     if options.plan.is_empty() {
         let settings: Settings = options
@@ -92,29 +86,29 @@ pub(crate) fn run(options: &Options) -> Result<bool, String> {
             .unwrap_or_default();
         tasks.push(Task {
             work: options.work.clone().expect("WORK or plan"),
-            settings: settings.inherit(&global.defaults),
+            settings,
         });
     } else {
         for path in &options.plan {
             let plan: config::Plan = config::read(path)?;
-            let defaults = plan.defaults.inherit(&global.defaults);
+            let defaults = plan.defaults;
             tasks.extend(plan.packages.into_iter().map(|task| Task {
                 work: task.work,
                 settings: task.settings.inherit(&defaults),
             }));
         }
     }
-    if tasks.is_empty() {
-        return Err("plan contains no packages".into());
-    }
-    let mut seen = std::collections::BTreeSet::new();
+    crate::plan::validate_works(tasks.iter().map(|task| task.work.as_str()))?;
+    let (global, auth) = config::load(&workspace.configuration(), interactive)?;
+    let client = api::Client::new(&global.api, &auth.user, &auth.password)?;
+    // Authentication is checked before any remote mutation.
+    client
+        .get(&["person", &auth.user])?
+        .ok_or("OBS account not found")?;
     let mut projects = BTreeMap::new();
     let mut prepared = Vec::new();
     for task in tasks {
-        if !seen.insert(task.work.clone()) {
-            return Err(format!("duplicate WORK in plan: {}", task.work));
-        }
-        let mut settings = task.settings;
+        let mut settings = task.settings.inherit(&global.defaults);
         let mut area = workspace
             .development(&task.work, None, false)
             .map_err(|e| e.to_string())?;
