@@ -15,11 +15,7 @@ use crate::{
 };
 use fs_err as fs;
 use serde::Serialize;
-use std::{
-    io,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{io, path::PathBuf, time::Duration};
 
 #[derive(clap::Args)]
 #[group(id = "directory-options", multiple = true)]
@@ -42,20 +38,13 @@ pub(crate) struct Options {
     timeout: u64,
 }
 
-#[derive(serde::Deserialize, Serialize)]
-struct File {
-    path: String,
-    sha256: String,
-}
-
 #[derive(Serialize)]
 struct Receipt {
     format_version: u32,
     operation: &'static str,
     coverage: &'static str,
     directory: PathBuf,
-    script: File,
-    inputs: Vec<File>,
+    inputs: crate::workspace::baseline::Files,
     config: PathBuf,
     config_sha256: String,
     driver_sha256: String,
@@ -75,37 +64,18 @@ struct Check {
     stderr: String,
 }
 
-fn describe(root: &Path, path: &Path) -> io::Result<File> {
-    Ok(File {
-        path: path
-            .strip_prefix(root)
-            .expect("input path")
-            .to_str()
-            .ok_or_else(|| io::Error::other("check paths must be UTF-8"))?
-            .into(),
-        sha256: crate::file_digest::read(path)
-            .map_err(io::Error::other)?
-            .sha256,
-    })
+fn specs(inputs: &crate::workspace::baseline::Files) -> impl Iterator<Item = &str> {
+    inputs
+        .keys()
+        .filter(|path| path.starts_with("SPECS/") && path.ends_with(".spec"))
+        .map(String::as_str)
 }
 
-fn specs(root: &Path, directory: &Path, inputs: &mut Vec<File>) -> io::Result<()> {
-    let mut entries = fs::read_dir(directory)?.collect::<io::Result<Vec<_>>>()?;
-    entries.sort_by_key(fs::DirEntry::file_name);
-    for entry in entries {
-        if entry.file_type()?.is_dir() {
-            specs(root, &entry.path(), inputs)?;
-        } else if entry.path().extension().is_some_and(|ext| ext == "spec") {
-            inputs.push(describe(root, &entry.path())?);
-        }
-    }
-    Ok(())
-}
-
-#[derive(Serialize)]
-struct Selection<'a> {
-    script: &'a File,
-    inputs: &'a [File],
+fn complete(inputs: &crate::workspace::baseline::Files, checks: &[Check]) -> bool {
+    checks
+        .iter()
+        .map(|check| check.path.as_str())
+        .eq(specs(inputs))
 }
 
 #[derive(serde::Deserialize)]
@@ -137,15 +107,11 @@ pub(crate) fn run(options: &Options, format: ReportFormat) -> Result<bool, Repor
     crate::file_digest::read(&source).map_err(io::Error::other)?;
     fs::create_dir(input.join("scripts"))?;
     fs::copy(source, input.join("scripts/remoteassetify.py"))?;
-    let script = describe(&input, &input.join("scripts/remoteassetify.py"))?;
-    let mut inputs = Vec::new();
-    specs(&input, &input.join("SPECS"), &mut inputs)?;
+    let inputs = crate::workspace::baseline::read(&input)?;
+    let spec_count = specs(&inputs).count();
     crate::report::write(
         &mut fs::File::create(input.join("selection.toml"))?,
-        &Selection {
-            script: &script,
-            inputs: &inputs,
-        },
+        &inputs,
     )?;
     fs::write(input.join("run.py"), include_bytes!("runner.py"))?;
     let driver_sha256 = crate::file_digest::read(&input.join("run.py"))
@@ -177,7 +143,7 @@ pub(crate) fn run(options: &Options, format: ReportFormat) -> Result<bool, Repor
     };
     backend.validate()?;
     let invocation = vec!["python3".into(), "/input/run.py".into()];
-    let execution = if inputs.is_empty() {
+    let execution = if spec_count == 0 {
         crate::environment::Execution {
             success: true,
             ..Default::default()
@@ -191,7 +157,7 @@ pub(crate) fn run(options: &Options, format: ReportFormat) -> Result<bool, Repor
             Duration::from_secs(options.timeout),
         )
     };
-    let result = if inputs.is_empty() {
+    let result = if spec_count == 0 {
         Ok(Results { checks: Vec::new() })
     } else {
         fs::read_to_string(output.join("engine/results.toml"))
@@ -201,13 +167,7 @@ pub(crate) fn run(options: &Options, format: ReportFormat) -> Result<bool, Repor
         Ok(results) => (results.checks, None),
         Err(error) => (Vec::new(), Some(error.to_string())),
     };
-    if result_error.is_none()
-        && (checks.len() != inputs.len()
-            || checks
-                .iter()
-                .zip(&inputs)
-                .any(|(check, input)| check.path != input.path))
-    {
+    if result_error.is_none() && !complete(&inputs, &checks) {
         result_error = Some("check results do not match all selected candidate files".into());
     }
     if crate::file_digest::read(&config)
@@ -225,7 +185,6 @@ pub(crate) fn run(options: &Options, format: ReportFormat) -> Result<bool, Repor
         operation: "directory-check",
         coverage: "remoteasset: prepared directory SPECs; not full Action parity",
         directory,
-        script,
         inputs,
         config,
         config_sha256,
@@ -255,7 +214,7 @@ pub(crate) fn run(options: &Options, format: ReportFormat) -> Result<bool, Repor
             format_args!(
                 "RemoteAsset: {}/{} checks passed; receipt {}",
                 receipt.checks.iter().filter(|c| c.exit_code == 0).count(),
-                receipt.inputs.len(),
+                spec_count,
                 crate::output_cli::human_path(&output.join("receipt.toml")).display()
             ),
         )?,

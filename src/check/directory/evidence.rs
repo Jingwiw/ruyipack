@@ -3,7 +3,7 @@
 
 //! Match one WORK to a completed directory check; other packages may have failed.
 
-use super::{Check, File};
+use super::Check;
 use serde::Deserialize;
 use std::{
     io,
@@ -15,8 +15,7 @@ struct Receipt {
     format_version: u32,
     operation: String,
     directory: PathBuf,
-    script: File,
-    inputs: Vec<File>,
+    inputs: crate::workspace::baseline::Files,
     config: PathBuf,
     config_sha256: String,
     driver_sha256: String,
@@ -47,22 +46,17 @@ pub(crate) fn verify(path: &Path, area: &crate::workspace::Development) -> io::R
         || receipt.operation != "directory-check"
         || !receipt.execution.success
         || receipt.result_error.is_some()
-        || receipt.script.path != "scripts/remoteassetify.py"
+        || !receipt.inputs.contains_key("scripts/remoteassetify.py")
         || receipt.driver_sha256 != crate::utf8_file::sha256(include_str!("../runner.py"))
-        || receipt.inputs.len() != receipt.checks.len()
-        || receipt
-            .inputs
-            .iter()
-            .zip(&receipt.checks)
-            .any(|(input, check)| input.path != check.path)
+        || !super::complete(&receipt.inputs, &receipt.checks)
     {
         return Err(io::Error::other(
             "Directory check is incomplete or incompatible.",
         ));
     }
     matches(
-        &receipt.directory.join(&receipt.script.path),
-        &receipt.script.sha256,
+        &receipt.directory.join("scripts/remoteassetify.py"),
+        &receipt.inputs["scripts/remoteassetify.py"].sha256,
     )?;
     matches(&receipt.config, &receipt.config_sha256)?;
     let spec = area.spec()?;
@@ -71,19 +65,29 @@ pub(crate) fn verify(path: &Path, area: &crate::workspace::Development) -> io::R
         .and_then(|name| name.to_str())
         .ok_or_else(|| io::Error::other("SPEC filename must be UTF-8"))?;
     let selected = format!("SPECS/{}/{name}", area.package());
-    let mut entries = receipt
-        .inputs
+    if !receipt
+        .checks
         .iter()
-        .zip(&receipt.checks)
-        .filter(|(input, _)| input.path == selected);
-    let (input, check) = entries
-        .next()
-        .ok_or_else(|| io::Error::other(format!("{selected}: no directory check result")))?;
-    if entries.next().is_some() || check.exit_code != 0 {
+        .any(|check| check.path == selected && check.exit_code == 0)
+    {
         return Err(io::Error::other(format!(
-            "{selected}: directory check failed or is duplicated"
+            "{selected}: no successful directory check"
         )));
     }
-    matches(&spec, &input.sha256)?;
-    matches(&receipt.directory.join(&selected), &input.sha256)
+    let prefix = format!("SPECS/{}/", area.package());
+    let expected: crate::workspace::baseline::Files = receipt
+        .inputs
+        .iter()
+        .filter_map(|(name, file)| {
+            name.strip_prefix(&prefix)
+                .map(|name| (name.to_owned(), file.clone()))
+        })
+        .collect();
+    if crate::workspace::baseline::read(area.package_directory())? != expected
+        || crate::workspace::baseline::read(&receipt.directory.join("SPECS").join(area.package()))?
+            != expected
+    {
+        return Err(io::Error::other("Package check evidence is stale."));
+    }
+    Ok(())
 }

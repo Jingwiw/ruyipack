@@ -1798,14 +1798,25 @@ fn check_directory_admission(fixture: &Fixture, root: &std::path::Path, area: &s
     fs::write(&script, "fixture checker").unwrap();
     let config = root.join("check-compose.yaml");
     fs::write(&config, "fixture environment").unwrap();
-    let input_hash = digest(&fs::read(directory.join("SPECS/ed/ed.spec")).unwrap());
+    let mut inputs = serde_json::Map::new();
+    for entry in fs::read_dir(directory.join("SPECS/ed")).unwrap() {
+        let path = entry.unwrap().path();
+        inputs.insert(
+            format!("SPECS/ed/{}", path.file_name().unwrap().to_str().unwrap()),
+            serde_json::json!({"sha256": digest(&fs::read(path).unwrap()), "executable": false}),
+        );
+    }
+    inputs.insert(
+        "scripts/remoteassetify.py".into(),
+        serde_json::json!({"sha256": digest(b"fixture checker"), "executable": false}),
+    );
+    inputs.insert(
+        "SPECS/other/other.spec".into(),
+        serde_json::json!({"sha256": "unrelated", "executable": false}),
+    );
     let receipt = serde_json::json!({
         "format_version": 1, "operation": "directory-check", "directory": directory,
-        "script": {"path": "scripts/remoteassetify.py", "sha256": digest(b"fixture checker")},
-        "inputs": [
-            {"path": "SPECS/ed/ed.spec", "sha256": input_hash},
-            {"path": "SPECS/other/other.spec", "sha256": "unrelated"}
-        ],
+        "inputs": inputs,
         "config": config, "config_sha256": digest(b"fixture environment"),
         "driver_sha256": digest(include_bytes!("../../src/check/runner.py")),
         "execution": {"success": true}, "success": false,
@@ -1836,7 +1847,11 @@ fn check_directory_admission(fixture: &Fixture, root: &std::path::Path, area: &s
         Some("validated")
     );
     let calls = fs::read(fixture.root.path().join("calls.jsonl")).unwrap();
-    for (changed, original) in [(script, "fixture checker"), (config, "fixture environment")] {
+    for (changed, original) in [
+        (script, "fixture checker"),
+        (config, "fixture environment"),
+        (directory.join("SPECS/ed/README"), "manual change\n"),
+    ] {
         fs::write(&changed, "changed after validation").unwrap();
         // Omission of the flag must not discard the saved requirement.
         let output = fixture
