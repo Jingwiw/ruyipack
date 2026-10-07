@@ -6,6 +6,7 @@
 
 //! Command-line entry point for `RuyiPack`.
 
+mod batch;
 mod build;
 mod check;
 mod check_report;

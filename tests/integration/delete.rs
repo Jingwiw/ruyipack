@@ -129,8 +129,8 @@ fn selective_cleanup_keeps_recipe_and_plan_deletion_reports_each_result() {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stderr.is_empty());
     let report = machine_report(&output);
-    assert_eq!(report["tasks"][0]["success"].as_bool(), Some(false));
-    assert_eq!(report["tasks"][1]["success"].as_bool(), Some(true));
+    assert_eq!(report["results"][0]["success"].as_bool(), Some(false));
+    assert_eq!(report["results"][1]["success"].as_bool(), Some(true));
     assert!(!area.exists());
     assert!(root.path().join("openruyi/SPECS/ed/ed.spec").exists());
 }

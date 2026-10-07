@@ -191,79 +191,35 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
             report.print(args.format).map_err(io::Error::other)
         }
         Command::Status { format } => {
-            let works = plans
-                .into_iter()
-                .flat_map(|p| p.packages.into_iter().map(|t| t.work))
-                .collect::<Vec<_>>();
+            let works = selected_works(plans);
             status::run(&workspace::discover()?, &works, *format).map_err(io::Error::other)
         }
         Command::Commit(args) => {
-            let tasks = plans
-                .into_iter()
-                .flat_map(|p| p.packages)
-                .map(|task| workspace::commit::execute(&task.work, args))
-                .collect::<Vec<_>>();
-            let success = tasks.iter().all(|task| task.success);
-            if matches!(args.format, ReportFormat::Human) {
-                for task in tasks {
-                    task.print(args.format)?;
-                }
-            } else {
-                #[derive(Serialize)]
-                struct Commits {
-                    operation: &'static str,
-                    success: bool,
-                    tasks: Vec<workspace::commit::Report>,
-                }
-                crate::report::write(
-                    &mut io::stdout().lock(),
-                    &Commits {
-                        operation: "commit",
-                        success,
-                        tasks,
-                    },
-                )?;
-            }
-            Ok(success)
+            let works = selected_works(plans);
+            let report = crate::batch::run(
+                "commit",
+                &works,
+                |work| std::ops::ControlFlow::Continue(workspace::commit::execute(work, args)),
+                |result| result.success,
+            );
+            print_batch(&report, args.format, |result| result.print(args.format))
         }
         Command::Delete(args) => {
-            let works: Vec<_> = plans
-                .into_iter()
-                .flat_map(|p| p.packages.into_iter().map(|t| t.work))
-                .collect();
-            let mut tasks = Vec::new();
-            for work in &works {
-                let result = workspace::delete::execute(work, args);
-                let cancelled = result.cancelled;
-                if matches!(args.format, ReportFormat::Human) {
-                    result.print(args.format)?;
-                }
-                tasks.push(result);
-                if cancelled {
-                    break;
-                }
-            }
-            let pending = &works[tasks.len()..];
-            let success = pending.is_empty() && tasks.iter().all(|r| r.success);
-            if matches!(args.format, ReportFormat::Toml) {
-                #[derive(Serialize)]
-                struct Deletions<'a> {
-                    operation: &'static str,
-                    success: bool,
-                    tasks: Vec<workspace::delete::Report>,
-                    pending: &'a [String],
-                }
-                crate::report::write(
-                    &mut io::stdout().lock(),
-                    &Deletions {
-                        operation: "delete",
-                        success,
-                        tasks,
-                        pending,
-                    },
-                )?;
-            }
-            Ok(success)
+            let works = selected_works(plans);
+            let report = crate::batch::run(
+                "delete",
+                &works,
+                |work| {
+                    let result = args.execute(work);
+                    if result.cancelled {
+                        std::ops::ControlFlow::Break(result)
+                    } else {
+                        std::ops::ControlFlow::Continue(result)
+                    }
+                },
+                |result| result.success,
+            );
+            print_batch(&report, args.format, |result| result.print(args.format))
         }
         Command::Run(_) | Command::Pr(_) => {
             let [plan]: [plan::Plan; 1] = plans.try_into().map_err(|_| {
@@ -276,6 +232,36 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
             }
         }
     }
+}
+
+fn selected_works(plans: Vec<plan::Plan>) -> Vec<String> {
+    plans
+        .into_iter()
+        .flat_map(|p| p.packages.into_iter().map(|t| t.work))
+        .collect()
+}
+
+fn print_batch<R: Serialize>(
+    report: &crate::batch::Report<'_, String, R>,
+    format: ReportFormat,
+    print: impl Fn(&R) -> io::Result<bool>,
+) -> io::Result<bool> {
+    match format {
+        ReportFormat::Human => {
+            for result in &report.results {
+                print(result)?;
+            }
+            if !report.pending.is_empty() {
+                crate::output_cli::stderr().message(
+                    HumanLevel::Info,
+                    None,
+                    format_args!("pending: {}", report.pending.join(", ")),
+                )?;
+            }
+        }
+        ReportFormat::Toml => crate::report::write(&mut io::stdout().lock(), report)?,
+    }
+    Ok(report.success)
 }
 
 fn advance_plan(options: &RunOptions, plan: plan::Plan) -> io::Result<bool> {

@@ -28,20 +28,42 @@ pub(crate) struct Options {
 
 #[derive(Args)]
 pub(crate) struct Arguments {
-    /// Show the local deletion plan without contacting OBS or Docker.
-    #[arg(long, conflicts_with = "force")]
-    dry_run: bool,
+    #[command(flatten)]
+    request: Request,
     /// Skip confirmation; ownership checks still block deletion.
     #[arg(long)]
     force: bool,
+    #[arg(long, value_enum, default_value_t = ReportFormat::Human)]
+    pub(crate) format: ReportFormat,
+}
+
+#[derive(Args)]
+pub(crate) struct Request {
+    /// Show the local deletion plan without contacting OBS or Docker.
+    #[arg(long, conflicts_with = "force")]
+    dry_run: bool,
     /// Override Docker's connection; every recorded daemon must still match.
     #[arg(long)]
     context: Option<String>,
     /// Build-resource cleanup deadline; OBS requests use their own network deadline.
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
     timeout: u64,
-    #[arg(long, value_enum, default_value_t = ReportFormat::Human)]
-    pub(crate) format: ReportFormat,
+}
+
+impl Arguments {
+    pub(crate) fn execute(&self, work: &str) -> Report {
+        execute(work, &self.request, &mut |report| {
+            crate::output_cli::require_confirmation(self.format, self.force, "delete")?;
+            if matches!(self.format, ReportFormat::Human) {
+                report.print_scope()?;
+            }
+            crate::output_cli::confirm_removal(
+                self.force,
+                "delete",
+                "Delete this development area?",
+            )
+        })
+    }
 }
 
 #[derive(Serialize)]
@@ -62,10 +84,17 @@ pub(crate) struct Report {
 }
 
 pub(crate) fn run(options: &Options) -> io::Result<bool> {
-    execute(&options.work, &options.arguments).print(options.arguments.format)
+    options
+        .arguments
+        .execute(&options.work)
+        .print(options.arguments.format)
 }
 
-pub(crate) fn execute(work: &str, options: &Arguments) -> Report {
+pub(crate) fn execute(
+    work: &str,
+    options: &Request,
+    authorize: &mut dyn FnMut(&Report) -> io::Result<()>,
+) -> Report {
     let mut report = Report {
         format_version: 1,
         operation: "delete",
@@ -81,7 +110,7 @@ pub(crate) fn execute(work: &str, options: &Arguments) -> Report {
         cancelled: false,
         error: None,
     };
-    match perform(options, &mut report) {
+    match perform(options, &mut report, authorize) {
         Ok(()) => report.success = true,
         Err(error) => {
             report.cancelled = error.kind() == io::ErrorKind::Interrupted;
@@ -92,11 +121,24 @@ pub(crate) fn execute(work: &str, options: &Arguments) -> Report {
 }
 
 impl Report {
+    fn print_scope(&self) -> io::Result<()> {
+        use std::io::Write;
+        let mut out = io::stderr().lock();
+        writeln!(out, "Delete WORK {}", self.work)?;
+        for path in &self.authoring_files {
+            writeln!(out, "  {}", human_path(path).display())?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn print(&self, format: ReportFormat) -> io::Result<bool> {
         let report = self;
         match format {
             ReportFormat::Toml => crate::report::write(&mut io::stdout().lock(), &report)?,
             ReportFormat::Human => {
+                if report.preview {
+                    report.print_scope()?;
+                }
                 let mut out = crate::output_cli::stderr();
                 crate::clean::print_obs(&report.work, &report.obs)?;
                 for cleanup in &report.cleanup {
@@ -135,7 +177,11 @@ impl Report {
     }
 }
 
-fn perform(options: &Arguments, report: &mut Report) -> io::Result<()> {
+fn perform(
+    options: &Request,
+    report: &mut Report,
+    authorize: &mut dyn FnMut(&Report) -> io::Result<()>,
+) -> io::Result<()> {
     let workspace = super::discover()?;
     let area = workspace.existing_development(&report.work)?;
     let root = area.directory();
@@ -170,28 +216,12 @@ fn perform(options: &Arguments, report: &mut Report) -> io::Result<()> {
     for path in &report.builds {
         crate::build::preflight_cleanup(path)?;
     }
-    if !options.dry_run {
-        crate::output_cli::require_confirmation(options.format, options.force, "delete")?;
-    }
-    if matches!(options.format, ReportFormat::Human) {
-        eprintln!(
-            "Delete WORK {}: {}",
-            report.work,
-            human_path(root).display()
-        );
-        for path in &report.authoring_files {
-            eprintln!("  {}", human_path(path).display());
-        }
-        eprintln!(
-            "Selected resources will be removed. Shared resources and the recipe repository are retained."
-        );
-    }
     if options.dry_run {
         crate::remote_build::cleanup::execute(&workspace, &area, true, &mut report.obs)
             .map_err(io::Error::other)?;
         return Ok(());
     }
-    crate::output_cli::confirm_removal(options.force, "delete", "Delete the selected resources?")?;
+    authorize(report)?;
     // Recheck after confirmation and before each destructive phase. The WORK lock
     // protects cooperating commands; this is not a transaction against external writers.
     area.verify_binding()?;

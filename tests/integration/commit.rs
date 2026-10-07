@@ -564,7 +564,7 @@ fn task_commit_keeps_independent_commits_and_reports_partial_failure() {
     assert_eq!(result.status.code(), Some(1));
     assert!(result.stderr.is_empty());
     let report = machine_report(&result);
-    let tasks = report["tasks"].as_array().unwrap();
+    let tasks = report["results"].as_array().unwrap();
     assert_eq!(tasks.len(), 3);
     for index in [0, 2] {
         assert_eq!(tasks[index]["success"].as_bool(), Some(true));

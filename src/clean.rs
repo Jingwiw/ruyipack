@@ -71,36 +71,13 @@ pub(crate) fn run(options: &Options) -> io::Result<bool> {
             Err(error) => return Err(error),
         }
         paths.sort();
-        return run_history(
-            &paths,
-            options.force,
-            options.context.as_deref(),
-            Duration::from_secs(options.timeout),
-            options.format,
-        );
+        return run_history(&paths, options);
     }
-    run_result(
-        &path,
-        options.force,
-        options.context.as_deref(),
-        Duration::from_secs(options.timeout),
-        options.format,
-    )
-}
-
-fn run_result(
-    path: &Path,
-    force: bool,
-    context: Option<&str>,
-    timeout: Duration,
-    format: ReportFormat,
-) -> io::Result<bool> {
-    let report = execute(path, force, context, timeout, format);
-    let success = report.success;
-    match format {
+    let report = run_build(&path, options, Duration::from_secs(options.timeout));
+    match options.format {
         ReportFormat::Toml => crate::report::write(&mut io::stdout().lock(), &report)?,
         ReportFormat::Human => {
-            if success {
+            if report.success {
                 writeln!(io::stdout().lock(), "cleaned: {}", path.display())?;
             } else {
                 print_removed(&report)?;
@@ -112,55 +89,32 @@ fn run_result(
             }
         }
     }
-    Ok(success)
+    Ok(report.success)
 }
 
-fn run_history(
-    paths: &[PathBuf],
-    force: bool,
-    context: Option<&str>,
-    timeout: Duration,
-    format: ReportFormat,
-) -> io::Result<bool> {
+fn run_history(paths: &[PathBuf], options: &Options) -> io::Result<bool> {
     let start = Instant::now();
-    let mut results = Vec::new();
-    for path in paths {
-        let result = execute(
-            path,
-            force,
-            context,
-            timeout.saturating_sub(start.elapsed()),
-            format,
-        );
-        let cancelled = result.cancelled;
-        results.push(result);
-        if cancelled {
-            break;
-        }
-    }
-    let pending = &paths[results.len()..];
-    let success = pending.is_empty() && results.iter().all(|result| result.success);
-    match format {
-        ReportFormat::Toml => {
-            #[derive(Serialize)]
-            struct HistoryReport<'a> {
-                operation: &'static str,
-                success: bool,
-                results: Vec<CleanReport>,
-                pending: &'a [PathBuf],
+    let report = crate::batch::run(
+        "clean-history",
+        paths,
+        |path| {
+            let result = run_build(
+                path,
+                options,
+                Duration::from_secs(options.timeout).saturating_sub(start.elapsed()),
+            );
+            if result.cancelled {
+                std::ops::ControlFlow::Break(result)
+            } else {
+                std::ops::ControlFlow::Continue(result)
             }
-            crate::report::write(
-                &mut io::stdout().lock(),
-                &HistoryReport {
-                    operation: "clean-history",
-                    success,
-                    results,
-                    pending,
-                },
-            )?;
-        }
+        },
+        |result| result.success,
+    );
+    match options.format {
+        ReportFormat::Toml => crate::report::write(&mut io::stdout().lock(), &report)?,
         ReportFormat::Human => {
-            for result in &results {
+            for result in &report.results {
                 if let Some(error) = &result.error {
                     print_removed(result)?;
                     writeln!(
@@ -173,39 +127,35 @@ fn run_history(
             writeln!(
                 io::stdout().lock(),
                 "cleaned history: {}/{}",
-                results.iter().filter(|r| r.success).count(),
+                report.results.iter().filter(|r| r.success).count(),
                 paths.len()
             )?;
-            if !pending.is_empty() {
+            if !report.pending.is_empty() {
                 writeln!(
                     io::stderr().lock(),
                     "clean cancelled: {} attempt(s) not processed",
-                    pending.len()
+                    report.pending.len()
                 )?;
             }
         }
     }
-    Ok(success)
+    Ok(report.success)
 }
 
-fn execute(
-    path: &Path,
-    force: bool,
-    context: Option<&str>,
-    timeout: Duration,
-    format: ReportFormat,
-) -> CleanReport {
-    if let Err(error) = crate::output_cli::require_confirmation(format, force, "clean") {
-        let mut report = crate::build::clean_report(path, context);
+fn run_build(path: &Path, options: &Options, timeout: Duration) -> CleanReport {
+    if let Err(error) =
+        crate::output_cli::require_confirmation(options.format, options.force, "clean")
+    {
+        let mut report = crate::build::clean_report(path, options.context.as_deref());
         report.error = Some(error.to_string());
         return report;
     }
     crate::build::clean_result(
         path,
-        context,
+        options.context.as_deref(),
         timeout,
         &mut |report| {
-            if matches!(format, ReportFormat::Human) {
+            if matches!(options.format, ReportFormat::Human) {
                 writeln!(
                     io::stderr().lock(),
                     "Clean results: {}",
@@ -220,7 +170,7 @@ fn execute(
                 }
             }
             crate::output_cli::confirm_removal(
-                force,
+                options.force,
                 "clean",
                 "Delete these resources and the result directory?",
             )
@@ -250,36 +200,46 @@ pub(crate) fn print_removed(report: &CleanReport) -> io::Result<()> {
     Ok(())
 }
 
-fn clean_remote(work: &str, options: &Options) -> io::Result<bool> {
-    #[derive(Serialize)]
-    struct Report<'a> {
-        operation: &'static str,
-        work: &'a str,
-        success: bool,
-        obs: crate::remote_build::cleanup::Report,
-        error: Option<String>,
-    }
+#[derive(Serialize)]
+struct RemoteReport<'a> {
+    operation: &'static str,
+    work: &'a str,
+    success: bool,
+    obs: crate::remote_build::cleanup::Report,
+    error: Option<String>,
+}
+
+fn execute_remote<'a>(
+    work: &'a str,
+    authorize: &mut dyn FnMut() -> io::Result<()>,
+) -> RemoteReport<'a> {
     let mut obs = crate::remote_build::cleanup::Report::default();
     let result = (|| {
         let workspace = crate::workspace::discover()?;
         let area = workspace.existing_development(work)?;
-        crate::output_cli::require_confirmation(options.format, options.force, "clean")?;
-        crate::output_cli::confirm_removal(
-            options.force,
-            "clean",
-            "Remove this WORK's OBS package?",
-        )?;
+        authorize()?;
         area.verify_binding()?;
         crate::remote_build::cleanup::execute(&workspace, &area, false, &mut obs)
             .map_err(io::Error::other)
     })();
-    let report = Report {
+    RemoteReport {
         operation: "clean",
         work,
         success: result.is_ok(),
         obs,
         error: result.err().map(|e: io::Error| e.to_string()),
-    };
+    }
+}
+
+fn clean_remote(work: &str, options: &Options) -> io::Result<bool> {
+    let report = execute_remote(work, &mut || {
+        crate::output_cli::require_confirmation(options.format, options.force, "clean")?;
+        crate::output_cli::confirm_removal(
+            options.force,
+            "clean",
+            "Remove this WORK's OBS package?",
+        )
+    });
     match options.format {
         ReportFormat::Toml => crate::report::write(&mut io::stdout().lock(), &report)?,
         ReportFormat::Human => {

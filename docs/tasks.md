@@ -101,3 +101,7 @@ ruyipack task --plan packages.toml delete --force --format toml
 The plan selects WORKs; it does not change deletion ownership checks. Each WORK has a result.
 A failed deletion does not stop independent WORKs. Cancellation stops the batch
 and reports pending WORKs. OBS projects, shared images and the plan file remain.
+
+Commit and delete batches report `results` and `pending`. Each result describes
+one attempted WORK. `pending` contains WORKs not attempted after cancellation.
+A failed result does not imply that its earlier actions were rolled back.

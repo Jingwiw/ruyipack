@@ -141,6 +141,8 @@ fn machine_operations_never_prompt_even_in_a_terminal() {
     .unwrap();
     for args in [
         vec!["clean", "--build-dir=retained", "--format=toml"],
+        vec!["clean", "review", "--remote", "--format=toml"],
+        vec!["delete", "review", "--format=toml"],
         vec![
             "gen",
             "review",
@@ -188,6 +190,7 @@ fn machine_operations_never_prompt_even_in_a_terminal() {
         assert_eq!(report["success"].as_bool(), Some(false), "{report}");
         assert!(report.get("error").is_some(), "{report}");
         assert!(build.join("receipt.json").is_file());
+        assert!(directory.path().join("work/review/ed.toml").is_file());
         assert_eq!(
             fs::read_to_string(directory.path().join("result.spec")).unwrap(),
             "retain me"
