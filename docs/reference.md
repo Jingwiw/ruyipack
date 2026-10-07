@@ -105,6 +105,11 @@ Ordinary scaffold/TOML output conflicts use `--force` or `--skip-existing`; neit
 
 ## Commit package changes
 
+Use a personal fork for commit/PR delivery. Do not configure the openRuyi project
+main repository as the delivery origin or push destination. The project main
+repository may be the PR base target, not the source branch destination.
+Local checks and builds do not require a personal repository address.
+
 `commit WORK` applies package changes to the configured recipe repository's current branch.
 Use `--repo PATH` to select another repository, `--dry-run` to inspect the diff,
 `--spec-only` to commit only the bound SPEC, or `-m MESSAGE` to set the message.
@@ -875,3 +880,29 @@ This checks the retained local build, not OBS results or repository CI checks.
 The build's recorded environment and release policy still define its scope;
 a development macro configuration does not validate OBS release services.
 Without this option, manual commits retain their existing static and material checks.
+
+## Check a prepared directory
+
+```sh
+ruyipack check --directory /path/to/prepared --check-output /path/to/new-result --format toml
+```
+
+The directory supplies `scripts/remoteassetify.py` and `SPECS/`. All SPEC files
+under `SPECS/` are checked, including uncommitted files. Prepare only the package
+scope you want to check. No Git repository, commit or remote address is required.
+Review the script before running it. Inputs are copied before execution.
+
+This check downloads materials. It does not build packages or run all GitHub
+Actions checks. Ordinary `check WORK` remains offline.
+
+The embedded Fedora environment uses the Docker daemon's native platform and
+runs without Mock. Use `--check-config FILE` for a Compose environment with
+service `worker`, Python 3.11 or newer, rpm, curl and enosys. The worker reads
+`/input` and writes `/output`. `--context` selects the Docker connection;
+`--timeout` limits execution time.
+
+A new result directory stores `receipt.toml`, input and script hashes, image
+identity, commands, and check results. Backend logs are in `host/`; check logs
+are in `engine/`. Incomplete checks fail. Completed results are retained.
+The worker is removed after collection. Empty input does not start Docker.
+Fedora results do not establish Ubuntu runner equivalence.

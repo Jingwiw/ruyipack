@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: (C) 2026 openRuyi Project Contributors
+# SPDX-License-Identifier: MulanPSL-2.0
+services:
+  worker:
+    build: .
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true

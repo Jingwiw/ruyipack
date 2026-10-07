@@ -7,6 +7,7 @@
 //! Shared static SPEC checks, rule selection, and the check command boundary.
 
 pub(crate) mod build;
+mod directory;
 pub(crate) mod license;
 pub(crate) mod materials;
 pub(crate) mod metadata;
@@ -114,8 +115,10 @@ pub(crate) fn analyze(spec: &ParsedSpec<'_>, policy: Policy, defines: &[String])
 }
 
 #[derive(clap::Args)]
-#[command(group(clap::ArgGroup::new("check-input").args(["work", "spec", "manifest"]).required(true)))]
+#[command(group(clap::ArgGroup::new("check-input").args(["work", "spec", "manifest", "directory"]).required(true)))]
 pub(crate) struct Options {
+    #[command(flatten)]
+    directory: directory::Options,
     #[command(flatten)]
     input: SpecOptions,
     /// Apply supported metadata, formatting and Source repairs in WORK.
@@ -148,6 +151,9 @@ pub(crate) struct Options {
 }
 
 pub(crate) fn run(options: &Options) -> Result<bool, ReportError> {
+    if options.directory.directory.is_some() {
+        return directory::run(&options.directory, options.format);
+    }
     if options.auto_fix {
         let upgrade = if options.upgrade {
             let input = options
