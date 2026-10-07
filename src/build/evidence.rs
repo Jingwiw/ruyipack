@@ -3,7 +3,7 @@
 
 //! Compare a delivery's inputs with a retained execution, without running a build.
 
-use super::{InputFile, Stage, invalid};
+use super::{Engine, InputFile, Stage, invalid};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -81,15 +81,17 @@ fn inspect(
         .as_str()
         .map(str::to_owned);
     let engine_path = directory.join("engine/receipt.json");
-    if engine_path.try_exists()? {
+    let engine = if engine_path.try_exists()? {
         super::regular_file(&engine_path)?;
-        let engine: serde_json::Value = serde_json::from_slice(&fs_err::read(&engine_path)?)
-            .map_err(|e| invalid(e.to_string()))?;
-        result.architecture = engine["target"]["architecture"].as_str().map(str::to_owned);
-        result.release_policy = engine["target"]["release_policy"]
-            .as_str()
-            .map(str::to_owned);
-    }
+        serde_json::from_slice::<serde_json::Value>(&fs_err::read(engine_path)?)
+            .map_err(|e| invalid(e.to_string()))?
+    } else {
+        serde_json::Value::Null
+    };
+    result.architecture = engine["target"]["architecture"].as_str().map(str::to_owned);
+    result.release_policy = engine["target"]["release_policy"]
+        .as_str()
+        .map(str::to_owned);
     if !receipt.success {
         result.reason = receipt.execution["failure"].as_str().map(str::to_owned);
     }
@@ -121,6 +123,10 @@ fn inspect(
             result.differences.push(name.clone());
         }
     }
+    if receipt.success && result.differences.is_empty() {
+        verify_environment(directory, &receipt.execution, &engine, result)?;
+        super::mock::Mock(receipt.stage).verify_result(&directory.join("engine"))?;
+    }
     result.status = if !result.differences.is_empty() {
         "stale"
     } else if receipt.success {
@@ -128,6 +134,55 @@ fn inspect(
     } else {
         "failed"
     };
+    Ok(())
+}
+
+/// Require retained environment facts before a successful process becomes build evidence.
+fn verify_environment(
+    directory: &Path,
+    execution: &serde_json::Value,
+    engine: &serde_json::Value,
+    result: &Evidence,
+) -> io::Result<()> {
+    if result.image.as_deref().is_none_or(str::is_empty)
+        || result.architecture.as_deref().is_none_or(str::is_empty)
+        || result.release_policy.as_deref().is_none_or(str::is_empty)
+    {
+        return Err(invalid("build environment identity is incomplete"));
+    }
+    let packages = engine["installed_packages"]
+        .as_array()
+        .filter(|packages| !packages.is_empty())
+        .ok_or_else(|| invalid("installed build dependencies are not recorded"))?;
+    if packages.iter().any(|package| {
+        ["name", "evr", "arch"]
+            .iter()
+            .any(|key| package[key].as_str().is_none_or(str::is_empty))
+    }) || engine["collection_errors"]
+        .as_array()
+        .is_none_or(|errors| !errors.is_empty())
+    {
+        return Err(invalid("build environment collection is incomplete"));
+    }
+    let config = directory.join("engine/mock.cfg");
+    super::regular_file(&config)?;
+    if engine["mock_config_sha256"].as_str()
+        != Some(
+            crate::file_digest::read(&config)
+                .map_err(io::Error::other)?
+                .sha256
+                .as_str(),
+        )
+    {
+        return Err(invalid("retained Mock configuration changed"));
+    }
+    let target = directory.join("engine/target.json");
+    super::regular_file(&target)?;
+    let target: serde_json::Value =
+        serde_json::from_slice(&fs_err::read(target)?).map_err(io::Error::other)?;
+    if target != engine["target"] || execution["success"] != true {
+        return Err(invalid("engine and host build evidence disagree"));
+    }
     Ok(())
 }
 
@@ -159,13 +214,59 @@ mod tests {
         let content = crate::file_digest::read(&input).unwrap();
         let mut expected = Inputs::from([("SPECS/ed.spec".into(), (content.sha256.clone(), None))]);
         assert_eq!(compare(root.path(), "ed", &expected).status, "not-run");
-        let mut receipt = serde_json::json!({"format_version":1,"package":"ed","engine":"mock","stage":"build","success":true,"execution":{},"inputs":[{"path":"SPECS/ed.spec","executable":false,"size":content.size,"sha256":content.sha256}]});
+        let mut receipt = serde_json::json!({"format_version":1,"package":"ed","engine":"mock","stage":"build","success":true,"execution":{"success":true,"details":{"image_id":"sha256:fixture"}},"inputs":[{"path":"SPECS/ed.spec","executable":false,"size":content.size,"sha256":content.sha256}]});
         let path = root.path().join("receipt.json");
         let save = |value: &serde_json::Value| {
             fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
         };
         save(&receipt);
+        assert_eq!(compare(root.path(), "ed", &expected).status, "unavailable");
+        let engine = root.path().join("engine");
+        fs::create_dir(&engine).unwrap();
+        fs::write(engine.join("mock.cfg"), "fixture").unwrap();
+        fs::write(engine.join("artifact.rpm"), "fixture").unwrap();
+        let target = serde_json::json!({"architecture":"x86_64","release_policy":"fixture"});
+        fs::write(engine.join("target.json"), target.to_string()).unwrap();
+        let digest = crate::utf8_file::sha256("fixture");
+        let mut native = serde_json::json!({
+            "format_version":1,"engine":"mock","target_stage":"build","success":true,
+            "target":target,"mock_config_sha256":digest,
+            "installed_packages":[{"name":"rpm","evr":"6","arch":"x86_64"}],
+            "collection_errors":[],
+            "artifacts":[{"path":"artifact.rpm","size":7,"sha256":digest}]
+        });
+        let save_native = |value: &serde_json::Value| {
+            fs::write(engine.join("receipt.json"), value.to_string()).unwrap();
+        };
+        save_native(&native);
         assert_eq!(compare(root.path(), "ed", &expected).status, "passed");
+        for field in [
+            "installed_packages",
+            "collection_errors",
+            "mock_config_sha256",
+            "target",
+        ] {
+            let mut damaged = native.clone();
+            damaged.as_object_mut().unwrap().remove(field);
+            save_native(&damaged);
+            assert_eq!(
+                compare(root.path(), "ed", &expected).status,
+                "unavailable",
+                "{field}"
+            );
+        }
+        save_native(&native);
+        for name in ["mock.cfg", "artifact.rpm", "target.json"] {
+            let path = engine.join(name);
+            let original = fs::read(&path).unwrap();
+            fs::write(&path, "changed").unwrap();
+            assert_eq!(
+                compare(root.path(), "ed", &expected).status,
+                "unavailable",
+                "{name}"
+            );
+            fs::write(path, original).unwrap();
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -176,12 +277,16 @@ mod tests {
             fs::set_permissions(&input, fs::Permissions::from_mode(0o644)).unwrap();
             expected.get_mut("SPECS/ed.spec").unwrap().1 = None;
         }
+        native["target_stage"] = "prep".into();
+        save_native(&native);
         receipt["stage"] = "prep".into();
         save(&receipt);
         let prep = compare(root.path(), "ed", &expected);
         assert_eq!(prep.status, "passed");
         assert_eq!(prep.stage_name(), "prep");
         assert!(!prep.full_build_passed());
+        native["target_stage"] = "build".into();
+        save_native(&native);
         receipt["stage"] = "build".into();
         save(&receipt);
         assert!(compare(root.path(), "ed", &expected).full_build_passed());

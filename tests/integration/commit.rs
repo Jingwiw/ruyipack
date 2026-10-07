@@ -501,6 +501,13 @@ fn required_build_checks_stage_result_and_declared_inputs() {
         inputs.push(serde_json::json!({"path":name,"executable":false,
             "size":bytes.len(),"sha256":format!("{:x}",Sha256::digest(bytes))}));
     }
+    let engine = build.join("engine");
+    fs::create_dir_all(&engine).unwrap();
+    fs::write(engine.join("mock.cfg"), "fixture").unwrap();
+    fs::write(engine.join("artifact.rpm"), "fixture").unwrap();
+    let target = serde_json::json!({"architecture":"x86_64","release_policy":"fixture"});
+    fs::write(engine.join("target.json"), target.to_string()).unwrap();
+    let digest = format!("{:x}", Sha256::digest(b"fixture"));
     let head = git(&repo, &["rev-parse", "HEAD"]).stdout;
     for (stage, passed, changed, status, exit) in [
         ("prep", true, false, "passed", 1),
@@ -510,10 +517,22 @@ fn required_build_checks_stage_result_and_declared_inputs() {
     ] {
         fs::write(&spec, if changed { &original } else { &candidate }).unwrap();
         let receipt = serde_json::json!({"format_version":1,"package":"ed",
-            "engine":"mock","stage":stage,"success":passed,"execution":{},"inputs":inputs});
+            "engine":"mock","stage":stage,"success":passed,"execution":{"success":passed,"details":{"image_id":"sha256:fixture"}},"inputs":inputs});
         fs::write(
             build.join("receipt.json"),
             serde_json::to_vec(&receipt).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            engine.join("receipt.json"),
+            serde_json::json!({
+                "format_version":1,"engine":"mock","target_stage":stage,"success":passed,
+                "target":target,"mock_config_sha256":digest,
+                "installed_packages":[{"name":"rpm","evr":"6","arch":"x86_64"}],
+                "collection_errors":[],
+                "artifacts":[{"path":"artifact.rpm","size":7,"sha256":digest}]
+            })
+            .to_string(),
         )
         .unwrap();
         let output = run(

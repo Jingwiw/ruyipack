@@ -87,7 +87,12 @@ elif args[0] == 'exec':
     assert args[1] == 'abcdef0123456789'
     (state / 'engine').mkdir(exist_ok=True)
     (state / 'engine' / 'artifact.rpm').write_bytes(b'fixture RPM bytes')
-    receipt = {'format_version': 1, 'engine': 'mock', 'target_stage': args[args.index('--stage')+1] if '--stage' in args else 'build', 'success': mode not in ('failed-receipt', 'default-context-failure'),
+    (state / 'engine' / 'mock.cfg').write_text('fixture')
+    target = {'architecture': 'x86_64', 'release_policy': 'fixture'}
+    (state / 'engine' / 'target.json').write_text(json.dumps(target))
+    receipt = {'target': target, 'mock_config_sha256': hashlib.sha256(b'fixture').hexdigest(),
+               'installed_packages': [{'name':'rpm','evr':'6','arch':'x86_64'}], 'collection_errors': [],
+               'format_version': 1, 'engine': 'mock', 'target_stage': args[args.index('--stage')+1] if '--stage' in args else 'build', 'success': mode not in ('failed-receipt', 'default-context-failure'),
                'artifacts': [{'path': 'artifact.rpm', 'size': len(b'fixture RPM bytes'),
                  'sha256': '0' * 64 if mode in ('bad-hash', 'bad-hash-cleanup') else hashlib.sha256(b'fixture RPM bytes').hexdigest(),
                  'identity': 'fixture\t1\t1.or\tx86_64'}]}
