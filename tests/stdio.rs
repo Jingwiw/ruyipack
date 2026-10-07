@@ -195,10 +195,12 @@ fn machine_operations_never_prompt_even_in_a_terminal() {
     }
 }
 
-fn closed_pipe() -> std::process::Stdio {
-    let (reader, writer) = std::io::pipe().unwrap();
+fn closed_stream() -> std::process::Stdio {
+    let (reader, writer) = std::os::unix::net::UnixStream::pair().unwrap();
+    // Shutdown also applies to descriptors inherited by a concurrently spawned child.
+    reader.shutdown(std::net::Shutdown::Both).unwrap();
     drop(reader);
-    writer.into()
+    std::os::fd::OwnedFd::from(writer).into()
 }
 
 #[test]
@@ -243,7 +245,7 @@ fn disconnected_stdout_returns_an_error_without_panicking() {
         let result = Command::new(env!("CARGO_BIN_EXE_ruyipack"))
             .current_dir(directory.path())
             .args(args)
-            .stdout(closed_pipe())
+            .stdout(closed_stream())
             .output()
             .unwrap();
         assert_eq!(result.status.code(), Some(1), "{args:?}: {result:?}");
@@ -270,7 +272,7 @@ fn disconnected_stderr_and_both_streams_return_errors() {
         let result = Command::new(env!("CARGO_BIN_EXE_ruyipack"))
             .current_dir(directory.path())
             .args(args)
-            .stderr(closed_pipe())
+            .stderr(closed_stream())
             .output()
             .unwrap();
         assert_eq!(result.status.code(), Some(1), "{args:?}: {result:?}");
@@ -279,8 +281,8 @@ fn disconnected_stderr_and_both_streams_return_errors() {
 
     let result = gen_command(directory.path())
         .arg("--stdout")
-        .stdout(closed_pipe())
-        .stderr(closed_pipe())
+        .stdout(closed_stream())
+        .stderr(closed_stream())
         .output()
         .unwrap();
     assert_eq!(result.status.code(), Some(1), "{result:?}");
@@ -313,7 +315,7 @@ fn failed_publication_acknowledgement_does_not_allow_blind_retry() {
             "--format",
             "toml",
         ])
-        .stdout(closed_pipe())
+        .stdout(closed_stream())
         .output()
         .unwrap();
     assert_eq!(result.status.code(), Some(1));
@@ -362,7 +364,7 @@ fn failed_skip_acknowledgement_preserves_the_existing_target() {
     fs::write(directory.path().join("ed.spec"), "hand edited\n").unwrap();
     let result = gen_command(directory.path())
         .arg("--skip-existing")
-        .stderr(closed_pipe())
+        .stderr(closed_stream())
         .output()
         .unwrap();
     assert_eq!(result.status.code(), Some(1), "{result:?}");
